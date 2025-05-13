@@ -2157,9 +2157,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                  True)
             raise AssertionError("Finished profiling")
         if not self.is_pooler:
-            # NOTE(Yabai/Tanner): Divide by PP size is required
-            # to fix RTE when doing warmup with PP>1
-            max_blocks = kv_caches[0][0].size(0) // self.parallel_config.pipeline_parallel_size
+            max_blocks = kv_caches[0][0].size(0) // int(os.getenv('VLLM_DECODE_BLOCK_BUCKET_STEP')) * int(os.getenv('VLLM_DECODE_BLOCK_BUCKET_STEP'))
         self.bucketing_ctx.generate_prompt_buckets()
         if not self.is_pooler:
             self.bucketing_ctx.generate_decode_buckets(max_blocks)
