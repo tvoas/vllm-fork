@@ -14,6 +14,7 @@ PATH_TO_HF_HOME="$4"
 shift 4
 PLATFORM=${1:-"gpu"}
 CLEANUP_ON_EXIT=${2:-"true"}
+shift 2
 
 
 # Additional arguments are passed directly to the Docker command
