@@ -33,8 +33,8 @@ from vllm.attention import AttentionMetadata, get_attn_backend
 from vllm.attention.backends.abstract import AttentionType
 from vllm.attention.backends.hpu_attn import HPUAttentionImpl
 from vllm.config import DeviceConfig, VllmConfig
-from vllm.distributed import broadcast_tensor_dict, get_pp_group
-from vllm.distributed.parallel_state import get_world_group
+from vllm.distributed import broadcast_tensor_dict
+from vllm.distributed.parallel_state import (get_pp_group, get_world_group)
 from vllm.forward_context import set_forward_context
 from vllm.inputs import INPUT_REGISTRY, InputRegistry
 from vllm.logger import init_logger
@@ -2023,6 +2023,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         _, max_seq_len = self.bucketing_ctx.get_max_prompt_shape()
         max_batch_size = min(self.max_num_seqs,
                              self.max_num_batched_tokens // max_seq_len)
+        max_batch_size = self.bucketing_ctx.get_padded_batch_size(
+            max_batch_size, True)
+
         self.warmup_scenario(max_batch_size, max_seq_len, True, kv_caches,
                              False, True)
         return
@@ -2098,6 +2101,14 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             inputs = self.prepare_model_input(seqs)
             is_single_step = \
                 self.vllm_config.scheduler_config.num_scheduler_steps == 1
+            intermediate_tensors = None
+            if not get_pp_group().is_first_rank:
+                intermediate_tensors = \
+                    self.model.make_empty_intermediate_tensors(
+                        batch_size=batch_size,
+                        context_size=seq_len if is_prompt else 1,
+                        dtype=self.model_config.dtype,
+                        device=self.device)
             if is_prompt or is_single_step:
                 intermediate_tensors = None
                 if not get_pp_group().is_first_rank:
@@ -2117,6 +2128,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                              is_last_step=False)
                 self.execute_model(inputs,
                                    kv_caches,
+                                   intermediate_tensors=intermediate_tensors,
                                    warmup_mode=True,
                                    num_steps=2,
                                    seqs=seqs)
@@ -2125,6 +2137,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                              is_last_step=True)
                 self.execute_model(inputs,
                                    kv_caches,
+                                   intermediate_tensors=intermediate_tensors,
                                    warmup_mode=True,
                                    num_steps=2,
                                    seqs=seqs)
@@ -2184,6 +2197,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             self.log_warmup('Prompt' if is_prompt else 'Decode', i,
                             len(buckets), batch_size, seq_len)
             self.warmup_scenario(batch_size, seq_len, is_prompt, kv_caches)
+            torch.distributed.barrier()
 
     def warmup_graphs(self,
                       strategy,
@@ -2234,6 +2248,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             available_mem -= used_mem
             total_mem += used_mem
             total_batch_seq += batch_seq
+            torch.distributed.barrier()
 
         return total_mem, total_batch_seq, captured_all
 
@@ -2266,6 +2281,10 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                 self.graphed_buckets.add((int(bs), int(seq_len), is_prompt))
             self.warmup_scenario(int(bs), int(seq_len), is_prompt, True)
             raise AssertionError("Finished profiling")
+        self.bucketing_ctx.generate_prompt_buckets()
+        if not self.is_pooler:
+            max_blocks = kv_caches[0][0].size(0)
+            self.bucketing_ctx.generate_decode_buckets(max_blocks)
         if not htorch.utils.internal.is_lazy() and not self.enforce_eager:
             multiplier = 3 if os.getenv('VLLM_REGIONAL_COMPILATION',
                                         'true').lower() == 'true' else 1

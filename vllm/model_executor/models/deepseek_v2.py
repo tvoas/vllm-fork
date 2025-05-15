@@ -610,15 +610,9 @@ class DeepseekV2DecoderLayer(nn.Module):
         if is_hpu:
             _batch_size = positions.shape[0]
         # Self Attention
-        if residual is None:
-            residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
-        else:
-            hidden_states, residual = self.input_layernorm(
-                hidden_states, residual)
-        hidden_states = self.self_attn(
+        hidden_states = hidden_states + self.self_attn(
             positions=positions,
-            hidden_states=hidden_states,
+            hidden_states=self.input_layernorm(hidden_states),
         )
 
         # Fully Connected
@@ -626,8 +620,8 @@ class DeepseekV2DecoderLayer(nn.Module):
             hidden_states.dtype == torch.float16:
             # This is a special case to avoid FP16 overflow
             hidden_states *= 1. / self.routed_scaling_factor
-        hidden_states, residual = self.post_attention_layernorm(
-            hidden_states, residual)
+        hidden_states = hidden_states + self.mlp(
+             self.post_attention_layernorm(hidden_states))
         if is_hpu:
             # need reshape from tensor(x0, y0) to tensor(x1) for hpu
             hidden_states = hidden_states.reshape(
@@ -709,18 +703,17 @@ class DeepseekV2Model(nn.Module):
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
-            residual = intermediate_tensors["residual"]
+            residual = None
 
         for layer in self.layers[self.start_layer:self.end_layer]:
             hidden_states, residual = layer(positions, hidden_states, residual)
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
-                "hidden_states": hidden_states,
-                "residual": residual
+                "hidden_states": hidden_states
             })
 
-        hidden_states, _ = self.norm(hidden_states, residual)
+        hidden_states = self.norm(hidden_states, residual)
         return hidden_states
 
 
@@ -736,11 +729,11 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP):
                                      prefix=maybe_prefix(prefix, "model"))
         if get_pp_group().is_last_rank:
             self.lm_head = ParallelLMHead(config.vocab_size,
-                                          config.hidden_size,
-                                          quant_config=quant_config)
+                                        config.hidden_size,
+                                        quant_config=quant_config)
+            self.logits_processor = LogitsProcessor(config.vocab_size)
         else:
             self.lm_head = PPMissingLayer()
-        self.logits_processor = LogitsProcessor(config.vocab_size)
         self.sampler = get_sampler()
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors)
@@ -775,20 +768,6 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP):
     ) -> Optional[SamplerOutput]:
         next_tokens = self.sampler(logits, sampling_metadata)
         return next_tokens
-
-    def make_empty_intermediate_tensors(
-            self, batch_size: int, dtype: torch.dtype,
-            device: torch.device) -> IntermediateTensors:
-        return IntermediateTensors({
-            "hidden_states":
-            torch.zeros((batch_size, self.config.hidden_size),
-                        dtype=dtype,
-                        device=device),
-            "residual":
-            torch.zeros((batch_size, self.config.hidden_size),
-                        dtype=dtype,
-                        device=device),
-        })
 
     def load_weights(self, weights: Iterable[Tuple[str,
                                                    torch.Tensor]]) -> Set[str]:
