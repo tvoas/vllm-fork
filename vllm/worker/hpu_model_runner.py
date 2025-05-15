@@ -35,10 +35,10 @@ from vllm.attention import AttentionMetadata, get_attn_backend
 from vllm.attention.backends.abstract import AttentionType
 from vllm.attention.backends.hpu_attn import HPUAttentionImpl
 from vllm.config import DeviceConfig, VllmConfig
-from vllm.distributed import broadcast_tensor_dict, get_pp_group
+from vllm.distributed import broadcast_tensor_dict
 from vllm.distributed.kv_transfer import get_kv_transfer_group
 from vllm.distributed.parallel_state import (get_dp_group, get_tp_group,
-                                             get_world_group)
+                                             get_pp_group, get_world_group)
 from vllm.forward_context import set_forward_context
 from vllm.inputs import INPUT_REGISTRY, InputRegistry
 from vllm.logger import init_logger
@@ -738,6 +738,9 @@ class HpuModelAdapter(torch.nn.Module):
 
     # def sample(self, *args, **kwargs):
     #    return self.sampler(*args, **kwargs)
+
+    def make_empty_intermediate_tensors(self, *args, **kwargs):
+        return self.model.make_empty_intermediate_tensors(*args, **kwargs)
 
     def make_empty_intermediate_tensors(self, *args, **kwargs):
         return self.model.make_empty_intermediate_tensors(*args, **kwargs)
@@ -2806,6 +2809,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             self.multimodal_buckets = model.vision_buckets.multimodal_buckets
             logger_msg = "Multimodal bucket : " + str(self.multimodal_buckets)
             logger.info(logger_msg)
+        else:
+            max_batch_size = self.bucketing_ctx.get_padded_batch_size(
+                max_batch_size, True)
 
         self.warmup_scenario(
             batch_size=max_batch_size,
@@ -3076,6 +3082,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                      torch.distributed.ReduceOp.MAX)
             total_mem += used_mem
             total_batch_seq += batch_seq
+            torch.distributed.barrier()
 
         if is_prompt and self.is_mm_run():
             #For multimodal total_batch_seq and total_mem, we store it in the

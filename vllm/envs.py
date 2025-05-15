@@ -858,6 +858,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # latency penalty when a request eventually comes.
     "VLLM_SLEEP_WHEN_IDLE":
     lambda: bool(int(os.getenv("VLLM_SLEEP_WHEN_IDLE", "0"))),
+
+    # When running pipeline parallelism on multiple nodes the primary communication channel
+    # for parralel communications may not be able to communicate. This would result in hangs
+    # after all_reduce/send/recv operations which PP group uses. To resolve this issue
+    # VLLM_PP_USE_CPU_COMS can be used to force PP communications through GLOO on the CPU.
+    "VLLM_PP_USE_CPU_COMS":
+    lambda: bool(int(os.getenv("VLLM_PP_USE_CPU_COMS", "0"))),
 }
 
 # --8<-- [end:env-vars-definition]

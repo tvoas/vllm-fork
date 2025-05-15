@@ -12,7 +12,7 @@ import json
 import os
 import queue
 import time
-from typing import List, Optional, Set, Tuple, Type
+from typing import Dict, List, Optional, Set, Tuple, Type
 
 import habana_frameworks.torch as htorch  # noqa:F401
 import torch
@@ -22,7 +22,7 @@ from vllm_hpu_extension.profiler import HabanaMemoryProfiler, format_bytes
 import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.distributed import (ensure_model_parallel_initialized, get_pp_group,
-                              init_distributed_environment)
+                              get_tp_group, init_distributed_environment)
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
@@ -65,6 +65,9 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         self.rank = rank
         self.distributed_init_method = distributed_init_method
         self.is_driver_worker = is_driver_worker
+        if self.parallel_config and self.is_driver_worker:
+            assert self.rank % self.parallel_config.tensor_parallel_size == 0, \
+            "The driver worker must have TP rank 0."
 
         if self.model_config.trust_remote_code:
             # note: lazy import to avoid importing torch before initializing
@@ -542,8 +545,9 @@ def init_worker_distributed_environment(
     ensure_model_parallel_initialized(parallel_config.tensor_parallel_size,
                                       parallel_config.pipeline_parallel_size)
 
-    if parallel_config.pipeline_parallel_size > 1:
-        # torch-ccl xpu need a collective API warm up
+    if parallel_config.pipeline_parallel_size > 1 and \
+        not envs.VLLM_PP_USE_CPU_COMS:
+        # torch-ccl hpu need a collective API warm up
         # before calling send/recv API
         get_pp_group().all_reduce(torch.zeros(1).to('hpu'))
     if torch.distributed.is_initialized():
@@ -572,9 +576,14 @@ def init_worker_distributed_environment(
     # A small all_reduce for warmup & checking conformance.
     device = hpu_device_string()
     dummy_tensor_hpu = torch.ones(1).to(device)
-    torch.distributed.all_reduce(dummy_tensor_hpu)
-    assert dummy_tensor_hpu.item(
-    ) == parallel_config.world_size * parallel_config.data_parallel_size
+    if not envs.VLLM_PP_USE_CPU_COMS:
+        torch.distributed.all_reduce(dummy_tensor_hpu)
+        assert dummy_tensor_hpu.item(
+        ) == parallel_config.world_size * parallel_config.data_parallel_size
+    else:
+        get_tp_group().all_reduce(dummy_tensor_hpu)
+        assert dummy_tensor_hpu.item(
+        ) == parallel_config.tensor_parallel_size * parallel_config.data_parallel_size
     ensure_model_parallel_initialized(parallel_config.tensor_parallel_size,
                                       parallel_config.pipeline_parallel_size)
     ensure_kv_transfer_initialized(vllm_config)
