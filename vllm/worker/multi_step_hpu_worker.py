@@ -15,7 +15,7 @@ class MultiStepHPUWorker(HPUWorker):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.cached_model_input: Dict[int, ModelInputForHPU] = {}
+        self.cached_model_input: Optional[ModelInputForHPU] = None
 
     def _get_driver_input_and_broadcast(
         self, execute_model_req: ExecuteModelRequest
@@ -47,9 +47,8 @@ class MultiStepHPUWorker(HPUWorker):
                     async_callback=execute_model_req.async_callback)
         else:
             # on subsequent steps we reuse the worker input and model input
-            seq_id = list(execute_model_req.seq_group_metadata_list[0].seq_data.keys())[0]
-            assert seq_id in self.cached_model_input
-            model_input = self.cached_model_input[seq_id]
+            assert self.cached_model_input is not None
+            model_input = self.cached_model_input
             worker_input = WorkerInput()
 
         model_input = dataclasses.replace(
@@ -92,39 +91,26 @@ class MultiStepHPUWorker(HPUWorker):
             model_input, worker_input, _ = self._get_driver_input_and_broadcast(
                 execute_model_req)
             if model_input.is_first_multi_step:
-                for sid in model_input.sampling_metadata.seq_groups[0].seq_ids:
-                    self.cached_model_input[sid] = model_input
+                self.cached_model_input = model_input
             return model_input, worker_input, {}
         else:
             broadcast_data = broadcast_tensor_dict(src=0)
             if not broadcast_data:
                 return None
 
-            seq_id = None
-            if execute_model_req is not None:
-                seq_id = list(execute_model_req.seq_group_metadata_list[0].seq_data.keys())[0]
-                assert seq_id in self.cached_model_input
-            else:
-                cache_keys = list(self.cached_model_input.keys())
-                if len(cache_keys) == 0:
-                    return None
-                seq_id = cache_keys[0]
-
             if len(broadcast_data) == 2:
-                self.cached_model_input[seq_id] = dataclasses.replace(
-                    self.cached_model_input[seq_id],
+                assert self.cached_model_input is not None
+                self.cached_model_input = dataclasses.replace(
+                    self.cached_model_input,
                     is_first_multi_step=broadcast_data["is_first_multi_step"],
                     is_last_step=broadcast_data["is_last_step"])
-                if broadcast_data["is_last_step"]:
-                    del self.cached_model_input[seq_id]
                 empty_worker_input = WorkerInput()
-                return self.cached_model_input[seq_id], empty_worker_input, {}
+                return self.cached_model_input, empty_worker_input, {}
 
             worker_input = WorkerInput.from_broadcasted_tensor_dict(
                 broadcast_data)
             model_input = (
                 self.model_runner.
                 make_model_input_from_broadcasted_tensor_dict(broadcast_data))
-            for sid in model_input.sampling_metadata.seq_groups[0].seq_ids:
-                self.cached_model_input[sid] = model_input
+            self.cached_model_input = model_input
             return model_input, worker_input, {}

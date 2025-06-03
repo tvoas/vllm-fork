@@ -780,7 +780,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             self.skip_warmup = True
 
         # For both multi-step scheduling and delayed sampling
-        self.cached_step_outputs: List[torch.Tensor] = []
+        self.cached_step_outputs: List[Tuple[torch.Tensor, List[List[int]]]] = []
         self.is_pooler = False
         # For delayed sampling
         self.cached_step_inputs: List[
