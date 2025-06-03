@@ -18,7 +18,7 @@ set -x
 #   DO_PROFILE         (Optional) Whether to enable profiling (true/false). Default: false.
 #   HOST               (Optional) Host address for the server. Default: 127.0.0.1.
 #   PORT               (Optional) Port for the server. Default: 8688.
-#   MODEL_PATH         (Optional) Path to the model. Default: /root/.cache/huggingface/DeepSeek-R1-BF16-w8afp8-dynamic-no-ste-G2.
+#   MODEL_PATH         (Optional) Path to the model. Default: /root/.cache/huggingface/DeepSeek-R1-Distill-Qwen-32B.
 #   RESULTS_DIR        (Optional) Directory to store results and logs. Default: logs/test-results.
 #
 # Description:
@@ -43,7 +43,7 @@ DO_WARMUP=${10:-true}
 DO_PROFILE=${11:-false}
 HOST=${12:-127.0.0.1}
 PORT=${13:-8688}
-MODEL_PATH=${14:-${MODEL_PATH:-/root/.cache/huggingface/DeepSeek-R1-BF16-w8afp8-dynamic-no-ste-G2}}
+MODEL_PATH=${14:-${MODEL_PATH:-/root/.cache/huggingface/DeepSeek-R1-Distill-Qwen-32B}}
 RESULTS_DIR=${15:-logs/test-results}
 
 if [ "$DO_PROFILE" == "true" ]; then
@@ -153,6 +153,4 @@ python3 -m vllm.entrypoints.openai.api_server --host $HOST --port $PORT \
   --use-v2-block-manager \
   --distributed_executor_backend ray \
   --num-scheduler-steps $NUM_SCHEDULER_STEPS \
-  --gpu_memory_utilization $VLLM_GPU_MEMORY_UTILIZATION \
-  --enable-reasoning \
-  --reasoning-parser deepseek_r1
+  --gpu_memory_utilization $VLLM_GPU_MEMORY_UTILIZATION

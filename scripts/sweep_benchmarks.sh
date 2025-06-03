@@ -52,13 +52,13 @@ mkdir -p "$BASE_LOG_DIR"
 SUMMARY_LOG=${BASE_LOG_DIR}/summary.log
 
 # Build header
-HEADER='nodes,pp_size,tp_size,comm_backend,kv_cache_dtype,num_scheduler_steps,partition,max_model_len,input_tokens,output_tokens,num_prompts,max_concurrency,client_concurrency,warmup,profile,mean_ttft,mean_tpot,total_throughput,output_throughput'
+HEADER='nodes,pp_size,tp_size,comm_backend,kv_cache_dtype,num_scheduler_steps,partition,max_model_len,dataset,input_tokens,output_tokens,num_prompts,max_concurrency,client_concurrency,warmup,profile,mean_ttft,mean_tpot,total_throughput,output_throughput'
 echo "$HEADER" | tee -a "$SUMMARY_LOG"
 
 # Default client/server parameters
 HOST=${HOST:-127.0.0.1}
 PORT=${PORT:-8688}
-MODEL_PATH=${MODEL_PATH:-/root/.cache/huggingface/DeepSeek-R1-BF16-w8afp8-dynamic-no-ste-G2}
+MODEL_PATH=${MODEL_PATH:-/root/.cache/huggingface/DeepSeek-R1-Distill-Qwen-32B}
 
 # Server config list: max_len,max_conc,pp,tp,backend,kv_dtype,num_scheduler_steps,warmup,profile,partition
 KV=auto
@@ -67,9 +67,9 @@ PROFILE=false
 server_config_list=(
   "10240,48,2,1,gloo,${KV},1,${WARMUP},${PROFILE},[32,32]"
 )
-# Client config list: input,output,num_prompts,conc
+# Client config list: dataset,input,output,num_prompts,conc
 client_config_list=(
-  "8192,2048,96,48"
+  "sonnet,8192,2048,96,48"
 )
 
 # Helper function for profiling
@@ -262,8 +262,8 @@ for server_config in "${server_config_list[@]}"; do
   fi
 
   for client_config in "${client_config_list[@]}"; do
-    IFS=',' read -r INPUT_TOKENS OUTPUT_TOKENS NUM_PROMPTS CLIENT_CONCURRENCY <<< "$client_config"
-    CLIENT_LOG_PREFIX=in${INPUT_TOKENS}_out${OUTPUT_TOKENS}_prompts${NUM_PROMPTS}_conc${CLIENT_CONCURRENCY}
+    IFS=',' read -r DATASET INPUT_TOKENS OUTPUT_TOKENS NUM_PROMPTS CLIENT_CONCURRENCY <<< "$client_config"
+    CLIENT_LOG_PREFIX=${DATASET}_in${INPUT_TOKENS}_out${OUTPUT_TOKENS}_prompts${NUM_PROMPTS}_conc${CLIENT_CONCURRENCY}
 
     if ! [[ "$CLIENT_CONCURRENCY" =~ ^[0-9]+$ ]] || ! [[ "$MAX_CONCURRENCY" =~ ^[0-9]+$ ]]; then
       echo "[Error] CLIENT_CONCURRENCY or MAX_CONCURRENCY is not a valid integer. Skipping..."
@@ -278,17 +278,11 @@ for server_config in "${server_config_list[@]}"; do
     # Run client benchmark
     source benchmark_client_param.sh
     if [ "$DO_WARMUP" != "true" ]; then
-      test_benchmark_client_serving ${INPUT_TOKENS} ${OUTPUT_TOKENS} ${CLIENT_CONCURRENCY} ${NUM_PROMPTS} 0.8 ${HOST} ${PORT} ${MODEL_PATH} ${CONFIG_LOG_DIR} \
+      test_benchmark_client_serving ${DATASET} ${INPUT_TOKENS} ${OUTPUT_TOKENS} ${CLIENT_CONCURRENCY} ${NUM_PROMPTS} 0.8 ${HOST} ${PORT} ${MODEL_PATH} ${CONFIG_LOG_DIR} \
         | tee -a ${CONFIG_LOG_DIR}/warmup_${CLIENT_LOG_PREFIX}.log
     fi
-    #if [ "$DO_PROFILE" == "true" ]; then
-    #  start_profile
-    #fi
-    test_benchmark_client_serving ${INPUT_TOKENS} ${OUTPUT_TOKENS} ${CLIENT_CONCURRENCY} ${NUM_PROMPTS} 0.8 ${HOST} ${PORT} ${MODEL_PATH} ${CONFIG_LOG_DIR} \
+    test_benchmark_client_serving ${DATASET} ${INPUT_TOKENS} ${OUTPUT_TOKENS} ${CLIENT_CONCURRENCY} ${NUM_PROMPTS} 0.8 ${HOST} ${PORT} ${MODEL_PATH} ${CONFIG_LOG_DIR} \
       | tee -a ${CONFIG_LOG_DIR}/benchmark_${CLIENT_LOG_PREFIX}.log
-    #if [ "$DO_PROFILE" == "true" ]; then
-    #  stop_profile
-    #fi
 
     # Collect metrics
     mean_ttft=$(grep 'Mean TTFT (ms):' ${CONFIG_LOG_DIR}/benchmark_${CLIENT_LOG_PREFIX}.log | tail -1 | awk '{print $NF}')
@@ -297,9 +291,9 @@ for server_config in "${server_config_list[@]}"; do
     output_throughput=$(grep 'Output token throughput (tok/s):' ${CONFIG_LOG_DIR}/benchmark_${CLIENT_LOG_PREFIX}.log | tail -1 | awk '{print $NF}')
 
     # Build summary line
-    row="${NUM_NODES},${PP_SIZE},${TP_SIZE},${COMM_BACKEND},${KV_CACHE_DTYPE},${NUM_SCHEDULER_STEPS},\"${PARTITION}\",${MAX_MODEL_LEN},${INPUT_TOKENS},${OUTPUT_TOKENS},${NUM_PROMPTS},${MAX_CONCURRENCY},${CLIENT_CONCURRENCY},${DO_WARMUP},${DO_PROFILE},${mean_ttft},${mean_tpot},${total_throughput},${output_throughput}"
+    row="${NUM_NODES},${PP_SIZE},${TP_SIZE},${COMM_BACKEND},${KV_CACHE_DTYPE},${NUM_SCHEDULER_STEPS},\"${PARTITION}\",${MAX_MODEL_LEN},${DATASET},${INPUT_TOKENS},${OUTPUT_TOKENS},${NUM_PROMPTS},${MAX_CONCURRENCY},${CLIENT_CONCURRENCY},${DO_WARMUP},${DO_PROFILE},${mean_ttft},${mean_tpot},${total_throughput},${output_throughput}"
     export HF_ALLOW_CODE_EVAL=1
-    lm_eval --model local-completions --tasks humaneval,gsm8k --model_args model=$MODEL_PATH,base_url=http://$HOST:$PORT/v1/completions,num_concurrent=$CLIENT_CONCURRENCY,trust_remote_code=True --batch_size 1 --confirm_run_unsafe_code --log_samples --output_path ${CONFIG_LOG_DIR}/benchmark_${CLIENT_LOG_PREFIX}.log --limit 256
+    lm_eval --model local-completions --tasks humaneval,gsm8k --model_args model=$MODEL_PATH,base_url=http://$HOST:$PORT/v1/completions,num_concurrent=$CLIENT_CONCURRENCY,trust_remote_code=True --batch_size 1 --confirm_run_unsafe_code --log_samples --output_path ${CONFIG_LOG_DIR}/benchmark_${CLIENT_LOG_PREFIX}.log --limit 16
 
     echo "$row" | tee -a "$SUMMARY_LOG"
   done

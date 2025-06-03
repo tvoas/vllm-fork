@@ -25,21 +25,23 @@ set -e
 
 test_benchmark_client_serving() {
   export PT_HPU_LAZY_MODE=1
-  INPUT_LEN=$1
-  OUTPUT_LEN=$2
-  MAX_CONCURRENCY=$3
-  NUM_PROMPTS=$4
-  LEN_RATIO=${5:-1.0}
-  HOST=${6:-127.0.0.1}
-  PORT=${7:-8688}
-  MODEL_PATH=${8:-${MODEL_PATH:-/root/.cache/huggingface/DeepSeek-R1-BF16-w8afp8-dynamic-no-ste-G2}}
-  RESULTS_DIR=${9:-logs/test-results}
+  DATASET=$1
+  INPUT_LEN=$2
+  OUTPUT_LEN=$3
+  MAX_CONCURRENCY=$4
+  NUM_PROMPTS=$5
+  LEN_RATIO=${6:-1.0}
+  HOST=${7:-127.0.0.1}
+  PORT=${8:-8688}
+  MODEL_PATH=${9:-${MODEL_PATH:-/root/.cache/huggingface/DeepSeek-R1-BF16-w8afp8-dynamic-no-ste-G2}}
+  RESULTS_DIR=${10:-logs/test-results}
   mkdir -p "$RESULTS_DIR"
 
   export no_proxy=localhost,${HOST},10.239.129.9
 
   # Run serving benchmark
-  echo "Running serving benchmark: input=${INPUT_LEN}, output=${OUTPUT_LEN}, concurrency=${MAX_CONCURRENCY}, prompts=${NUM_PROMPTS}, ratio=${LEN_RATIO},"
+  echo "Running serving benchmark: dataset=${DATASET}, input=${INPUT_LEN}, output=${OUTPUT_LEN},"
+  echo "                           concurrency=${MAX_CONCURRENCY}, prompts=${NUM_PROMPTS}, ratio=${LEN_RATIO},"
   echo "                           host=${HOST}, port=${PORT},"
   echo "                           model=${MODEL_PATH},"
   echo "                           results=${RESULTS_DIR}"
@@ -47,16 +49,23 @@ test_benchmark_client_serving() {
   TIMESTAMP=$(TZ='Asia/Kolkata' date +%F-%H-%M-%S)
   LOG_BASE="benchmark_${NUM_PROMPTS}prompts_${MAX_CONCURRENCY}bs_in${INPUT_LEN}_out${OUTPUT_LEN}_ratio${LEN_RATIO}_${TIMESTAMP}"
 
+  DATASET_ARGS=""
+  if [[ "${DATASET}" == "sonnet" ]]; then
+    DATASET_ARGS="--dataset-name sonnet --dataset-path sonnet.txt --sonnet-input-len ${INPUT_LEN} --sonnet-output-len ${OUTPUT_LEN}"
+  elif [[ "${DATASET}" == "random" ]]; then
+    DATASET_ARGS="--dataset-name random --random-input-len ${INPUT_LEN} --random-output-len ${OUTPUT_LEN} --random-range-ratio ${LEN_RATIO}"
+  else
+    echo "Unsupported dataset: ${DATASET}"
+    return 1
+  fi
+
   python3 ../benchmarks/benchmark_serving.py \
       --backend vllm \
       --model "${MODEL_PATH}" \
       --trust-remote-code \
       --host "${HOST}" \
       --port "${PORT}" \
-      --dataset-name sonnet \
-      --dataset-path sonnet.txt \
-      --sonnet-input-len "${INPUT_LEN}" \
-      --sonnet-output-len "${OUTPUT_LEN}" \
+      ${DATASET_ARGS} \
       --max-concurrency "${MAX_CONCURRENCY}" \
       --num-prompts "${NUM_PROMPTS}" \
       --request-rate inf \
