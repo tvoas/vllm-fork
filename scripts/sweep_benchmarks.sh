@@ -65,12 +65,11 @@ KV=auto
 WARMUP=true
 PROFILE=false
 server_config_list=(
-  "16384,32,2,4,hccl,${KV},1,${WARMUP},${PROFILE},[32,29]"
+  "4096,32,2,4,hccl,${KV},1,${WARMUP},${PROFILE},[32,29]"
 )
 # Client config list: input,output,num_prompts,conc
 client_config_list=(
-  "2048,2048,96,32"
-  "4096,4096,96,32"
+  "2048,128,64,32"
 )
 
 # Helper function for profiling
@@ -298,7 +297,9 @@ for server_config in "${server_config_list[@]}"; do
     output_throughput=$(grep 'Output token throughput (tok/s):' ${CONFIG_LOG_DIR}/benchmark_${CLIENT_LOG_PREFIX}.log | tail -1 | awk '{print $NF}')
 
     # Build summary line
-    row="${NUM_NODES},${PP_SIZE},${TP_SIZE},${COMM_BACKEND},${KV_CACHE_DTYPE},\"${PARTITION}\",${MAX_MODEL_LEN},${INPUT_TOKENS},${OUTPUT_TOKENS},${NUM_PROMPTS},${MAX_CONCURRENCY},${CLIENT_CONCURRENCY},${DO_WARMUP},${DO_PROFILE},${mean_ttft},${mean_tpot},${total_throughput},${output_throughput}"
+    row="${NUM_NODES},${PP_SIZE},${TP_SIZE},${COMM_BACKEND},${KV_CACHE_DTYPE},${NUM_SCHEDULER_STEPS},\"${PARTITION}\",${MAX_MODEL_LEN},${INPUT_TOKENS},${OUTPUT_TOKENS},${NUM_PROMPTS},${MAX_CONCURRENCY},${CLIENT_CONCURRENCY},${DO_WARMUP},${DO_PROFILE},${mean_ttft},${mean_tpot},${total_throughput},${output_throughput}"
+    export HF_ALLOW_CODE_EVAL=1
+    lm_eval --model local-completions --tasks humaneval,gsm8k --model_args model=$MODEL_PATH,base_url=http://$HOST:$PORT/v1/completions,num_concurrent=$CLIENT_CONCURRENCY,trust_remote_code=True --batch_size 1 --confirm_run_unsafe_code --log_samples --output_path ${CONFIG_LOG_DIR}/benchmark_${CLIENT_LOG_PREFIX}.log --limit 256
 
     echo "$row" | tee -a "$SUMMARY_LOG"
   done
@@ -306,6 +307,7 @@ for server_config in "${server_config_list[@]}"; do
   # Teardown server
   echo "Tearing down server..."
   kill -9 $SERVER_PID
+  ps -ef | grep openai | grep -v grep | awk '{print $2}' | xargs -r kill -9
   sleep 20
 
 done

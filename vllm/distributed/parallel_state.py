@@ -23,6 +23,7 @@ If you only need to use the distributed environment without model/pipeline
 """
 import contextlib
 import gc
+import time
 import pickle
 import weakref
 from collections import namedtuple
@@ -255,6 +256,8 @@ class GroupCoordinator:
             self.mq_broadcaster = MessageQueue.create_from_process_group(
                 self.cpu_group, 1 << 22, 6)
         self.force_cpu_for_pp: bool = force_cpu_for_pp
+        self.hang_time = None
+        self.network_time = None
 
     @property
     def first_rank(self):
@@ -739,6 +742,8 @@ class GroupCoordinator:
         """Recv the input tensor dictionary.
         NOTE: `src` is the local rank of the source rank.
         """
+        torch.hpu.synchronize()
+        call_time = time.perf_counter()
         # Bypass the function if we are using only 1 GPU.
         if not torch.distributed.is_initialized() or self.world_size == 1:
             return None
@@ -756,6 +761,8 @@ class GroupCoordinator:
         assert src < self.world_size, f"Invalid src rank ({src})"
 
         recv_metadata_list = self.recv_object(src=src)
+        torch.hpu.synchronize()
+        base_time = time.perf_counter()
         tensor_dict: Dict[str, Any] = {}
         for key, value in recv_metadata_list:
             if isinstance(value, TensorMetadata):
@@ -803,6 +810,10 @@ class GroupCoordinator:
                 tensor_dict[key] = tensor
             else:
                 tensor_dict[key] = value
+        torch.hpu.synchronize()
+        end_time = time.perf_counter()
+        self.hang_time = base_time - call_time
+        self.network_time = end_time - base_time
         return tensor_dict
 
     def barrier(self):

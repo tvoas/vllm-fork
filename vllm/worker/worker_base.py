@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import dataclasses
+import csv
 import os
 import time
 from abc import abstractmethod
@@ -12,7 +13,7 @@ import torch.nn as nn
 
 from vllm.config import (ObservabilityConfig, VllmConfig,
                          set_current_vllm_config)
-from vllm.distributed import broadcast_tensor_dict, get_pp_group, get_tp_group
+from vllm.distributed import broadcast_tensor_dict, get_pp_group, get_tp_group, get_world_group
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
@@ -54,6 +55,8 @@ class WorkerBase:
         self.compilation_config = vllm_config.compilation_config
         from vllm.platforms import current_platform
         self.current_platform = current_platform
+        self.execution_count = 0
+        self.data_logs = {}
 
     def init_device(self) -> None:
         """Initialize device state, such as loading the model or other on-device
@@ -399,12 +402,88 @@ class LocalOrDistributedWorkerBase(WorkerBase):
     ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
+        self.execution_count += 1
         start_time = time.perf_counter()
+        if self.execution_count == 1:
+            self.last_data_logs_write_time = start_time
+        dump_every = 500
+        if self.execution_count % dump_every == 0:
+            time_since_last = start_time - self.last_data_logs_write_time
+            self.last_data_logs_write_time = start_time
 
+            # Compute averages per key from self.data_logs.
+            averages = {}
+            for key, values in self.data_logs.items():
+                if values:  # Avoid divide-by-zero
+                    averages[key] = sum(values) / len(values)
+                else:
+                    averages[key] = ''
+            # Add additional item.
+            averages["time_since_last_write"] = time_since_last
+
+            # Determine file naming.
+            tp_rank = get_tp_group().rank_in_group
+            pp_rank = get_pp_group().rank_in_group
+            world_rank = get_world_group().rank_in_group
+            filename = f"/workspace/tp{tp_rank}_pp{pp_rank}_world{world_rank}_mss{self.vllm_config.scheduler_config.num_scheduler_steps}_data_logs.csv"
+
+            # Gather new header from current averages.
+            current_keys = set(averages.keys())
+            # Check if file exists; if so, read its header.
+            if os.path.exists(filename):
+                with open(filename, "r", newline="") as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    existing_fields = reader.fieldnames or []
+                    # Read all existing rows.
+                    rows = list(reader)
+                # Build updated header (preserving order): append new keys at the end.
+                updated_fields = list(existing_fields)
+                for key in current_keys:
+                    if key not in updated_fields:
+                        updated_fields.append(key)
+                # If header has changed, rewrite the entire file.
+                if set(updated_fields) != set(existing_fields):
+                    with open(filename, "w", newline="") as csvfile:
+                        writer = csv.DictWriter(csvfile, fieldnames=updated_fields)
+                        writer.writeheader()
+                        for row in rows:
+                            # Fill missing columns with empty values.
+                            for field in updated_fields:
+                                if field not in row:
+                                    row[field] = ''
+                            writer.writerow(row)
+                header = updated_fields
+                write_mode = "a"
+            else:
+                header = list(averages.keys())
+                write_mode = "w"
+
+            # Append the current averages row.
+            with open(filename, write_mode, newline="") as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=header)
+                if write_mode == "w":
+                    writer.writeheader()
+                writer.writerow(averages)
+
+            # Clear the data logs for a new round.
+            for key in self.data_logs:
+                self.data_logs[key] = []
+
+        torch.hpu.synchronize()
+        tim1 = time.perf_counter()
         inputs = self.prepare_input(execute_model_req)
+        is_prompt = True
+        if inputs and not inputs[0].is_prompt:
+            is_prompt = False
+        torch.hpu.synchronize()
+        if f"01.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.prepare_input" not in self.data_logs:
+            self.data_logs[f"01.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.prepare_input"] = []
+        self.data_logs[f"01.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.prepare_input"] += [time.perf_counter() - tim1]
 
         # Need to keep worker running when executing dummy batch under DP
         # scenario
+        torch.hpu.synchronize()
+        tim1 = time.perf_counter()
         if self.is_driver_worker:
             if self.do_metadata_broadcast:
                 is_dummy_batch = execute_model_req and\
@@ -416,6 +495,10 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             if "is_dummy_batch" in broadcast_data and broadcast_data[
                     "is_dummy_batch"]:
                 return SamplerOutput(outputs=[], sampled_token_ids=None)
+        torch.hpu.synchronize()
+        if f"02.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.do_metadata_broadcast" not in self.data_logs:
+            self.data_logs[f"02.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.do_metadata_broadcast"] = []
+        self.data_logs[f"02.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.do_metadata_broadcast"] += [time.perf_counter() - tim1]
 
         if inputs is None:
             return None
@@ -425,7 +508,13 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         if (execute_model_req is not None and execute_model_req.spec_step_idx):
             kwargs["spec_step_idx"] = execute_model_req.spec_step_idx
 
+        torch.hpu.synchronize()
+        tim1 = time.perf_counter()
         self.execute_worker(worker_input)
+        torch.hpu.synchronize()
+        if f"03.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.execute_worker" not in self.data_logs:
+            self.data_logs[f"03.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.execute_worker"] = []
+        self.data_logs[f"03.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.execute_worker"] += [time.perf_counter() - tim1]
 
         # If there is no input, we don't need to execute the model.
         if worker_input.num_seq_groups == 0:
@@ -441,15 +530,23 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                 intermediate_tensors = IntermediateTensors(
                     get_pp_group().recv_tensor_dict(
                         all_gather_group=get_tp_group()))
+                if f"04.1.LocalOrDistributedWorkerBase.1.execute_model.{'prompt' if is_prompt else 'decode'}.recv_tensor_dict.hang_time" not in self.data_logs:
+                    self.data_logs[f"04.1.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.recv_tensor_dict.hang_time"] = []
+                self.data_logs[f"04.1.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.recv_tensor_dict.hang_time"] += [get_pp_group().hang_time]
+                if f"04.2.LocalOrDistributedWorkerBase.1.execute_model.{'prompt' if is_prompt else 'decode'}.recv_tensor_dict.network_time" not in self.data_logs:
+                    self.data_logs[f"04.2.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.recv_tensor_dict.network_time"] = []
+                self.data_logs[f"04.2.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.recv_tensor_dict.network_time"] += [get_pp_group().network_time]
                 if (self.observability_config is not None
                         and self.observability_config.collect_model_execute_time):
                     orig_model_execute_time = intermediate_tensors.tensors.get(
-                        "model_execute_time", torch.tensor(0)).item()
+                        "model_execute_time", torch.tensor(0)).item()        
                 
         if execute_model_req is not None:
             seqs = execute_model_req.seq_group_metadata_list.copy()
         else:
             seqs = None
+        torch.hpu.synchronize()
+        tim1 = time.perf_counter()
         output = self.model_runner.execute_model(
             model_input=model_input,
             kv_caches=self.kv_cache[worker_input.virtual_engine]
@@ -457,12 +554,33 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             intermediate_tensors=intermediate_tensors,
             num_steps=num_steps,
             seqs=seqs,
+            data_logs=self.data_logs,
             **kwargs,
         )
+        torch.hpu.synchronize()
+        if model_input.is_first_multi_step and model_input.is_last_step:
+            title = f"16.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.execute_model.single_step"
+        elif model_input.is_first_multi_step:
+            title = f"16.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.execute_model.first_multi_step"
+        elif model_input.is_last_step:
+            title = f"16.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.execute_model.last_multi_step"
+        else:
+            title = f"16.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.execute_model.mid_multi_step"
+        if title not in self.data_logs:
+            self.data_logs[title] = []
+        self.data_logs[title] += [time.perf_counter() - tim1]
 
-        model_execute_time = time.perf_counter() - start_time
+        tim1 = time.perf_counter()
+        model_execute_time = tim1 - start_time
         if num_steps > 1:
             # If this is a multi-step request, we don't need to recv
+            torch.hpu.synchronize()
+            if f"17.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.send_tensor_dict" not in self.data_logs:
+                self.data_logs[f"17.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.send_tensor_dict"] = []
+            self.data_logs[f"17.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.send_tensor_dict"] += [time.perf_counter() - tim1]
+            if f"18.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}" not in self.data_logs:
+                self.data_logs[f"18.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}"] = []
+            self.data_logs[f"18.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}"] += [time.perf_counter() - start_time]
             return [None]
         elif not get_pp_group().is_last_rank:
             if model_input.is_first_multi_step:
@@ -474,6 +592,13 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                         model_execute_time + orig_model_execute_time)
                 get_pp_group().send_tensor_dict(output.tensors,
                                                 all_gather_group=get_tp_group())
+            torch.hpu.synchronize()
+            if f"17.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.send_tensor_dict" not in self.data_logs:
+                self.data_logs[f"17.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.send_tensor_dict"] = []
+            self.data_logs[f"17.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.send_tensor_dict"] += [time.perf_counter() - tim1]
+            if f"18.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}" not in self.data_logs:
+                self.data_logs[f"18.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}"] = []
+            self.data_logs[f"18.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}"] += [time.perf_counter() - start_time]
             return [None]
         if (self.observability_config is not None
                 and self.observability_config.collect_model_execute_time
@@ -481,6 +606,13 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             for o in output:
                 o.model_execute_time = (orig_model_execute_time +
                                         model_execute_time)
+        torch.hpu.synchronize()
+        if f"17.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.send_tensor_dict" not in self.data_logs:
+            self.data_logs[f"17.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.send_tensor_dict"] = []
+        self.data_logs[f"17.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}.send_tensor_dict"] += [time.perf_counter() - tim1]
+        if f"18.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}" not in self.data_logs:
+            self.data_logs[f"18.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}"] = []
+        self.data_logs[f"18.LocalOrDistributedWorkerBase.execute_model.{'prompt' if is_prompt else 'decode'}"] += [time.perf_counter() - start_time]
 
         # output is List[SamplerOutput]
         return output

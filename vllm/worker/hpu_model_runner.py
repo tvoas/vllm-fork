@@ -72,6 +72,9 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+def logfn(in_str):
+    logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}]: {in_str}")
+
 _TYPE_CACHE = {}
 # These values are assumed to be zero in several places.
 # Use caution when updating them!
@@ -2001,6 +2004,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    warmup_mode=True,
                                    profile_run_mode=is_profile_run,
                                    is_dummy_run=is_dummy_run,
+                                   data_logs={},
                                    **additional_inputs)
             else:  # decode with multi-step
                 inputs = dataclasses.replace(inputs,
@@ -2013,6 +2017,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    profile_run_mode=is_profile_run,
                                    num_steps=2,
                                    seqs=seqs,
+                                   data_logs={},
                                    **additional_inputs)
                 inputs = dataclasses.replace(inputs,
                                              is_first_multi_step=False,
@@ -2024,6 +2029,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    profile_run_mode=is_profile_run,
                                    num_steps=2,
                                    seqs=seqs,
+                                   data_logs={},
                                    **additional_inputs)
             if not is_dummy_run:
                 torch.hpu.synchronize()
@@ -2651,9 +2657,11 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         num_steps: int = 1,
         profile_run_mode=False,
         seqs=None,
+        data_logs=None,
         is_dummy_run=False,
         **kwargs,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
+        is_prompt = model_input.is_prompt
         warmup_mode = kwargs.get('warmup_mode', False)
         previous_hidden_states = kwargs.get('previous_hidden_states')
 
@@ -2697,9 +2705,14 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     # not first or last multi-step
                     return []
                 # last multi-step
+                torch.hpu.synchronize()
+                tim1 = time.perf_counter()
                 output = self._decode_sampler_outputs(
                     model_input) if self.is_driver_worker else []
                 torch.hpu.synchronize()
+                if f"05.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}._decode_sampler_outputs" not in data_logs:
+                    data_logs[f"05.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}._decode_sampler_outputs"] = []
+                data_logs[f"05.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}._decode_sampler_outputs"] += [time.perf_counter() - tim1]
         if model_input.is_first_multi_step:
             # first multi-step
             if self.lora_config:
@@ -2812,7 +2825,13 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             for i in range(num_steps):
                 if i != 0 and not (self.is_driver_worker and get_pp_group().is_last_rank):
                     src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
+                    torch.hpu.synchronize()
+                    tim1 = time.perf_counter()
                     broadcast_data = world_broadcast_tensor_dict(src=src)
+                    torch.hpu.synchronize()
+                    if f"06.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.world_broadcast_tensor_dict.{i}" not in data_logs:
+                        data_logs[f"06.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.world_broadcast_tensor_dict.{i}"] = []
+                    data_logs[f"06.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.world_broadcast_tensor_dict.{i}"] += [time.perf_counter() - tim1]
                     if 'early_exit' in broadcast_data and broadcast_data[
                             'early_exit']:
                         return [output] if num_steps == 1 else []
@@ -2830,6 +2849,12 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     execute_model_kwargs["intermediate_tensors"] = IntermediateTensors(
                         get_pp_group().recv_tensor_dict(
                             all_gather_group=get_tp_group()))
+                    if f"07.1.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.recv_tensor_dict.{i}.hang_time" not in data_logs:
+                        data_logs[f"07.1.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.recv_tensor_dict.{i}.hang_time"] = []
+                    data_logs[f"07.1.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.recv_tensor_dict.{i}.hang_time"] += [get_pp_group().hang_time]
+                    if f"07.2.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.recv_tensor_dict.{i}.network_time" not in data_logs:
+                        data_logs[f"07.2.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.recv_tensor_dict.{i}.network_time"] = []
+                    data_logs[f"07.2.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.recv_tensor_dict.{i}.network_time"] += [get_pp_group().network_time]
 
                 # Receive KV cache in distributed KV cache transfer setting
                 # In disagg prefill setting, it will also recv hidden states and bypass
@@ -2863,15 +2888,27 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 }
                 if not bypass_model_exec:
                     with self.profiler.record_event('internal', model_event_name, args=profiler_args):
+                        torch.hpu.synchronize()
+                        tim1 = time.perf_counter()
                         hidden_states = self.model.forward(
                             **execute_model_kwargs,
                             selected_token_indices=sampling_metadata.selected_token_indices
                         )
+                        torch.hpu.synchronize()
+                        if f"08.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.forward.{i}" not in data_logs:
+                            data_logs[f"08.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.forward.{i}"] = []
+                        data_logs[f"08.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.forward.{i}"] += [time.perf_counter() - tim1]
                         if warmup_mode == True and is_dummy_run == False:
                             torch.hpu.synchronize()
                             import torch.distributed as dist
                             if dist.is_initialized():
+                                torch.hpu.synchronize()
+                                tim1 = time.perf_counter()
                                 get_tp_group().barrier()
+                                torch.hpu.synchronize()
+                                if f"09.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.barrier.{i}" not in data_logs:
+                                    data_logs[f"09.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.barrier.{i}"] = []
+                                data_logs[f"09.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.barrier.{i}"] += [time.perf_counter() - tim1]
                 else:
                     logger.debug("Bypassing model execution")
 
@@ -2902,8 +2939,14 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         return hidden_states
                     else:
                         assert isinstance(hidden_states, IntermediateTensors)
+                        torch.hpu.synchronize()
+                        tim1 = time.perf_counter()
                         get_pp_group().send_tensor_dict(hidden_states.tensors,
                                                         all_gather_group=get_tp_group())
+                        torch.hpu.synchronize()
+                        if f"10.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.send_tensor_dict.{i}" not in data_logs:
+                            data_logs[f"10.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.send_tensor_dict.{i}"] = []
+                        data_logs[f"10.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.send_tensor_dict.{i}"] += [time.perf_counter() - tim1]
                         if i == num_steps - 1:
                             return hidden_states
                         continue
@@ -2911,6 +2954,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 if is_dummy_run:
                     fake_output = self._delayed_sampler_outputs(model_input)
                     return [fake_output]
+                
+                torch.hpu.synchronize()
+                sampling_tim = time.perf_counter()
 
                 if (use_delayed_sampling and self.is_driver_worker
                         and self.has_logits_processors(sampling_metadata)):
@@ -2962,10 +3008,16 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                      f'bs{batch_size}_'
                                      f'seq{seq_len}'),
                         args=profiler_args):
+                    torch.hpu.synchronize()
+                    tim1 = time.perf_counter()
                     output = self.model.sample(
                         logits=logits,
                         sampling_metadata=sampling_metadata,
                     )
+                    torch.hpu.synchronize()
+                    if f"11.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.sample.{i}" not in data_logs:
+                        data_logs[f"11.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.sample.{i}"] = []
+                    data_logs[f"11.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.sample.{i}"] += [time.perf_counter() - tim1]
                     if output.sampled_token_ids is None:
                         output.sampled_token_ids_cpu = output[0].samples[0].output_token
                     else:
@@ -2975,6 +3027,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     output.logprobs = None
                     if num_steps > 1:
                         output = output.sampled_token_ids_cpu
+                        output = output.to("cpu", non_blocking=True)
                         self.cached_step_outputs.append((output, [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]))
                     if use_delayed_sampling and self.is_driver_worker:
                         if not is_prev_output_patched:
@@ -3021,16 +3074,28 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 data.output_token_ids += (dummy_token)
                             else:
                                 src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
+                                torch.hpu.synchronize()
+                                tim1 = time.perf_counter()
                                 world_broadcast_tensor_dict({'early_exit': True},
                                                       src=src)
+                                torch.hpu.synchronize()
+                                if f"12.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.world_broadcast_tensor_dict.{i}" not in data_logs:
+                                    data_logs[f"12.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.world_broadcast_tensor_dict.{i}"] = []
+                                data_logs[f"12.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.world_broadcast_tensor_dict.{i}"] += [time.perf_counter() - tim1]
                                 if num_steps == 1:
                                     return [output]
                                 else:
                                     try_revert_dummy_output_tokens()
                                     return []
-
+                    
+                    torch.hpu.synchronize()
+                    tim1 = time.perf_counter()
                     result = self._prepare_decode(seq_group_metadata_list,
                                                   output=output)
+                    torch.hpu.synchronize()
+                    if f"13.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}._prepare_decode.{i}" not in data_logs:
+                        data_logs[f"13.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}._prepare_decode.{i}"] = []
+                    data_logs[f"13.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}._prepare_decode.{i}"] += [time.perf_counter() - tim1]
 
                     if self.lora_config:
                         lora_mapping = LoRAMapping(
@@ -3059,9 +3124,20 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         "lora_mask": lora_mask,
                     }
                     src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
+                    torch.hpu.synchronize()
+                    tim1 = time.perf_counter()
                     world_broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
+                    torch.hpu.synchronize()
+                    if f"14.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.world_broadcast_tensor_dict.{i}" not in data_logs:
+                        data_logs[f"14.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.world_broadcast_tensor_dict.{i}"] = []
+                    data_logs[f"14.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.world_broadcast_tensor_dict.{i}"] += [time.perf_counter() - tim1]
                 else:
                     try_revert_dummy_output_tokens()
+
+                torch.hpu.synchronize()
+                if f"15.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.full_sampling.{i}" not in data_logs:
+                    data_logs[f"15.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.full_sampling.{i}"] = []
+                data_logs[f"15.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.full_sampling.{i}"] += [time.perf_counter() - sampling_tim]
 
             if self.is_driver_worker and self.profiler.enabled:
                 # Stop recording 'execute_model' event
@@ -3112,17 +3188,17 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         use_async_out_proc = model_input.async_callback is not None
         sampler_outputs = []
         num_outputs = len(self.cached_step_outputs)
+        #logfn(f"Inside HPUModelRunner._decode_sampler_outputs with num_outputs={num_outputs}")
         seq_ids = [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]
         for i in range(num_outputs):
             if seq_ids[0][0] != self.cached_step_outputs[0][-1][0][0]:
                 continue
-            next_token_ids = self.cached_step_outputs.pop(0)
-            next_token_ids = next_token_ids[0]
-            next_token_ids = next_token_ids.cpu().tolist()
+            sampled_token_ids_cpu = self.cached_step_outputs.pop(0)
+            sampled_token_ids_cpu = sampled_token_ids_cpu[0]
+            sampled_token_ids_cpu = sampled_token_ids_cpu.tolist()
             sampler_output = self._make_decode_output(
-                next_token_ids, model_input.sampling_metadata.seq_groups)
+                sampled_token_ids_cpu, model_input.sampling_metadata.seq_groups)
             sampler_outputs.append(sampler_output)
-
             if i < num_outputs - 1 and use_async_out_proc:
                 assert model_input.async_callback is not None
                 ctx = model_input.async_callback.keywords[  # type: ignore
