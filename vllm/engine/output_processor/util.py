@@ -20,7 +20,8 @@ def create_output_by_sequence_group(
     for step in outputs:
         sequence_group_output: CompletionSequenceGroupOutput
         for i, sequence_group_output in enumerate(step):
-            output_by_sequence_group[i].append(sequence_group_output)
+            if sequence_group_output.samples[0].parent_seq_id >= 0:
+                output_by_sequence_group[i].append(sequence_group_output)
 
     # Cast to the more generic type that CompletionSequenceGroupOutput
     # inherits from.

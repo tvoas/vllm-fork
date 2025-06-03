@@ -433,34 +433,47 @@ class LocalOrDistributedWorkerBase(WorkerBase):
 
         intermediate_tensors = None
         orig_model_execute_time = 0.0
-        if not get_pp_group().is_first_rank:
-            intermediate_tensors = IntermediateTensors(
-                get_pp_group().recv_tensor_dict(
-                    all_gather_group=get_tp_group()))
-            if (self.observability_config is not None
-                    and self.observability_config.collect_model_execute_time):
-                orig_model_execute_time = intermediate_tensors.tensors.get(
-                    "model_execute_time", torch.tensor(0)).item()
-
+        if num_steps > 1:
+            # If this is a multi-step request, we don't need to send
+            pass
+        elif not get_pp_group().is_first_rank:
+            if model_input.is_first_multi_step:
+                intermediate_tensors = IntermediateTensors(
+                    get_pp_group().recv_tensor_dict(
+                        all_gather_group=get_tp_group()))
+                if (self.observability_config is not None
+                        and self.observability_config.collect_model_execute_time):
+                    orig_model_execute_time = intermediate_tensors.tensors.get(
+                        "model_execute_time", torch.tensor(0)).item()
+                
+        if execute_model_req is not None:
+            seqs = execute_model_req.seq_group_metadata_list.copy()
+        else:
+            seqs = None
         output = self.model_runner.execute_model(
             model_input=model_input,
             kv_caches=self.kv_cache[worker_input.virtual_engine]
             if self.kv_cache is not None else None,
             intermediate_tensors=intermediate_tensors,
             num_steps=num_steps,
+            seqs=seqs,
             **kwargs,
         )
 
         model_execute_time = time.perf_counter() - start_time
-        if not get_pp_group().is_last_rank:
-            # output is IntermediateTensors
-            assert isinstance(output, IntermediateTensors)
-            if (self.observability_config is not None
-                    and self.observability_config.collect_model_execute_time):
-                output.tensors["model_execute_time"] = torch.tensor(
-                    model_execute_time + orig_model_execute_time)
-            get_pp_group().send_tensor_dict(output.tensors,
-                                            all_gather_group=get_tp_group())
+        if num_steps > 1:
+            # If this is a multi-step request, we don't need to recv
+            return [None]
+        elif not get_pp_group().is_last_rank:
+            if model_input.is_first_multi_step:
+                # output is IntermediateTensors
+                assert isinstance(output, IntermediateTensors)
+                if (self.observability_config is not None
+                        and self.observability_config.collect_model_execute_time):
+                    output.tensors["model_execute_time"] = torch.tensor(
+                        model_execute_time + orig_model_execute_time)
+                get_pp_group().send_tensor_dict(output.tensors,
+                                                all_gather_group=get_tp_group())
             return [None]
         if (self.observability_config is not None
                 and self.observability_config.collect_model_execute_time
