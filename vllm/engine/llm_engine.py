@@ -1549,8 +1549,10 @@ class LLMEngine:
             self, virtual_engine: int,
             output: List[Optional[SamplerOutput]]) -> None:
         if (self.parallel_config.pipeline_parallel_size > 1 and len(output) > 0
-                and output[0] is not None):
+                and output[0] is not None and hasattr(output[-1], 'sampled_token_ids_cpu')):
             last_output = output[-1]
+            if last_output.sampled_token_ids_cpu is None:
+                last_output.sampled_token_ids_cpu = last_output.outputs[0].samples[0].output_token
             assert last_output is not None
             assert last_output.sampled_token_ids_cpu is not None
             assert last_output.sampled_token_ids is None
