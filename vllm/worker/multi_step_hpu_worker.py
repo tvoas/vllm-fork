@@ -15,7 +15,10 @@ class MultiStepHPUWorker(HPUWorker):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.seq_id_cached_model_input: Dict[int, ModelInputForHPU] = {}
         self.cached_model_input: Optional[ModelInputForHPU] = None
+        self.seq_id_cached_num_steps: Dict[int, int] = {}
+        self.cached_num_steps: Optional[int] = None
 
     def _get_driver_input_and_broadcast(
         self, execute_model_req: ExecuteModelRequest
@@ -23,8 +26,7 @@ class MultiStepHPUWorker(HPUWorker):
         """
         Get the driver input and broadcast it to other workers.
         """
-        assert self.is_driver_worker
-        assert execute_model_req.virtual_engine == 0
+        assert self.is_driver_worker, f"This method should only be called on the driver worker"
 
         is_first_multi_step = execute_model_req.is_first_multi_step
         is_last_step = execute_model_req.is_last_step
@@ -46,11 +48,28 @@ class MultiStepHPUWorker(HPUWorker):
                 model_input = dataclasses.replace(
                     model_input,
                     async_callback=execute_model_req.async_callback)
+                
+            for sid in model_input.sampling_metadata.seq_groups[0].seq_ids:
+                self.seq_id_cached_model_input[sid] = model_input
+                self.seq_id_cached_num_steps[sid] = worker_input.num_steps
         else:
             # on subsequent steps we reuse the worker input and model input
-            assert self.cached_model_input is not None
-            model_input = self.cached_model_input
+            seq_id = list(execute_model_req.seq_group_metadata_list[0].seq_data.keys())[0]
+            assert seq_id in self.seq_id_cached_model_input, f"seq_id {seq_id} not found in seq_id_cached_model_input"
+            model_input = self.seq_id_cached_model_input[seq_id]
+            if is_last_step:
+                self.seq_id_cached_model_input[seq_id]
             worker_input = WorkerInput()
+            # NOTE(Tanner): Ideally our num_steps should be set
+            #               properly in this case. The execute_model
+            #               in HPUModelRunner is not written to expect
+            #               this though. Thus this is commented out for
+            #               now and handled downstream.
+            #worker_input = dataclasses.replace(
+            #    worker_input,
+            #    num_steps=self.seq_id_cached_num_steps[seq_id])
+            if is_last_step:
+                self.seq_id_cached_num_steps[seq_id]
 
         model_input = dataclasses.replace(
             model_input,
@@ -91,21 +110,27 @@ class MultiStepHPUWorker(HPUWorker):
                 return None
             model_input, worker_input, _ = self._get_driver_input_and_broadcast(
                 execute_model_req)
-            if model_input.is_first_multi_step:
-                self.cached_model_input = model_input
             return model_input, worker_input, {}
         else:
             broadcast_data = broadcast_tensor_dict(src=0)
             if not broadcast_data:
                 return None
 
-            if len(broadcast_data) == 2:
+            if len(broadcast_data) == 2:                    
                 assert self.cached_model_input is not None
                 self.cached_model_input = dataclasses.replace(
                     self.cached_model_input,
                     is_first_multi_step=broadcast_data["is_first_multi_step"],
                     is_last_step=broadcast_data["is_last_step"])
                 empty_worker_input = WorkerInput()
+                # NOTE(Tanner): Ideally our num_steps should be set
+                #               properly in this case. The execute_model
+                #               in HPUModelRunner is not written to expect
+                #               this though. Thus this is commented out for
+                #               now and handled downstream.
+                #empty_worker_input = dataclasses.replace(
+                #    empty_worker_input,
+                #    num_steps=self.cached_num_steps)
                 return self.cached_model_input, empty_worker_input, {}
 
             worker_input = WorkerInput.from_broadcasted_tensor_dict(
@@ -114,4 +139,5 @@ class MultiStepHPUWorker(HPUWorker):
                 self.model_runner.
                 make_model_input_from_broadcasted_tensor_dict(broadcast_data))
             self.cached_model_input = model_input
+            self.cached_num_steps = worker_input.num_steps
             return model_input, worker_input, {}

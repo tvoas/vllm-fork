@@ -38,12 +38,13 @@ PP_SIZE=$5
 COMM_BACKEND=$6
 PP_LAYER_PARTITION=${7:-}
 KV_CACHE_DTYPE=${8:-auto}
-DO_WARMUP=${9:-true}
-DO_PROFILE=${10:-false}
-HOST=${11:-127.0.0.1}
-PORT=${12:-8688}
-MODEL_PATH=${13:-${MODEL_PATH:-/root/.cache/huggingface/DeepSeek-R1-BF16-w8afp8-dynamic-no-ste-G2}}
-RESULTS_DIR=${14:-logs/test-results}
+NUM_SCHEDULER_STEPS=${9:-1}
+DO_WARMUP=${10:-true}
+DO_PROFILE=${11:-false}
+HOST=${12:-127.0.0.1}
+PORT=${13:-8688}
+MODEL_PATH=${14:-${MODEL_PATH:-/root/.cache/huggingface/DeepSeek-R1-BF16-w8afp8-dynamic-no-ste-G2}}
+RESULTS_DIR=${15:-logs/test-results}
 
 if [ "$DO_PROFILE" == "true" ]; then
   hl-prof-config --use-template profile_api --hw-trace off
@@ -127,7 +128,7 @@ export VLLM_DECODE_BLOCK_BUCKET_MIN=${VLLM_DECODE_BLOCK_BUCKET_MIN:-$decode_bloc
 export VLLM_DECODE_BLOCK_BUCKET_STEP=${VLLM_DECODE_BLOCK_BUCKET_STEP:-$decode_block_step}
 export VLLM_DECODE_BLOCK_BUCKET_MAX=${VLLM_DECODE_BLOCK_BUCKET_MAX:-$decode_block_max}
 
-echo "Environments set for ${NUM_NODES}-node server: MAX_MODEL_LEN=${MAX_MODEL_LEN}, MAX_NUM_SEQS=${MAX_NUM_SEQS}, TP_SIZE=${TP_SIZE}, PP_SIZE=${PP_SIZE}, COMM_BACKEND=${COMM_BACKEND}"
+echo "Environments set for ${NUM_NODES}-node server: MAX_MODEL_LEN=${MAX_MODEL_LEN}, MAX_NUM_SEQS=${MAX_NUM_SEQS}, TP_SIZE=${TP_SIZE}, PP_SIZE=${PP_SIZE}, COMM_BACKEND=${COMM_BACKEND}, NUM_SCHEDULER_STEPS=${NUM_SCHEDULER_STEPS}"
 env | grep VLLM
 
 python3 -m vllm.entrypoints.openai.api_server --host $HOST --port $PORT \
@@ -146,6 +147,7 @@ python3 -m vllm.entrypoints.openai.api_server --host $HOST --port $PORT \
   --use-padding-aware-scheduling \
   --use-v2-block-manager \
   --distributed_executor_backend ray \
+  --num-scheduler-steps $NUM_SCHEDULER_STEPS \
   --gpu_memory_utilization $VLLM_GPU_MEMORY_UTILIZATION \
   --enable-reasoning \
   --reasoning-parser deepseek_r1
