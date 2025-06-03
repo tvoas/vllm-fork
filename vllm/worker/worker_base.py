@@ -433,7 +433,10 @@ class LocalOrDistributedWorkerBase(WorkerBase):
 
         intermediate_tensors = None
         orig_model_execute_time = 0.0
-        if not get_pp_group().is_first_rank:
+        if num_steps > 1:
+            # If this is a multi-step request, we don't need to send
+            pass
+        elif not get_pp_group().is_first_rank:
             intermediate_tensors = IntermediateTensors(
                 get_pp_group().recv_tensor_dict(
                     all_gather_group=get_tp_group()))
@@ -441,6 +444,11 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                     and self.observability_config.collect_model_execute_time):
                 orig_model_execute_time = intermediate_tensors.tensors.get(
                     "model_execute_time", torch.tensor(0)).item()
+                
+        if execute_model_req is not None:
+            seqs = execute_model_req.seq_group_metadata_list.copy()
+        else:
+            seqs = None
 
         output = self.model_runner.execute_model(
             model_input=model_input,
@@ -448,11 +456,15 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             if self.kv_cache is not None else None,
             intermediate_tensors=intermediate_tensors,
             num_steps=num_steps,
+            seqs=seqs,
             **kwargs,
         )
 
         model_execute_time = time.perf_counter() - start_time
-        if not get_pp_group().is_last_rank:
+        if num_steps > 1:
+            # If this is a multi-step request, we don't need to recv
+            return [None]
+        elif not get_pp_group().is_last_rank:
             # output is IntermediateTensors
             assert isinstance(output, IntermediateTensors)
             if (self.observability_config is not None

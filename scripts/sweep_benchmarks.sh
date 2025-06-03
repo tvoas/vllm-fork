@@ -52,7 +52,7 @@ mkdir -p "$BASE_LOG_DIR"
 SUMMARY_LOG=${BASE_LOG_DIR}/summary.log
 
 # Build header
-HEADER='nodes,pp_size,tp_size,comm_backend,kv_cache_dtype,partition,max_model_len,input_tokens,output_tokens,num_prompts,max_concurrency,client_concurrency,warmup,profile,mean_ttft,mean_tpot,total_throughput,output_throughput'
+HEADER='nodes,pp_size,tp_size,comm_backend,kv_cache_dtype,num_scheduler_steps,partition,max_model_len,input_tokens,output_tokens,num_prompts,max_concurrency,client_concurrency,warmup,profile,mean_ttft,mean_tpot,total_throughput,output_throughput'
 echo "$HEADER" | tee -a "$SUMMARY_LOG"
 
 # Default client/server parameters
@@ -60,17 +60,16 @@ HOST=${HOST:-127.0.0.1}
 PORT=${PORT:-8688}
 MODEL_PATH=${MODEL_PATH:-/root/.cache/huggingface/DeepSeek-R1-BF16-w8afp8-dynamic-no-ste-G2}
 
-# Server config list: max_len,max_conc,pp,tp,backend,kv_dtype,warmup,profile,partition
+# Server config list: max_len,max_conc,pp,tp,backend,kv_dtype,num_scheduler_steps,warmup,profile,partition
 KV=auto
 WARMUP=true
 PROFILE=false
 server_config_list=(
-  "16384,32,2,4,hccl,${KV},${WARMUP},${PROFILE},[32,29]"
+  "4096,32,2,4,hccl,${KV},1,${WARMUP},${PROFILE},[32,29]"
 )
 # Client config list: input,output,num_prompts,conc
 client_config_list=(
-  "2048,2048,96,32"
-  "4096,4096,96,32"
+  "2048,128,64,32"
 )
 
 # Helper function for profiling
@@ -110,11 +109,12 @@ backup_benchmark_logs() {
 }
 
 for server_config in "${server_config_list[@]}"; do
-  IFS=',' read -r MAX_MODEL_LEN MAX_CONCURRENCY PP_SIZE TP_SIZE COMM_BACKEND KV_CACHE_DTYPE DO_WARMUP DO_PROFILE PARTITION <<< "$server_config"
+  IFS=',' read -r MAX_MODEL_LEN MAX_CONCURRENCY PP_SIZE TP_SIZE COMM_BACKEND KV_CACHE_DTYPE NUM_SCHEDULER_STEPS DO_WARMUP DO_PROFILE PARTITION <<< "$server_config"
   PARTITION=$(echo $PARTITION | tr -d '[]')
 
   CONFIG_LOG_DIR=${BASE_LOG_DIR}
   CONFIG_LOG_DIR=${CONFIG_LOG_DIR}/kv_${KV_CACHE_DTYPE}
+  CONFIG_LOG_DIR=${CONFIG_LOG_DIR}/nss_${NUM_SCHEDULER_STEPS}
   CONFIG_LOG_DIR=${CONFIG_LOG_DIR}/tp${TP_SIZE}_pp${PP_SIZE}
   CONFIG_LOG_DIR=${CONFIG_LOG_DIR}/pp_comm_${COMM_BACKEND}
   CONFIG_LOG_DIR=${CONFIG_LOG_DIR}/warmup_${DO_WARMUP}
@@ -153,6 +153,7 @@ for server_config in "${server_config_list[@]}"; do
   echo "  COMM_BACKEND: ${COMM_BACKEND}"
   echo "  PARTITION: ${PARTITION}"
   echo "  KV_CACHE_DTYPE: ${KV_CACHE_DTYPE}"
+  echo "  NUM_SCHEDULER_STEPS: ${NUM_SCHEDULER_STEPS}"
   echo "  WARMUP: ${DO_WARMUP}"
   echo "  PROFILE: ${DO_PROFILE}"
   echo "  HOST: ${HOST}"
@@ -162,8 +163,8 @@ for server_config in "${server_config_list[@]}"; do
 
   # Start server
   bash -x benchmark_server_param.sh ${NUM_NODES} ${MAX_MODEL_LEN} ${PER_PP_CONCURRENCY} \
-    ${TP_SIZE} ${PP_SIZE} ${COMM_BACKEND} "${PARTITION}" ${KV_CACHE_DTYPE} ${WARMUP} \
-    ${DO_PROFILE} ${HOST} ${PORT} ${MODEL_PATH} ${CONFIG_LOG_DIR} \
+    ${TP_SIZE} ${PP_SIZE} ${COMM_BACKEND} "${PARTITION}" ${KV_CACHE_DTYPE} ${NUM_SCHEDULER_STEPS} \
+    ${WARMUP} ${DO_PROFILE} ${HOST} ${PORT} ${MODEL_PATH} ${CONFIG_LOG_DIR} \
     > ${CONFIG_LOG_DIR}/server_${SERVER_LOG_PREFIX}.log 2>&1 &
   SERVER_LAUNCH_PID=$!
 
@@ -296,7 +297,9 @@ for server_config in "${server_config_list[@]}"; do
     output_throughput=$(grep 'Output token throughput (tok/s):' ${CONFIG_LOG_DIR}/benchmark_${CLIENT_LOG_PREFIX}.log | tail -1 | awk '{print $NF}')
 
     # Build summary line
-    row="${NUM_NODES},${PP_SIZE},${TP_SIZE},${COMM_BACKEND},${KV_CACHE_DTYPE},\"${PARTITION}\",${MAX_MODEL_LEN},${INPUT_TOKENS},${OUTPUT_TOKENS},${NUM_PROMPTS},${MAX_CONCURRENCY},${CLIENT_CONCURRENCY},${DO_WARMUP},${DO_PROFILE},${mean_ttft},${mean_tpot},${total_throughput},${output_throughput}"
+    row="${NUM_NODES},${PP_SIZE},${TP_SIZE},${COMM_BACKEND},${KV_CACHE_DTYPE},${NUM_SCHEDULER_STEPS},\"${PARTITION}\",${MAX_MODEL_LEN},${INPUT_TOKENS},${OUTPUT_TOKENS},${NUM_PROMPTS},${MAX_CONCURRENCY},${CLIENT_CONCURRENCY},${DO_WARMUP},${DO_PROFILE},${mean_ttft},${mean_tpot},${total_throughput},${output_throughput}"
+    export HF_ALLOW_CODE_EVAL=1
+    lm_eval --model local-completions --tasks humaneval,gsm8k --model_args model=$MODEL_PATH,base_url=http://$HOST:$PORT/v1/completions,num_concurrent=$CLIENT_CONCURRENCY,trust_remote_code=True --batch_size 1 --confirm_run_unsafe_code --log_samples --output_path ${CONFIG_LOG_DIR}/benchmark_${CLIENT_LOG_PREFIX}.log --limit 256
 
     echo "$row" | tee -a "$SUMMARY_LOG"
   done
@@ -304,6 +307,7 @@ for server_config in "${server_config_list[@]}"; do
   # Teardown server
   echo "Tearing down server..."
   kill -9 $SERVER_PID
+  ps -ef | grep openai | grep -v grep | awk '{print $2}' | xargs -r kill -9
   sleep 20
 
 done
