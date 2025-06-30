@@ -70,7 +70,12 @@ from vllm.worker.model_runner_base import (
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
 
+from vllm.distributed.parallel_state import (get_dp_group, get_tp_group,
+                                             get_pp_group, get_world_group)
+from vllm.logger import init_logger
 logger = init_logger(__name__)
+def logfn(input):
+    logger.info(f"[TP{get_tp_group().rank_in_group}][PP{get_pp_group().rank_in_group}][DP{get_dp_group().rank_in_group}][WORLD{get_world_group().rank_in_group}] {input}\n\n")
 
 _TYPE_CACHE = {}
 # These values are assumed to be zero in several places.
@@ -2690,7 +2695,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 model_input.input_tokens.index_copy_(
                     0, target_indices, self.cached_step_outputs[i])
                 htorch.core.mark_step()
-
         if not model_input.is_first_multi_step:
             if get_pp_group().is_last_rank:
                 if not model_input.is_last_step:
@@ -2830,6 +2834,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     execute_model_kwargs["intermediate_tensors"] = IntermediateTensors(
                         get_pp_group().recv_tensor_dict(
                             all_gather_group=get_tp_group()))
+                    
 
                 # Receive KV cache in distributed KV cache transfer setting
                 # In disagg prefill setting, it will also recv hidden states and bypass
@@ -2932,6 +2937,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         sampling_metadata.selected_token_indices = None
                     logits = self.model.compute_logits(hidden_states,
                                                        sampling_metadata)
+                    
                 htorch.core.mark_step()
                 # Only perform sampling in the driver worker.
                 if not self.is_driver_worker:
@@ -3030,6 +3036,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
 
                     result = self._prepare_decode(seq_group_metadata_list,
                                                   output=output)
+
                     if self.lora_config:
                         lora_mapping = LoRAMapping(
                             **dict(index_mapping=result.lora_index_mapping,
@@ -3060,7 +3067,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     world_broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
                 else:
                     try_revert_dummy_output_tokens()
-
             if self.is_driver_worker and self.profiler.enabled:
                 # Stop recording 'execute_model' event
                 self.profiler.end()
@@ -3092,7 +3098,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         return [fake_output]
                     else:
                         return []
-
                 return [output] if self.is_driver_worker else []
             else:
                 return []

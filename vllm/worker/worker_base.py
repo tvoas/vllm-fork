@@ -25,7 +25,12 @@ from vllm.worker.model_runner_base import (BroadcastableModelInput,
                                            ModelRunnerBase,
                                            ModelRunnerInputBase)
 
+from vllm.distributed.parallel_state import (get_dp_group, get_tp_group,
+                                             get_pp_group, get_world_group)
+from vllm.logger import init_logger
 logger = init_logger(__name__)
+def logfn(input):
+    logger.info(f"[TP{get_tp_group().rank_in_group}][PP{get_pp_group().rank_in_group}][DP{get_dp_group().rank_in_group}][WORLD{get_world_group().rank_in_group}] {input}\n\n")
 
 
 @warn_for_unimplemented_methods
@@ -400,7 +405,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
         start_time = time.perf_counter()
-
+        
         inputs = self.prepare_input(execute_model_req)
 
         # Need to keep worker running when executing dummy batch under DP
