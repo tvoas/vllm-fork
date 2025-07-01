@@ -17,7 +17,6 @@ logger = init_logger(__name__)
 def logfn(input):
     logger.info(f"[TP{get_tp_group().rank_in_group}][PP{get_pp_group().rank_in_group}][DP{get_dp_group().rank_in_group}][WORLD{get_world_group().rank_in_group}] {input}\n\n")
 
-
 class MultiStepHPUWorker(HPUWorker):
 
     def __init__(self, *args, **kwargs):
@@ -70,14 +69,20 @@ class MultiStepHPUWorker(HPUWorker):
                 broadcast_data = worker_input.as_broadcastable_tensor_dict()
                 broadcast_data.update(
                     model_input.as_broadcastable_tensor_dict())
+                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_1")
                 broadcast_tensor_dict(broadcast_data, src=0)
+                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_1")
+                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_1: broadcast_data={broadcast_data}")
             else:
                 broadcast_data = {
                     "is_first_multi_step": is_first_multi_step,
                     "is_last_step": is_last_step,
                     "virtual_engine": execute_model_req.virtual_engine,
                 }
+                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_2")
                 broadcast_tensor_dict(broadcast_data, src=0)
+                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_2")
+                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_2: broadcast_data={broadcast_data}")
 
         # Returning empty dict here to keep this compatible with
         # `LocalOrDistributedWorkerBase._get_driver_input_and_broadcast`
@@ -96,7 +101,10 @@ class MultiStepHPUWorker(HPUWorker):
                     # broadcast_tensor_dict, and it stops the loop when the
                     # driver broadcasts an empty input. Send an empty input to
                     # notify all other workers to stop their execution loop.
+                    #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_3")
                     broadcast_tensor_dict({}, src=0)
+                    #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_3")
+                    #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_3")
                 return None
             model_input, worker_input, _ = self._get_driver_input_and_broadcast(
                 execute_model_req)
@@ -105,35 +113,25 @@ class MultiStepHPUWorker(HPUWorker):
                     self.seq_id_cached_model_input[sid] = model_input
             return model_input, worker_input, {}
         else:
+            #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_4")
             broadcast_data = broadcast_tensor_dict(src=0)
+            #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_4")
+            #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_4: broadcast_data={broadcast_data}")
             if not broadcast_data:
                 return None
 
-            if len(broadcast_data) == 2:
-                seq_id = None
-                if execute_model_req is not None:
-                    seq_id = list(execute_model_req.seq_group_metadata_list[0].seq_data.keys())[0]
-                    assert seq_id in self.cached_model_input
-                else:
-                    cache_keys = list(self.cached_model_input.keys())
-                    if len(cache_keys) == 0:
-                        return None
-                    seq_id = cache_keys[0]
-
-                self.cached_model_input[seq_id] = dataclasses.replace(
-                    self.cached_model_input[seq_id],
+            if len(broadcast_data) == 3:                    
+                assert self.cached_model_input is not None
+                self.cached_model_input = dataclasses.replace(
+                    self.cached_model_input,
                     is_first_multi_step=broadcast_data["is_first_multi_step"],
                     is_last_step=broadcast_data["is_last_step"])
-                #if broadcast_data["is_last_step"]:
-                #    del self.cached_model_input[seq_id]
                 empty_worker_input = WorkerInput()
-                return self.cached_model_input[seq_id], empty_worker_input, {}
+                return self.cached_model_input, empty_worker_input, {}
             worker_input = WorkerInput.from_broadcasted_tensor_dict(
                 broadcast_data)
             model_input = (
                 self.model_runner.
                 make_model_input_from_broadcasted_tensor_dict(broadcast_data))
-            if model_input.sampling_metadata.seq_groups is not None:
-                for sid in model_input.sampling_metadata.seq_groups[0].seq_ids:
-                    self.cached_model_input[sid] = model_input
+            self.cached_model_input = model_input
             return model_input, worker_input, {}
