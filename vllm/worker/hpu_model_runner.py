@@ -2828,6 +2828,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     {"bypass_hpu_graphs": not use_graphs})
 
             htorch.core.mark_step()
+            if not model_input.is_first_multi_step:
+                num_steps = 1
             if self.is_driver_worker:
                 model_event_name = ("model_"
                                     f"{self.model_type}_"
@@ -2855,7 +2857,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             data.output_token_ids = \
                                 data.output_token_ids[:orig_output_tokens_len]
 
-            for i in range(num_steps if model_input.is_first_multi_step else 1):
+            for i in range(num_steps):
                 if i != 0 and not (self.is_driver_worker and get_pp_group().is_last_rank):
                     src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
                     #logfn(f"HPUModelRunner.execute_model({execution_counter}) pre_broadcast_1_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
