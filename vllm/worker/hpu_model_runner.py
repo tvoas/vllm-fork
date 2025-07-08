@@ -1991,6 +1991,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                     broadcast_tensor_dict(src=0)
             is_single_step = \
                 self.vllm_config.scheduler_config.num_scheduler_steps == 1
+            is_dual_step = \
+                self.vllm_config.scheduler_config.num_scheduler_steps == 2
             intermediate_tensors = None
             if not get_pp_group().is_first_rank:
                 intermediate_tensors = \
@@ -2007,7 +2009,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    profile_run_mode=is_profile_run,
                                    is_dummy_run=is_dummy_run,
                                    **additional_inputs)
-            else:  # decode with multi-step
+            elif is_dual_step:  # decode with multi-step=2
                 inputs = dataclasses.replace(inputs,
                                              is_first_multi_step=True,
                                              is_last_step=False)
@@ -2028,6 +2030,41 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    warmup_mode=True,
                                    profile_run_mode=is_profile_run,
                                    num_steps=2,
+                                   seqs=seqs,
+                                   **additional_inputs)
+            else:  # decode with multi-step>2
+                inputs = dataclasses.replace(inputs,
+                                             is_first_multi_step=True,
+                                             is_last_step=False)
+                self.execute_model(inputs,
+                                   kv_caches,
+                                   intermediate_tensors=intermediate_tensors,
+                                   warmup_mode=True,
+                                   profile_run_mode=is_profile_run,
+                                   num_steps=3,
+                                   seqs=seqs,
+                                   **additional_inputs)
+                inputs = dataclasses.replace(inputs,
+                                             is_first_multi_step=False,
+                                             is_last_step=False)
+                # all steps from step=2 to step=n-1 in steps [1, 2, 3, 4, ..., n] match this case.
+                self.execute_model(inputs,
+                                   kv_caches,
+                                   intermediate_tensors=intermediate_tensors,
+                                   warmup_mode=True,
+                                   profile_run_mode=is_profile_run,
+                                   num_steps=3,
+                                   seqs=seqs,
+                                   **additional_inputs)
+                inputs = dataclasses.replace(inputs,
+                                             is_first_multi_step=False,
+                                             is_last_step=True)
+                self.execute_model(inputs,
+                                   kv_caches,
+                                   intermediate_tensors=intermediate_tensors,
+                                   warmup_mode=True,
+                                   profile_run_mode=is_profile_run,
+                                   num_steps=3,
                                    seqs=seqs,
                                    **additional_inputs)
             if not is_dummy_run:
@@ -2696,7 +2733,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 model_input.input_tokens.index_copy_(
                     0, target_indices, self.cached_step_outputs[i])
                 htorch.core.mark_step()
-        if not model_input.is_first_multi_step:
+        if not (model_input.is_first_multi_step or num_steps==1):
             if get_pp_group().is_last_rank:
                 if not model_input.is_last_step:
                     # not first or last multi-step
@@ -2705,7 +2742,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 output = self._decode_sampler_outputs(
                     model_input) if self.is_driver_worker else []
                 torch.hpu.synchronize()
-        if model_input.is_first_multi_step:
+        if (model_input.is_first_multi_step or num_steps==1):
             # first multi-step
             if self.lora_config:
                 assert model_input.lora_requests is not None
