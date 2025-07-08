@@ -3134,7 +3134,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 return [output] if self.is_driver_worker else []
             else:
                 return []
-        #if not get_pp_group().is_last_rank:
+        if not get_pp_group().is_last_rank:
+            return []
         #    attn_metadata = model_input.attn_metadata
         #    is_prompt = attn_metadata.is_prompt
         #    seq_len = self._seq_len(attn_metadata)
