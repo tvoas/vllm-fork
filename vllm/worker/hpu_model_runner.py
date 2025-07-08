@@ -2828,8 +2828,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     {"bypass_hpu_graphs": not use_graphs})
 
             htorch.core.mark_step()
-            if not model_input.is_first_multi_step:
-                num_steps = 1
             if self.is_driver_worker:
                 model_event_name = ("model_"
                                     f"{self.model_type}_"

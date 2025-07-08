@@ -61,9 +61,9 @@ class MultiStepHPUWorker(HPUWorker):
             assert seq_id in self.seq_id_cached_model_input, f"seq_id {seq_id} not found in seq_id_cached_model_input"
             model_input = self.seq_id_cached_model_input[seq_id]
             worker_input = WorkerInput()
-            worker_input = dataclasses.replace(
-                worker_input,
-                num_steps=self.seq_id_cached_num_steps[seq_id])
+            #worker_input = dataclasses.replace(
+            #    worker_input,
+            #    num_steps=self.seq_id_cached_num_steps[seq_id])
 
         model_input = dataclasses.replace(
             model_input,
@@ -134,9 +134,9 @@ class MultiStepHPUWorker(HPUWorker):
                     is_first_multi_step=broadcast_data["is_first_multi_step"],
                     is_last_step=broadcast_data["is_last_step"])
                 empty_worker_input = WorkerInput()
-                empty_worker_input = dataclasses.replace(
-                    empty_worker_input,
-                    num_steps=self.cached_num_steps)
+                #empty_worker_input = dataclasses.replace(
+                #    empty_worker_input,
+                #    num_steps=self.cached_num_steps)
                 return self.cached_model_input, empty_worker_input, {}
             worker_input = WorkerInput.from_broadcasted_tensor_dict(
                 broadcast_data)
