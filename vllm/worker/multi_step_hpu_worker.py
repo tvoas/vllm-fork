@@ -24,6 +24,8 @@ class MultiStepHPUWorker(HPUWorker):
         super().__init__(*args, **kwargs)
         self.seq_id_cached_model_input: Dict[int, ModelInputForHPU] = {}
         self.cached_model_input: Optional[ModelInputForHPU] = None
+        self.seq_id_cached_num_steps: Dict[int, int] = {}
+        self.cached_num_steps: Optional[int] = None
 
     def _get_driver_input_and_broadcast(
         self, execute_model_req: ExecuteModelRequest
@@ -59,6 +61,9 @@ class MultiStepHPUWorker(HPUWorker):
             assert seq_id in self.seq_id_cached_model_input, f"seq_id {seq_id} not found in seq_id_cached_model_input"
             model_input = self.seq_id_cached_model_input[seq_id]
             worker_input = WorkerInput()
+            worker_input = dataclasses.replace(
+                worker_input,
+                num_steps=self.seq_id_cached_num_steps[seq_id])
 
         model_input = dataclasses.replace(
             model_input,
@@ -112,6 +117,7 @@ class MultiStepHPUWorker(HPUWorker):
             if model_input.is_first_multi_step:
                 for sid in model_input.sampling_metadata.seq_groups[0].seq_ids:
                     self.seq_id_cached_model_input[sid] = model_input
+                    self.seq_id_cached_num_steps[sid] = worker_input.num_steps
             return model_input, worker_input, {}
         else:
             #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_4")
@@ -128,6 +134,9 @@ class MultiStepHPUWorker(HPUWorker):
                     is_first_multi_step=broadcast_data["is_first_multi_step"],
                     is_last_step=broadcast_data["is_last_step"])
                 empty_worker_input = WorkerInput()
+                empty_worker_input = dataclasses.replace(
+                    empty_worker_input,
+                    num_steps=self.cached_num_steps)
                 return self.cached_model_input, empty_worker_input, {}
             worker_input = WorkerInput.from_broadcasted_tensor_dict(
                 broadcast_data)
@@ -135,4 +144,5 @@ class MultiStepHPUWorker(HPUWorker):
                 self.model_runner.
                 make_model_input_from_broadcasted_tensor_dict(broadcast_data))
             self.cached_model_input = model_input
+            self.cached_num_steps = worker_input.num_steps
             return model_input, worker_input, {}
