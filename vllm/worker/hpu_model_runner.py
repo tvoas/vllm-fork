@@ -2884,7 +2884,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             if dist.is_initialized():
                                 logfn(f"HPUModelRunner.execute_model({execution_counter}) pre_barrier_3_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
                                 get_tp_group().barrier()
-                                logfnn(f"HPUModelRunner.execute_model({execution_counter}) post_barrier_3_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
+                                logfn(f"HPUModelRunner.execute_model({execution_counter}) post_barrier_3_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
                                 logfn(f"HPUModelRunner.execute_model({execution_counter}) val_barrier_3_{i}")
                 else:
                     logger.debug("Bypassing model execution")
@@ -3038,11 +3038,11 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 data.output_token_ids += (dummy_token)
                             else:
                                 src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
-                                logfnn(f"HPUModelRunner.execute_model({execution_counter}) pre_broadcast_5_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
+                                logfn(f"HPUModelRunner.execute_model({execution_counter}) pre_broadcast_5_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
                                 world_broadcast_tensor_dict({'early_exit': True},
                                                       src=src)
                                 logfn(f"HPUModelRunner.execute_model({execution_counter}) post_broadcast_5_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
-                                logfnnnnn(f"HPUModelRunner.execute_model({execution_counter}) val_broadcast_5_{i}")
+                                logfnnnn(f"HPUModelRunner.execute_model({execution_counter}) val_broadcast_5_{i}")
                                 if num_steps == 1:
                                     return [output]
                                 else:
@@ -3079,7 +3079,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         "lora_mask": lora_mask,
                     }
                     src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
-                    logfnn(f"HPUModelRunner.execute_model({execution_counter}) pre_broadcast_6_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
+                    logfn(f"HPUModelRunner.execute_model({execution_counter}) pre_broadcast_6_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
                     world_broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
                     logfn(f"HPUModelRunner.execute_model({execution_counter}) post_broadcast_6_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
                     logfn(f"HPUModelRunner.execute_model({execution_counter}) val_broadcast_6_{i}: model_kwargs_broadcast_data={model_kwargs_broadcast_data}")
