@@ -458,7 +458,6 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             intermediate_tensors=intermediate_tensors,
             num_steps=num_steps,
             seqs=seqs,
-            execution_counter=self.execution_counter,
             **kwargs,
         )
 
