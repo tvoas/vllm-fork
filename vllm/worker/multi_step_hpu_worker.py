@@ -15,7 +15,7 @@ from vllm.distributed.parallel_state import (get_dp_group, get_tp_group,
 from vllm.logger import init_logger
 logger = init_logger(__name__)
 def logfn(input):
-    logger.info(f"[TP{get_tp_group().rank_in_group}][PP{get_pp_group().rank_in_group}][DP{get_dp_group().rank_in_group}][WORLD{get_world_group().rank_in_group}] {input}\n\n")
+    logger.info(f"[TP{get_tp_group().rank_in_group}][PP{get_pp_group().rank_in_group}][DP{get_dp_group().rank_in_group}][WORLD{get_world_group().rank_in_group}] {input}")
 
 
 class MultiStepHPUWorker(HPUWorker):
