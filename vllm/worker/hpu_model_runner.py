@@ -2836,21 +2836,11 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
 
                 if num_steps > 1 and not get_pp_group().is_first_rank:
                     #logfn(f"HPUModelRunner.execute_model({execution_counter}) pre_recv_2_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
-                    #execute_model_kwargs["intermediate_tensors"] = IntermediateTensors(
-                    #    get_pp_group().recv_tensor_dict(
-                    #        all_gather_group=get_tp_group()))
+                    execute_model_kwargs["intermediate_tensors"] = IntermediateTensors(
+                        get_pp_group().recv_tensor_dict(
+                            all_gather_group=get_tp_group()))
                     #logfn(f"HPUModelRunner.execute_model({execution_counter}) post_recv_2_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
                     #logfn(f"HPUModelRunner.execute_model({execution_counter}) val_recv_2_{i}: intermediate_tensors={execute_model_kwargs['intermediate_tensors']}")
-                    attn_metadata = model_input.attn_metadata
-                    is_prompt = attn_metadata.is_prompt
-                    seq_len = self._seq_len(attn_metadata)
-                    batch_size = model_input.input_tokens.size(0)
-                    execute_model_kwargs["intermediate_tensors"] = \
-                            self.model.make_empty_intermediate_tensors(
-                                batch_size=batch_size,
-                                context_size=seq_len if is_prompt else 1,
-                                dtype=self.model_config.dtype,
-                                device=self.device)                    
 
                 # Receive KV cache in distributed KV cache transfer setting
                 # In disagg prefill setting, it will also recv hidden states and bypass
@@ -2927,8 +2917,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     else:
                         assert isinstance(hidden_states, IntermediateTensors)
                         #logfn(f"HPUModelRunner.execute_model({execution_counter}) pre_send_4_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
-                        #get_pp_group().send_tensor_dict(hidden_states.tensors,
-                        #                                all_gather_group=get_tp_group())
+                        get_pp_group().send_tensor_dict(hidden_states.tensors,
+                                                        all_gather_group=get_tp_group())
                         #logfn(f"HPUModelRunner.execute_model({execution_counter}) post_send_4_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
                         #logfn(f"HPUModelRunner.execute_model({execution_counter}) val_send_4_{i}: hidden_states={hidden_states}")
                         if i == num_steps - 1:

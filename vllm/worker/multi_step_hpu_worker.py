@@ -17,6 +17,7 @@ logger = init_logger(__name__)
 def logfn(input):
     logger.info(f"[TP{get_tp_group().rank_in_group}][PP{get_pp_group().rank_in_group}][DP{get_dp_group().rank_in_group}][WORLD{get_world_group().rank_in_group}] {input}\n\n")
 
+
 class MultiStepHPUWorker(HPUWorker):
 
     def __init__(self, *args, **kwargs):
