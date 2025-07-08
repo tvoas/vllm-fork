@@ -10,13 +10,6 @@ from vllm.worker.hpu_model_runner import ModelInputForHPU
 from vllm.worker.hpu_worker import HPUWorker
 from vllm.worker.worker_base import WorkerInput
 
-from vllm.distributed.parallel_state import (get_dp_group, get_tp_group,
-                                             get_pp_group, get_world_group)
-from vllm.logger import init_logger
-logger = init_logger(__name__)
-def logfn(input):
-    logger.info(f"[TP{get_tp_group().rank_in_group}][PP{get_pp_group().rank_in_group}][DP{get_dp_group().rank_in_group}][WORLD{get_world_group().rank_in_group}] {input}")
-
 
 class MultiStepHPUWorker(HPUWorker):
 
@@ -61,6 +54,11 @@ class MultiStepHPUWorker(HPUWorker):
             assert seq_id in self.seq_id_cached_model_input, f"seq_id {seq_id} not found in seq_id_cached_model_input"
             model_input = self.seq_id_cached_model_input[seq_id]
             worker_input = WorkerInput()
+            # NOTE(Tanner): Ideally our num_steps should be set
+            #               properly in this case. The execute_model
+            #               in HPUModelRunner is not written to expect
+            #               this though. Thus this is commented our for
+            #               now and handled downstream.
             #worker_input = dataclasses.replace(
             #    worker_input,
             #    num_steps=self.seq_id_cached_num_steps[seq_id])
@@ -75,20 +73,14 @@ class MultiStepHPUWorker(HPUWorker):
                 broadcast_data = worker_input.as_broadcastable_tensor_dict()
                 broadcast_data.update(
                     model_input.as_broadcastable_tensor_dict())
-                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_1")
                 broadcast_tensor_dict(broadcast_data, src=0)
-                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_1")
-                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_1: broadcast_data={broadcast_data}")
             else:
                 broadcast_data = {
                     "is_first_multi_step": is_first_multi_step,
                     "is_last_step": is_last_step,
                     "virtual_engine": execute_model_req.virtual_engine,
                 }
-                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_2")
                 broadcast_tensor_dict(broadcast_data, src=0)
-                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_2")
-                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_2: broadcast_data={broadcast_data}")
 
         # Returning empty dict here to keep this compatible with
         # `LocalOrDistributedWorkerBase._get_driver_input_and_broadcast`
@@ -107,10 +99,7 @@ class MultiStepHPUWorker(HPUWorker):
                     # broadcast_tensor_dict, and it stops the loop when the
                     # driver broadcasts an empty input. Send an empty input to
                     # notify all other workers to stop their execution loop.
-                    #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_3")
                     broadcast_tensor_dict({}, src=0)
-                    #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_3")
-                    #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_3")
                 return None
             model_input, worker_input, _ = self._get_driver_input_and_broadcast(
                 execute_model_req)
@@ -120,10 +109,7 @@ class MultiStepHPUWorker(HPUWorker):
                     self.seq_id_cached_num_steps[sid] = worker_input.num_steps
             return model_input, worker_input, {}
         else:
-            #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_4")
             broadcast_data = broadcast_tensor_dict(src=0)
-            #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_4")
-            #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_4: broadcast_data={broadcast_data}")
             if not broadcast_data:
                 return None
 
@@ -134,10 +120,16 @@ class MultiStepHPUWorker(HPUWorker):
                     is_first_multi_step=broadcast_data["is_first_multi_step"],
                     is_last_step=broadcast_data["is_last_step"])
                 empty_worker_input = WorkerInput()
+                # NOTE(Tanner): Ideally our num_steps should be set
+                #               properly in this case. The execute_model
+                #               in HPUModelRunner is not written to expect
+                #               this though. Thus this is commented our for
+                #               now and handled downstream.
                 #empty_worker_input = dataclasses.replace(
                 #    empty_worker_input,
                 #    num_steps=self.cached_num_steps)
                 return self.cached_model_input, empty_worker_input, {}
+
             worker_input = WorkerInput.from_broadcasted_tensor_dict(
                 broadcast_data)
             model_input = (

@@ -18,12 +18,7 @@ from vllm.sequence import ExecuteModelRequest, PoolerOutput
 from vllm.utils import make_async
 from vllm.worker.worker_base import WorkerBase
 
-from vllm.distributed.parallel_state import (get_dp_group, get_tp_group,
-                                             get_pp_group, get_world_group)
-from vllm.logger import init_logger
 logger = init_logger(__name__)
-def logfn(input):
-    logger.info(f"[TP{get_tp_group().rank_in_group}][PP{get_pp_group().rank_in_group}][DP{get_dp_group().rank_in_group}][WORLD{get_world_group().rank_in_group}] {input}\n\n")
 
 _R = TypeVar("_R", default=Any)
 
@@ -263,7 +258,6 @@ class DistributedExecutorBase(ExecutorBase):
         # This is non-None when the execute model loop is running
         # in the parallel workers. It's a coroutine in the AsyncLLMEngine case.
         self.parallel_worker_tasks: Optional[Union[Any, Awaitable[Any]]] = None
-        self.execution_counter = 0
 
         super().__init__(*args, **kwargs)
 
@@ -347,15 +341,7 @@ class DistributedExecutorBase(ExecutorBase):
                 self._start_worker_execution_loop())
 
         # Only the driver worker returns the sampling results.
-        result = await self._driver_execute_model_async(execute_model_req)
-
-        self.execution_counter += 1
-        #logfn(f"DistributedExecutorBase.execute_model_async({self.execution_counter}) pre_sleep_1")
-        #import time as tm
-        #tm.sleep(0.1)
-        #logfn(f"DistributedExecutorBase.execute_model_async({self.execution_counter}) post_sleep_1")
-
-        return result
+        return await self._driver_execute_model_async(execute_model_req)
 
     async def stop_remote_worker_execution_loop_async(self) -> None:
         if self.parallel_worker_tasks is None:
