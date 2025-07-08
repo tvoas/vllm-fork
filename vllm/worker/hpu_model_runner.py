@@ -2029,7 +2029,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    intermediate_tensors=intermediate_tensors,
                                    warmup_mode=True,
                                    profile_run_mode=is_profile_run,
-                                   num_steps=2,
+                                   num_steps=1,
                                    seqs=seqs,
                                    **additional_inputs)
             else:  # decode with multi-step>2
@@ -2053,7 +2053,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    intermediate_tensors=intermediate_tensors,
                                    warmup_mode=True,
                                    profile_run_mode=is_profile_run,
-                                   num_steps=3,
+                                   num_steps=1,
                                    seqs=seqs,
                                    **additional_inputs)
                 inputs = dataclasses.replace(inputs,
@@ -2064,7 +2064,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    intermediate_tensors=intermediate_tensors,
                                    warmup_mode=True,
                                    profile_run_mode=is_profile_run,
-                                   num_steps=3,
+                                   num_steps=1,
                                    seqs=seqs,
                                    **additional_inputs)
             if not is_dummy_run:
