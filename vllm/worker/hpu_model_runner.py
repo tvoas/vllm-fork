@@ -1991,8 +1991,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                     broadcast_tensor_dict(src=0)
             is_single_step = \
                 self.vllm_config.scheduler_config.num_scheduler_steps == 1
-            is_dual_step = \
-                self.vllm_config.scheduler_config.num_scheduler_steps == 2
             intermediate_tensors = None
             if not get_pp_group().is_first_rank:
                 intermediate_tensors = \
@@ -2009,7 +2007,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    profile_run_mode=is_profile_run,
                                    is_dummy_run=is_dummy_run,
                                    **additional_inputs)
-            elif is_dual_step:  # decode with multi-step=2
+            else:  # decode with multi-step
                 inputs = dataclasses.replace(inputs,
                                              is_first_multi_step=True,
                                              is_last_step=False)
@@ -2029,42 +2027,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    intermediate_tensors=intermediate_tensors,
                                    warmup_mode=True,
                                    profile_run_mode=is_profile_run,
-                                   num_steps=1,
-                                   seqs=seqs,
-                                   **additional_inputs)
-            else:  # decode with multi-step>2
-                inputs = dataclasses.replace(inputs,
-                                             is_first_multi_step=True,
-                                             is_last_step=False)
-                self.execute_model(inputs,
-                                   kv_caches,
-                                   intermediate_tensors=intermediate_tensors,
-                                   warmup_mode=True,
-                                   profile_run_mode=is_profile_run,
-                                   num_steps=3,
-                                   seqs=seqs,
-                                   **additional_inputs)
-                inputs = dataclasses.replace(inputs,
-                                             is_first_multi_step=False,
-                                             is_last_step=False)
-                # all steps from step=2 to step=n-1 in steps [1, 2, 3, 4, ..., n] match this case.
-                self.execute_model(inputs,
-                                   kv_caches,
-                                   intermediate_tensors=intermediate_tensors,
-                                   warmup_mode=True,
-                                   profile_run_mode=is_profile_run,
-                                   num_steps=1,
-                                   seqs=seqs,
-                                   **additional_inputs)
-                inputs = dataclasses.replace(inputs,
-                                             is_first_multi_step=False,
-                                             is_last_step=True)
-                self.execute_model(inputs,
-                                   kv_caches,
-                                   intermediate_tensors=intermediate_tensors,
-                                   warmup_mode=True,
-                                   profile_run_mode=is_profile_run,
-                                   num_steps=1,
+                                   num_steps=2,
                                    seqs=seqs,
                                    **additional_inputs)
             if not is_dummy_run:
@@ -3144,17 +3107,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 return []
         if not get_pp_group().is_last_rank:
             return []
-        #    attn_metadata = model_input.attn_metadata
-        #    is_prompt = attn_metadata.is_prompt
-        #    seq_len = self._seq_len(attn_metadata)
-        #    batch_size = model_input.input_tokens.size(0)
-        #    intermediate_tensors = \
-        #            self.model.make_empty_intermediate_tensors(
-        #                batch_size=batch_size,
-        #                context_size=seq_len if is_prompt else 1,
-        #                dtype=self.model_config.dtype,
-        #                device=self.device)
-        #    return intermediate_tensors
         return output if type(output) is list else [output]
 
     def _delayed_sampler_outputs(self, model_input):
