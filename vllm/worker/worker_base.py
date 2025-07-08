@@ -451,16 +451,17 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             # If this is a multi-step request, we don't need to send
             pass
         elif not get_pp_group().is_first_rank:
-            #logfn(f"LocalOrDistributedWorkerBase.execute_model({self.execution_counter}) pre_recv_3: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
-            intermediate_tensors = IntermediateTensors(
-                get_pp_group().recv_tensor_dict(
-                    all_gather_group=get_tp_group()))
-            #logfn(f"LocalOrDistributedWorkerBase.execute_model({self.execution_counter}) post_recv_3: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
-            #logfn(f"LocalOrDistributedWorkerBase.execute_model({self.execution_counter}) val_recv_3: intermediate_tensors={intermediate_tensors}")
-            if (self.observability_config is not None
-                    and self.observability_config.collect_model_execute_time):
-                orig_model_execute_time = intermediate_tensors.tensors.get(
-                    "model_execute_time", torch.tensor(0)).item()
+            if model_input.is_first_multi_step:
+                #logfn(f"LocalOrDistributedWorkerBase.execute_model({self.execution_counter}) pre_recv_3: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
+                intermediate_tensors = IntermediateTensors(
+                    get_pp_group().recv_tensor_dict(
+                        all_gather_group=get_tp_group()))
+                #logfn(f"LocalOrDistributedWorkerBase.execute_model({self.execution_counter}) post_recv_3: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
+                #logfn(f"LocalOrDistributedWorkerBase.execute_model({self.execution_counter}) val_recv_3: intermediate_tensors={intermediate_tensors}")
+                if (self.observability_config is not None
+                        and self.observability_config.collect_model_execute_time):
+                    orig_model_execute_time = intermediate_tensors.tensors.get(
+                        "model_execute_time", torch.tensor(0)).item()
                 
         if execute_model_req is not None:
             seqs = execute_model_req.seq_group_metadata_list.copy()
@@ -485,17 +486,18 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             # If this is a multi-step request, we don't need to recv
             return [None]
         elif not get_pp_group().is_last_rank:
-            # output is IntermediateTensors
-            assert isinstance(output, IntermediateTensors)
-            if (self.observability_config is not None
-                    and self.observability_config.collect_model_execute_time):
-                output.tensors["model_execute_time"] = torch.tensor(
-                    model_execute_time + orig_model_execute_time)
-            #logfn(f"LocalOrDistributedWorkerBase.execute_model({self.execution_counter}) pre_send_4: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
-            get_pp_group().send_tensor_dict(output.tensors,
-                                            all_gather_group=get_tp_group())
-            #logfn(f"LocalOrDistributedWorkerBase.execute_model({self.execution_counter}) post_send_4: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
-            #logfn(f"LocalOrDistributedWorkerBase.execute_model({self.execution_counter}) val_send_4: tensors={output}")
+            if model_input.is_first_multi_step:
+                # output is IntermediateTensors
+                assert isinstance(output, IntermediateTensors)
+                if (self.observability_config is not None
+                        and self.observability_config.collect_model_execute_time):
+                    output.tensors["model_execute_time"] = torch.tensor(
+                        model_execute_time + orig_model_execute_time)
+                #logfn(f"LocalOrDistributedWorkerBase.execute_model({self.execution_counter}) pre_send_4: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
+                get_pp_group().send_tensor_dict(output.tensors,
+                                                all_gather_group=get_tp_group())
+                #logfn(f"LocalOrDistributedWorkerBase.execute_model({self.execution_counter}) post_send_4: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
+                #logfn(f"LocalOrDistributedWorkerBase.execute_model({self.execution_counter}) val_send_4: tensors={output}")
             return [None]
         if (self.observability_config is not None
                 and self.observability_config.collect_model_execute_time
