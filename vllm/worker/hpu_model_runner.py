@@ -2727,7 +2727,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 model_input.input_tokens.index_copy_(
                     0, target_indices, self.cached_step_outputs[i])
                 htorch.core.mark_step()
-
+        if model_input.is_first_multi_step != num_steps==1:
+            logfn(f"HPUModelRunner.execute_model({execution_counter}) MSS mismatch! num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}, cached={len(self.cached_step_outputs)}")
+        else:
+            logfn(f"HPUModelRunner.execute_model({execution_counter}) MSS match! num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}, cached={len(self.cached_step_outputs)}")
         if not model_input.is_first_multi_step:
             if get_pp_group().is_last_rank:
                 if not model_input.is_last_step:
