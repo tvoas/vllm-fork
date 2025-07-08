@@ -70,20 +70,20 @@ class MultiStepHPUWorker(HPUWorker):
                 broadcast_data = worker_input.as_broadcastable_tensor_dict()
                 broadcast_data.update(
                     model_input.as_broadcastable_tensor_dict())
-                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_1")
+                logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_1")
                 broadcast_tensor_dict(broadcast_data, src=0)
-                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_1")
-                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_1: broadcast_data={broadcast_data}")
+                logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_1")
+                logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_1: broadcast_data={broadcast_data}")
             else:
                 broadcast_data = {
                     "is_first_multi_step": is_first_multi_step,
                     "is_last_step": is_last_step,
                     "virtual_engine": execute_model_req.virtual_engine,
                 }
-                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_2")
+                logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_2")
                 broadcast_tensor_dict(broadcast_data, src=0)
-                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_2")
-                #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_2: broadcast_data={broadcast_data}")
+                logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_2")
+                logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_2: broadcast_data={broadcast_data}")
 
         # Returning empty dict here to keep this compatible with
         # `LocalOrDistributedWorkerBase._get_driver_input_and_broadcast`
@@ -102,10 +102,10 @@ class MultiStepHPUWorker(HPUWorker):
                     # broadcast_tensor_dict, and it stops the loop when the
                     # driver broadcasts an empty input. Send an empty input to
                     # notify all other workers to stop their execution loop.
-                    #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_3")
+                    logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_3")
                     broadcast_tensor_dict({}, src=0)
-                    #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_3")
-                    #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_3")
+                    logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_3")
+                    logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_3")
                 return None
             model_input, worker_input, _ = self._get_driver_input_and_broadcast(
                 execute_model_req)
@@ -114,10 +114,10 @@ class MultiStepHPUWorker(HPUWorker):
                     self.seq_id_cached_model_input[sid] = model_input
             return model_input, worker_input, {}
         else:
-            #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_4")
+            logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) pre_broadcast_4")
             broadcast_data = broadcast_tensor_dict(src=0)
-            #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_4")
-            #logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_4: broadcast_data={broadcast_data}")
+            logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) post_broadcast_4")
+            logfn(f"MultiStepHPUWorker.prepare_input({self.execution_counter}) val_broadcast_4: broadcast_data={broadcast_data}")
             if not broadcast_data:
                 return None
 
