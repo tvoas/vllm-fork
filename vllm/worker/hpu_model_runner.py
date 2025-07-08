@@ -2737,7 +2737,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             logfn(f"HPUModelRunner.execute_model({execution_counter}) MSS mismatch! num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}, cached={len(self.cached_step_outputs)}")
         else:
             logfn(f"HPUModelRunner.execute_model({execution_counter}) MSS match! num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}, cached={len(self.cached_step_outputs)}")
-        if not (model_input.is_first_multi_step or num_steps==1):
+        if not model_input.is_first_multi_step:
             if get_pp_group().is_last_rank:
                 if not model_input.is_last_step:
                     # not first or last multi-step
@@ -2746,7 +2746,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 output = self._decode_sampler_outputs(
                     model_input) if self.is_driver_worker else []
                 torch.hpu.synchronize()
-        if (model_input.is_first_multi_step or num_steps==1):
+        if model_input.is_first_multi_step:
             # first multi-step
             if self.lora_config:
                 assert model_input.lora_requests is not None
@@ -2855,7 +2855,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             data.output_token_ids = \
                                 data.output_token_ids[:orig_output_tokens_len]
 
-            for i in range(num_steps):
+            for i in range(num_steps if model_input.is_first_multi_step else 1):
                 if i != 0 and not (self.is_driver_worker and get_pp_group().is_last_rank):
                     src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
                     #logfn(f"HPUModelRunner.execute_model({execution_counter}) pre_broadcast_1_{i}: num_steps={num_steps}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, seq_ids={'None.1' if model_input is None else 'None.2' if model_input.sampling_metadata is None else 'None.3' if model_input.sampling_metadata.seq_groups is None else [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
