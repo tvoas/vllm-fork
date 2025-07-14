@@ -3386,7 +3386,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 data.output_token_ids[:orig_output_tokens_len]
             logfn("HPUModelRunner.execute_model.info_19")
 
-            if not (self.is_driver_worker and get_pp_group().is_last_rank):
+            if not model_input.is_first_multi_step and not (self.is_driver_worker and get_pp_group().is_last_rank):
                 logfn("HPUModelRunner.execute_model.info_20")
                 src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
                 torch.hpu.synchronize()
