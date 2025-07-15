@@ -3069,7 +3069,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         warmup_mode=False,
         previous_hidden_states: Optional[torch.Tensor] = None,
         seqs=None,
+        data_logs={},
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
+        is_prompt = model_input.is_prompt
         self.has_patched_prev_output = False
         use_delayed_sampling = self.use_delayed_sampling and not warmup_mode
         assert not (use_delayed_sampling and num_steps != 1), \
@@ -3112,10 +3114,17 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 # not first or last multi-step
                 return []
             # last multi-step
+            torch.hpu.synchronize()
+            tim1 = time.perf_counter()
             output = self._decode_sampler_outputs(
                 model_input) if self.is_driver_worker else []
             torch.hpu.synchronize()
+            if f"04.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}._decode_sampler_outputs" not in data_logs:
+                data_logs[f"04.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}._decode_sampler_outputs"] = []
+            data_logs[f"04.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}._decode_sampler_outputs"] += [time.perf_counter() - tim1]
         if model_input.is_first_multi_step:
+            torch.hpu.synchronize()
+            tim1 = time.perf_counter()
             # first multi-step
             if self.lora_config:
                 assert model_input.lora_requests is not None
@@ -3254,10 +3263,20 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 cache_orig_output_tokens_len[i][j]
                             data.output_token_ids = \
                                 data.output_token_ids[:orig_output_tokens_len]
+            torch.hpu.synchronize()
+            if f"05.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.config_setup" not in data_logs:
+                data_logs[f"05.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.config_setup"] = []
+            data_logs[f"05.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.config_setup"] += [time.perf_counter() - tim1]
 
             for i in range(num_steps):
                 if i != 0 and not self.is_driver_worker:
+                    torch.hpu.synchronize()
+                    tim1 = time.perf_counter()
                     broadcast_data = broadcast_tensor_dict(src=0)
+                    torch.hpu.synchronize()
+                    if f"06.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.broadcast_tensor_dict.{i}" not in data_logs:
+                        data_logs[f"06.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.broadcast_tensor_dict.{i}"] = []
+                    data_logs[f"06.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.broadcast_tensor_dict.{i}"] += [time.perf_counter() - tim1]
                     if 'early_exit' in broadcast_data and broadcast_data[
                             'early_exit']:
                         return [output] if num_steps == 1 else []
@@ -3274,7 +3293,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     'real_seq_len': model_input.seq_lens,
                     'real_batch_size': real_batch_size
                 }
-
+                torch.hpu.synchronize()
+                tim1 = time.perf_counter()
                 if self.model_is_mrope:
                     # run multimodal encoder for mrope before forward
                     inputs_embeds = \
@@ -3288,9 +3308,16 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     execute_model_kwargs.pop('pixel_values', None)
                     execute_model_kwargs.pop('image_grid_thw', None)
 
+                torch.hpu.synchronize()
+                if f"07.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.mrope_embed.{i}" not in data_logs:
+                    data_logs[f"07.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.mrope_embed.{i}"] = []
+                data_logs[f"07.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.mrope_embed.{i}"] += [time.perf_counter() - tim1]
+
                 with self.profiler.record_event('internal',
                                                 model_event_name,
                                                 args=profiler_args):
+                    torch.hpu.synchronize()
+                    tim1 = time.perf_counter()
                     hidden_states = self.model.forward(
                         **execute_model_kwargs,
                         selected_token_indices=sampling_metadata.
@@ -3300,6 +3327,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         import torch.distributed as dist
                         if dist.is_initialized():
                             dist.barrier()
+                    torch.hpu.synchronize()
+                    if f"08.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.model_forward.{i}" not in data_logs:
+                        data_logs[f"08.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.model_forward.{i}"] = []
+                    data_logs[f"08.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.model_forward.{i}"] += [time.perf_counter() - tim1]
 
                 if self.lora_config:
                     LoraMask.setLoraMask(
@@ -3314,6 +3345,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                    and self.is_driver_worker:
                     self._patch_prev_output()
 
+                torch.hpu.synchronize()
+                sampling_tim = time.perf_counter()
+
                 if (use_delayed_sampling and self.is_driver_worker
                         and self.has_logits_processors(sampling_metadata)):
                     # when use_delayed_sampling if the computation
@@ -3321,6 +3355,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     # we obtain the actual sampled results in advance
                     self._patch_prev_output()
                 # Compute the logits.
+                torch.hpu.synchronize()
+                tim1 = time.perf_counter()
                 with self.profiler.record_event(
                         'internal',
                     ('compute_logits_'
@@ -3332,6 +3368,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         sampling_metadata.selected_token_indices = None
                     logits = self.model.compute_logits(hidden_states,
                                                        sampling_metadata)
+                torch.hpu.synchronize()
+                if f"09.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.compute_logits.{i}" not in data_logs:
+                    data_logs[f"09.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.compute_logits.{i}"] = []
+                data_logs[f"09.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.compute_logits.{i}"] += [time.perf_counter() - tim1]
                 htorch.core.mark_step()
                 # Only perform sampling in the driver worker.
                 if not self.is_driver_worker:
@@ -3348,10 +3388,18 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                      f'bs{batch_size}_'
                                      f'seq{seq_len}'),
                         args=profiler_args):
+                    torch.hpu.synchronize()
+                    tim1 = time.perf_counter()
                     output = self.sampler(
                         logits=logits,
                         sampling_metadata=sampling_metadata,
+                        is_prompt=is_prompt,
+                        data_logs=data_logs,
                     )
+                    torch.hpu.synchronize()
+                    if f"14.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.sample.{i}" not in data_logs:
+                        data_logs[f"14.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.sample.{i}"] = []
+                    data_logs[f"14.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.sample.{i}"] += [time.perf_counter() - tim1]
                     if num_steps > 1:
                         output = output.sampled_token_ids
                         self.cached_step_outputs.append(output)
@@ -3398,16 +3446,29 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 dummy_token = (540, )
                                 data.output_token_ids += (dummy_token)
                             else:
+                                torch.hpu.synchronize()
+                                tim1 = time.perf_counter()
                                 broadcast_tensor_dict({'early_exit': True},
                                                       src=0)
+                                torch.hpu.synchronize()
+                                if f"15.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.broadcast_tensor_dict.{i}" not in data_logs:
+                                    data_logs[f"15.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.broadcast_tensor_dict.{i}"] = []
+                                data_logs[f"15.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.broadcast_tensor_dict.{i}"] += [time.perf_counter() - tim1]
                                 if num_steps == 1:
                                     return [output]
                                 else:
                                     try_revert_dummy_output_tokens()
                                     return []
-
+                    
+                    torch.hpu.synchronize()
+                    tim1 = time.perf_counter()
                     result = self._prepare_decode(seq_group_metadata_list,
                                                   output=output)
+                    torch.hpu.synchronize()
+                    if f"16.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}._prepare_decode.{i}" not in data_logs:
+                        data_logs[f"16.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}._prepare_decode.{i}"] = []
+                    data_logs[f"16.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}._prepare_decode.{i}"] += [time.perf_counter() - tim1]
+
                     if self.lora_config:
                         lora_mapping = LoRAMapping(
                             **dict(index_mapping=result.lora_index_mapping,
@@ -3434,9 +3495,20 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         "attn_metadata": vars(result.attn_metadata),
                         "lora_mask": lora_mask,
                     }
+                    torch.hpu.synchronize()
+                    tim1 = time.perf_counter()
                     broadcast_tensor_dict(model_kwargs_broadcast_data, src=0)
+                    torch.hpu.synchronize()
+                    if f"17.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.broadcast_tensor_dict.{i}" not in data_logs:
+                        data_logs[f"17.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.broadcast_tensor_dict.{i}"] = []
+                    data_logs[f"17.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.broadcast_tensor_dict.{i}"] += [time.perf_counter() - tim1]
                 else:
                     try_revert_dummy_output_tokens()
+
+                torch.hpu.synchronize()
+                if f"18.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.full_sampling.{i}" not in data_logs:
+                    data_logs[f"18.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.full_sampling.{i}"] = []
+                data_logs[f"18.HPUModelRunner.execute_model.{'prompt' if is_prompt else 'decode'}.full_sampling.{i}"] += [time.perf_counter() - sampling_tim]
 
             if self.is_driver_worker and self.profiler.enabled:
                 # Stop recording 'execute_model' event

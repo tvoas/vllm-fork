@@ -2,6 +2,7 @@
 """A layer that samples the next tokens from the model's outputs."""
 import itertools
 import warnings
+import time
 from dataclasses import dataclass
 from importlib.util import find_spec
 from math import inf
@@ -21,6 +22,7 @@ from vllm.sequence import (VLLM_INVALID_TOKEN_ID,
                            CompletionSequenceGroupOutput, Logprob,
                            PromptLogprobs, SampleLogprobs, SequenceOutput)
 from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
+from vllm.distributed.parallel_state import get_world_group
 
 if envs.VLLM_USE_FLASHINFER_SAMPLER and find_spec("flashinfer"):
     import flashinfer.sampling
@@ -222,6 +224,8 @@ class Sampler(nn.Module):
         self,
         logits: torch.Tensor,
         sampling_metadata: SamplingMetadata,
+        is_prompt=False,
+        data_logs={},
     ) -> Optional[SamplerOutput]:
         """
         Single-step scheduling:
@@ -243,7 +247,8 @@ class Sampler(nn.Module):
         """
         assert logits is not None
         _, vocab_size = logits.shape
-
+        torch.hpu.synchronize()
+        tim1 = time.perf_counter()
         # Prepare sampling tensors with pinned memory to avoid blocking.
         if not sampling_metadata.reuse_sampling_tensors:
             self._init_sampling_tensors(logits, sampling_metadata)
@@ -269,7 +274,12 @@ class Sampler(nn.Module):
                                      sampling_tensors.presence_penalties,
                                      sampling_tensors.frequency_penalties,
                                      sampling_tensors.repetition_penalties)
-
+        torch.hpu.synchronize()
+        if f"10.Sampler.forward.{'prompt' if is_prompt else 'decode'}.apply_penalties" not in data_logs:
+            data_logs[f"10.Sampler.forward.{'prompt' if is_prompt else 'decode'}.apply_penalties"] = []
+        data_logs[f"10.Sampler.forward.{'prompt' if is_prompt else 'decode'}.apply_penalties"] += [time.perf_counter() - tim1]
+        torch.hpu.synchronize()
+        tim1 = time.perf_counter()
         # Use float32 to apply temperature scaling.
         # Use in-place division to avoid creating a new tensor.
         logits = logits.to(torch.float)
@@ -287,7 +297,12 @@ class Sampler(nn.Module):
         probs = torch.softmax(logits, dim=-1, dtype=torch.float)
         # Compute the log probabilities.
         logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
-
+        torch.hpu.synchronize()
+        if f"11.Sampler.forward.{'prompt' if is_prompt else 'decode'}.pk_softmax" not in data_logs:
+            data_logs[f"11.Sampler.forward.{'prompt' if is_prompt else 'decode'}.pk_softmax"] = []
+        data_logs[f"11.Sampler.forward.{'prompt' if is_prompt else 'decode'}.pk_softmax"] += [time.perf_counter() - tim1]
+        torch.hpu.synchronize()
+        tim1 = time.perf_counter()
         # Sample the next tokens.
         maybe_deferred_sample_results, maybe_sampled_tokens_tensor = _sample(
             probs,
@@ -298,6 +313,12 @@ class Sampler(nn.Module):
             modify_greedy_probs=self._should_modify_greedy_probs_inplace,
         )
 
+        torch.hpu.synchronize()
+        if f"12.Sampler.forward.{'prompt' if is_prompt else 'decode'}._sample" not in data_logs:
+            data_logs[f"12.Sampler.forward.{'prompt' if is_prompt else 'decode'}._sample"] = []
+        data_logs[f"12.Sampler.forward.{'prompt' if is_prompt else 'decode'}._sample"] += [time.perf_counter() - tim1]
+        torch.hpu.synchronize()
+        tim1 = time.perf_counter()
         if self.include_gpu_probs_tensor:
             # Since we will defer sampler result Pythonization,
             # preserve GPU-side tensors in support of later
@@ -319,13 +340,18 @@ class Sampler(nn.Module):
             prompt_logprobs, sample_logprobs = get_logprobs(
                 logprobs, sampling_metadata, maybe_deferred_sample_results)
 
-        return _build_sampler_output(
+        out = _build_sampler_output(
             maybe_deferred_sample_results,
             sampling_metadata,
             prompt_logprobs,
             sample_logprobs,
             on_device_tensors=on_device_tensors,
             skip_sampler_cpu_output=sampling_metadata.skip_sampler_cpu_output)
+        torch.hpu.synchronize()
+        if f"13.Sampler.forward.{'prompt' if is_prompt else 'decode'}.finalize" not in data_logs:
+            data_logs[f"13.Sampler.forward.{'prompt' if is_prompt else 'decode'}.finalize"] = []
+        data_logs[f"13.Sampler.forward.{'prompt' if is_prompt else 'decode'}.finalize"] += [time.perf_counter() - tim1]
+        return out
 
     @property
     def _should_modify_greedy_probs_inplace(self) -> bool:
