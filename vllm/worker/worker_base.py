@@ -54,6 +54,7 @@ class WorkerBase:
         self.compilation_config = vllm_config.compilation_config
         from vllm.platforms import current_platform
         self.current_platform = current_platform
+        self.execution_count = 0
 
     def init_device(self) -> None:
         """Initialize device state, such as loading the model or other on-device
@@ -389,63 +390,68 @@ class LocalOrDistributedWorkerBase(WorkerBase):
     ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
-        start_time = time.perf_counter()
+        self.execution_count += 1
+        with self.model_runner.profiler.record_event('internal', f'worker_execute_model_{self.execution_count}'):
+            start_time = time.perf_counter()
+            with self.model_runner.profiler.record_event('internal', f'worker_prepare_input_{self.execution_count}'):
+                inputs = self.prepare_input(execute_model_req)
+                if inputs is None:
+                    return None
 
-        inputs = self.prepare_input(execute_model_req)
-        if inputs is None:
-            return None
+            model_input, worker_input, kwargs = inputs
+            num_steps = worker_input.num_steps
+            if (execute_model_req is not None and execute_model_req.spec_step_idx):
+                kwargs["spec_step_idx"] = execute_model_req.spec_step_idx
+            with self.model_runner.profiler.record_event('internal', f'worker_execute_worker_{self.execution_count}'):
+                self.execute_worker(worker_input)
 
-        model_input, worker_input, kwargs = inputs
-        num_steps = worker_input.num_steps
-        if (execute_model_req is not None and execute_model_req.spec_step_idx):
-            kwargs["spec_step_idx"] = execute_model_req.spec_step_idx
+            # If there is no input, we don't need to execute the model.
+            if worker_input.num_seq_groups == 0:
+                return []
 
-        self.execute_worker(worker_input)
+            intermediate_tensors = None
+            orig_model_execute_time = 0.0
+            if not get_pp_group().is_first_rank:
+                with self.model_runner.profiler.record_event('internal', f'worker_recv_{self.execution_count}'):
+                    intermediate_tensors = IntermediateTensors(
+                        get_pp_group().recv_tensor_dict(
+                            all_gather_group=get_tp_group()))
+                    if (self.observability_config is not None
+                            and self.observability_config.collect_model_execute_time):
+                        orig_model_execute_time = intermediate_tensors.tensors.get(
+                            "model_execute_time", torch.tensor(0)).item()
 
-        # If there is no input, we don't need to execute the model.
-        if worker_input.num_seq_groups == 0:
-            return []
+            output = self.model_runner.execute_model(
+                model_input=model_input,
+                kv_caches=self.kv_cache[worker_input.virtual_engine]
+                if self.kv_cache is not None else None,
+                intermediate_tensors=intermediate_tensors,
+                num_steps=num_steps,
+                execution_count=self.execution_count,
+                **kwargs,
+            )
 
-        intermediate_tensors = None
-        orig_model_execute_time = 0.0
-        if not get_pp_group().is_first_rank:
-            intermediate_tensors = IntermediateTensors(
-                get_pp_group().recv_tensor_dict(
-                    all_gather_group=get_tp_group()))
+            model_execute_time = time.perf_counter() - start_time
+            if not get_pp_group().is_last_rank:
+                with self.model_runner.profiler.record_event('internal', f'worker_send_{self.execution_count}'):
+                    # output is IntermediateTensors
+                    assert isinstance(output, IntermediateTensors)
+                    if (self.observability_config is not None
+                            and self.observability_config.collect_model_execute_time):
+                        output.tensors["model_execute_time"] = torch.tensor(
+                            model_execute_time + orig_model_execute_time)
+                    get_pp_group().send_tensor_dict(output.tensors,
+                                                    all_gather_group=get_tp_group())
+                    return [None]
             if (self.observability_config is not None
-                    and self.observability_config.collect_model_execute_time):
-                orig_model_execute_time = intermediate_tensors.tensors.get(
-                    "model_execute_time", torch.tensor(0)).item()
+                    and self.observability_config.collect_model_execute_time
+                    and output is not None):
+                for o in output:
+                    o.model_execute_time = (orig_model_execute_time +
+                                            model_execute_time)
 
-        output = self.model_runner.execute_model(
-            model_input=model_input,
-            kv_caches=self.kv_cache[worker_input.virtual_engine]
-            if self.kv_cache is not None else None,
-            intermediate_tensors=intermediate_tensors,
-            num_steps=num_steps,
-            **kwargs,
-        )
-
-        model_execute_time = time.perf_counter() - start_time
-        if not get_pp_group().is_last_rank:
-            # output is IntermediateTensors
-            assert isinstance(output, IntermediateTensors)
-            if (self.observability_config is not None
-                    and self.observability_config.collect_model_execute_time):
-                output.tensors["model_execute_time"] = torch.tensor(
-                    model_execute_time + orig_model_execute_time)
-            get_pp_group().send_tensor_dict(output.tensors,
-                                            all_gather_group=get_tp_group())
-            return [None]
-        if (self.observability_config is not None
-                and self.observability_config.collect_model_execute_time
-                and output is not None):
-            for o in output:
-                o.model_execute_time = (orig_model_execute_time +
-                                        model_execute_time)
-
-        # output is List[SamplerOutput]
-        return output
+            # output is List[SamplerOutput]
+            return output
 
     def _execute_model_spmd(
         self,
