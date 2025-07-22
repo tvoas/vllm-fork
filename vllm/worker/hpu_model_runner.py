@@ -3141,7 +3141,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                       model_input.lora_mapping)
             logfn(f"HPUModelRunner.execute_model.{execution_count}.info_12")
             # Rank!=0 workers has is_prompt==None
-            if use_delayed_sampling and not model_input.is_prompt and \
+            if use_delayed_sampling and get_pp_group().is_last_rank and \
                     model_input.input_tokens.size(1) == 1:
                 src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
                 logfn(f"HPUModelRunner.execute_model.{execution_count}.info_13: src={src}")
