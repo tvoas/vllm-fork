@@ -3141,22 +3141,22 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                       model_input.lora_mapping)
             logfn(f"HPUModelRunner.execute_model.{execution_count}.info_12")
             # Rank!=0 workers has is_prompt==None
-            if use_delayed_sampling and get_pp_group().is_last_rank and \
+            if use_delayed_sampling and not model_input.is_prompt and \
                     model_input.input_tokens.size(1) == 1:
-                src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
+                src = 0
                 logfn(f"HPUModelRunner.execute_model.{execution_count}.info_13: src={src}")
-                if self.is_driver_worker and get_pp_group().is_last_rank:
+                if self.is_driver_worker:
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_14: src={src}")
                     model_kwargs_broadcast_data = {
                         "input_tokens": model_input.input_tokens
                     }
-                    world_broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
+                    broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_15: src={src}")
                     input_tokens = model_input.input_tokens
 
                 else:
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_16: src={src}")
-                    model_kwargs_broadcast_data = world_broadcast_tensor_dict(src=src)
+                    model_kwargs_broadcast_data = broadcast_tensor_dict(src=src)
                     input_tokens = model_kwargs_broadcast_data["input_tokens"]
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_17: src={src}")
             else:
