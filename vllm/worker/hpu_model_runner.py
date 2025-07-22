@@ -33,7 +33,7 @@ from vllm.attention import AttentionMetadata, get_attn_backend
 from vllm.attention.backends.abstract import AttentionType
 from vllm.attention.backends.hpu_attn import HPUAttentionImpl
 from vllm.config import DeviceConfig, VllmConfig
-from vllm.distributed import broadcast_tensor_dict
+from vllm.distributed import broadcast_tensor_dict, world_broadcast_tensor_dict
 from vllm.distributed.parallel_state import get_pp_group, get_world_group
 from vllm.forward_context import set_forward_context
 from vllm.inputs import INPUT_REGISTRY, InputRegistry
@@ -3125,15 +3125,16 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             # Rank!=0 workers has is_prompt==None
             if use_delayed_sampling and not model_input.is_prompt and \
                     model_input.input_tokens.size(1) == 1:
-                if self.is_driver_worker:
+                src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
+                if self.is_driver_worker and get_pp_group().is_last_rank:
                     model_kwargs_broadcast_data = {
                         "input_tokens": model_input.input_tokens
                     }
-                    broadcast_tensor_dict(model_kwargs_broadcast_data, src=0)
+                    world_broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
                     input_tokens = model_input.input_tokens
 
                 else:
-                    model_kwargs_broadcast_data = broadcast_tensor_dict(src=0)
+                    model_kwargs_broadcast_data = world_broadcast_tensor_dict(src=src)
                     input_tokens = model_kwargs_broadcast_data["input_tokens"]
             else:
                 input_tokens = model_input.input_tokens
@@ -3311,10 +3312,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 # In case there are any logits processors pending
                 # we need to sync with host earlier
                 if use_delayed_sampling \
-                   and self.is_driver_worker:
+                   and self.is_driver_worker and get_pp_group().is_last_rank:
                     self._patch_prev_output()
 
-                if (use_delayed_sampling and self.is_driver_worker
+                if (use_delayed_sampling and self.is_driver_worker and get_pp_group().is_last_rank
                         and self.has_logits_processors(sampling_metadata)):
                     # when use_delayed_sampling if the computation
                     # of logits depends on the sampled results
@@ -3337,7 +3338,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 if not self.is_driver_worker:
                     continue
 
-                if use_delayed_sampling:
+                if use_delayed_sampling and get_pp_group().is_last_rank:
                     fake_output = self._delayed_sampler_outputs(model_input)
                 elif model_input.async_callback is not None:
                     model_input.async_callback()
@@ -3355,13 +3356,13 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     if num_steps > 1:
                         output = output.sampled_token_ids
                         self.cached_step_outputs.append(output)
-                    if use_delayed_sampling and self.is_driver_worker:
+                    if use_delayed_sampling and self.is_driver_worker and get_pp_group().is_last_rank:
                         output = self._pad_to_max_num_seqs(
                             output.sampled_token_ids, DUMMY_TOKEN_ID)
                         self.cached_step_outputs.append(output)
                         self.cached_step_inputs.append(model_input)
                 htorch.core.mark_step()
-                if use_delayed_sampling \
+                if use_delayed_sampling and get_pp_group().is_last_rank \
                    and model_input.async_callback is not None:
                     model_input.async_callback()
                 if i < num_steps - 1:
@@ -3467,7 +3468,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         output.prefill_hidden_states = hidden_states
                     output.hidden_states = hidden_states
 
-                if use_delayed_sampling:
+                if use_delayed_sampling and get_pp_group().is_last_rank:
                     if self.is_driver_worker:
                         return [fake_output]
                     else:
