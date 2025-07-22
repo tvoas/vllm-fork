@@ -12,7 +12,7 @@ import torch.nn as nn
 
 from vllm.config import (ObservabilityConfig, VllmConfig,
                          set_current_vllm_config)
-from vllm.distributed import broadcast_tensor_dict, get_pp_group, get_tp_group
+from vllm.distributed import broadcast_tensor_dict, get_pp_group, get_tp_group, get_world_group
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
@@ -26,6 +26,9 @@ from vllm.worker.model_runner_base import (BroadcastableModelInput,
                                            ModelRunnerInputBase)
 
 logger = init_logger(__name__)
+
+def logfn(in_str):
+    logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}]: {in_str}")
 
 
 @warn_for_unimplemented_methods
@@ -391,33 +394,42 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
         self.execution_count += 1
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.start")
         start_time = time.perf_counter()
-
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_1")
         inputs = self.prepare_input(execute_model_req)
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_2")
         if inputs is None:
             return None
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_3")
 
         model_input, worker_input, kwargs = inputs
         num_steps = worker_input.num_steps
         if (execute_model_req is not None and execute_model_req.spec_step_idx):
             kwargs["spec_step_idx"] = execute_model_req.spec_step_idx
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_4")
 
         self.execute_worker(worker_input)
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_5")
 
         # If there is no input, we don't need to execute the model.
         if worker_input.num_seq_groups == 0:
             return []
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_6")
 
         intermediate_tensors = None
         orig_model_execute_time = 0.0
         if not get_pp_group().is_first_rank:
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_7")
             intermediate_tensors = IntermediateTensors(
                 get_pp_group().recv_tensor_dict(
                     all_gather_group=get_tp_group()))
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_8")
             if (self.observability_config is not None
                     and self.observability_config.collect_model_execute_time):
                 orig_model_execute_time = intermediate_tensors.tensors.get(
                     "model_execute_time", torch.tensor(0)).item()
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_9")
 
         output = self.model_runner.execute_model(
             model_input=model_input,
@@ -428,24 +440,30 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             execution_count=self.execution_count,
             **kwargs,
         )
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_10")
 
         model_execute_time = time.perf_counter() - start_time
         if not get_pp_group().is_last_rank:
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_11")
             # output is IntermediateTensors
             assert isinstance(output, IntermediateTensors)
             if (self.observability_config is not None
                     and self.observability_config.collect_model_execute_time):
                 output.tensors["model_execute_time"] = torch.tensor(
                     model_execute_time + orig_model_execute_time)
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_12")
             get_pp_group().send_tensor_dict(output.tensors,
                                             all_gather_group=get_tp_group())
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_13")
             return [None]
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_14")
         if (self.observability_config is not None
                 and self.observability_config.collect_model_execute_time
                 and output is not None):
             for o in output:
                 o.model_execute_time = (orig_model_execute_time +
                                         model_execute_time)
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_15")
 
         # output is List[SamplerOutput]
         return output
