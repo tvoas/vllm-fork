@@ -356,7 +356,7 @@ class Qwen2Model(nn.Module):
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
-            residual = None
+            residual = intermediate_tensors["residual"]
         if current_platform.is_hpu():
             attn_metadata = get_forward_context().attn_metadata
             if (self.enable_zero_padding
@@ -374,7 +374,8 @@ class Qwen2Model(nn.Module):
             )
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
-                "hidden_states": hidden_states
+                "hidden_states": hidden_states,
+                "residual": residual
             })
 
         hidden_states, _ = self.norm(hidden_states, residual)
@@ -472,9 +473,10 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
                                               quant_config=quant_config,
                                               prefix=maybe_prefix(
                                                   prefix, "lm_head"))
-            self.logits_processor = LogitsProcessor(config.vocab_size)
         else:
             self.lm_head = PPMissingLayer()
+
+        self.logits_processor = LogitsProcessor(config.vocab_size)
 
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors)
