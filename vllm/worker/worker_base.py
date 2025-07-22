@@ -54,6 +54,7 @@ class WorkerBase:
         self.compilation_config = vllm_config.compilation_config
         from vllm.platforms import current_platform
         self.current_platform = current_platform
+        self.execution_count = 0
 
     def init_device(self) -> None:
         """Initialize device state, such as loading the model or other on-device
@@ -389,6 +390,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
     ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
+        self.execution_count += 1
         start_time = time.perf_counter()
 
         inputs = self.prepare_input(execute_model_req)
@@ -423,6 +425,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             if self.kv_cache is not None else None,
             intermediate_tensors=intermediate_tensors,
             num_steps=num_steps,
+            execution_count=self.execution_count,
             **kwargs,
         )
 
