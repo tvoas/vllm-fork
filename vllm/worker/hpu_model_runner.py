@@ -3638,6 +3638,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         model_input = self.cached_step_inputs.pop(0)
         delayed_output = self.cached_step_outputs.pop(0).cpu().squeeze(
             -1).tolist()
+        if model_input.async_callback is None:
+            return delayed_output
         ctx = model_input.async_callback.keywords["ctx"]  # type: ignore
         # If there's no output to patch with, which is usually the case when
         # we're starting a new request after all requests are completed.
