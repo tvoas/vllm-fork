@@ -3075,7 +3075,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         warmup_mode=False,
         previous_hidden_states: Optional[torch.Tensor] = None,
         seqs=None,
-        broadcast_data=None,
         execution_count=0,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
         logfn(f"HPUModelRunner.execute_model.start: is_prompt={model_input.is_prompt}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, num_steps={num_steps}")
@@ -3090,7 +3089,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 warmup_mode,
                 previous_hidden_states,
                 seqs,
-                broadcast_data,
                 execution_count
             )
         logfn(f"HPUModelRunner.execute_model.{execution_count}.info_1: in old branch")
@@ -3539,7 +3537,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         warmup_mode=False,
         previous_hidden_states: Optional[torch.Tensor] = None,
         seqs=None,
-        broadcast_data=None,
         execution_count=0,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
         logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_01: in new branch")
@@ -3556,7 +3553,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             'Delayed sampling is not compatible with speculative decoding!'
         assert model_input.input_tokens is not None
         output = None
-        model_kwargs_broadcast_data = {}
         logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_02")
         if use_delayed_sampling and not model_input.is_prompt and \
                 self.is_driver_worker:
@@ -3740,7 +3736,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         if not model_input.is_first_multi_step and not (self.is_driver_worker and get_pp_group().is_last_rank):
             src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_21")
-            #broadcast_data = world_broadcast_tensor_dict(src=src)
+            broadcast_data = world_broadcast_tensor_dict(src=src)
             #broadcast_data = get_pp_group().recv_tensor_dict(
             #        all_gather_group=get_tp_group(), src=1)
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_22")
@@ -3923,8 +3919,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
                         #get_pp_group().send_tensor_dict({'early_exit': True},
                         #                    all_gather_group=get_tp_group(), dst=0)
-                        #world_broadcast_tensor_dict({'early_exit': True},
-                        #                        src=src)
+                        world_broadcast_tensor_dict({'early_exit': True},
+                                                src=src)
                         if not is_multi_step:
                             return [output]
                         else:
@@ -3958,18 +3954,18 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 lora_mask,
             })
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_54")
-            model_kwargs_broadcast_data.update({
+            model_kwargs_broadcast_data = {
                 "input_ids": result.input_tokens,
                 "positions": result.input_positions,
                 "attn_metadata": vars(result.attn_metadata),
                 "lora_mask": lora_mask,
-            })
+            }
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_55")
             src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_56")
             #get_pp_group().send_tensor_dict(model_kwargs_broadcast_data,
             #                                all_gather_group=get_tp_group(), dst=0)
-            #world_broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
+            world_broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_57")
         else:
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_58")
