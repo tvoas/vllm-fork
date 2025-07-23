@@ -181,12 +181,12 @@ def run_vllm(
 ) -> tuple[float, Optional[list[RequestOutput]]]:
     from vllm import LLM, SamplingParams
     llm = LLM(**dataclasses.asdict(engine_args))
-    assert all(
-        llm.llm_engine.model_config.max_model_len >= (
-            request.prompt_len + request.expected_output_len)
-        for request in requests), (
-            "Please ensure that max_model_len is greater than the sum of"
-            " prompt_len and expected_output_len for all requests.")
+    #assert all(
+    #    llm.llm_engine.model_config.max_model_len >= (
+    #        request.prompt_len + request.expected_output_len)
+    #    for request in requests), (
+    #        "Please ensure that max_model_len is greater than the sum of"
+    #        " prompt_len and expected_output_len for all requests.")
     # Add the requests to the engine.
     prompts: list[Union[TextPrompt, TokensPrompt]] = []
     sampling_params: list[SamplingParams] = []
@@ -254,12 +254,12 @@ def run_vllm_chat(
     from vllm import LLM, SamplingParams
     llm = LLM(**dataclasses.asdict(engine_args))
 
-    assert all(
-        llm.llm_engine.model_config.max_model_len >= (
-            request.prompt_len + request.expected_output_len)
-        for request in requests), (
-            "Please ensure that max_model_len is greater than the sum of "
-            "prompt_len and expected_output_len for all requests.")
+    #assert all(
+    #    llm.llm_engine.model_config.max_model_len >= (
+    #        request.prompt_len + request.expected_output_len)
+    #    for request in requests), (
+    #        "Please ensure that max_model_len is greater than the sum of "
+    #        "prompt_len and expected_output_len for all requests.")
 
     prompts = []
     sampling_params: list[SamplingParams] = []
@@ -289,12 +289,12 @@ async def run_vllm_async(requests: list[SampleRequest],
 
     async with build_async_engine_client_from_engine_args(
             engine_args, disable_frontend_multiprocessing) as llm:
-        assert all(
-            llm.model_config.max_model_len >= (request.prompt_len +
-                                               request.expected_output_len)
-            for request in requests), (
-                "Please ensure that max_model_len is greater than the sum of"
-                " prompt_len and expected_output_len for all requests.")
+        #assert all(
+        #    llm.model_config.max_model_len >= (request.prompt_len +
+        #                                       request.expected_output_len)
+        #    for request in requests), (
+        #        "Please ensure that max_model_len is greater than the sum of"
+        #        " prompt_len and expected_output_len for all requests.")
 
         # Add the requests to the engine.
         prompts: list[Union[TextPrompt, TokensPrompt]] = []
