@@ -3080,7 +3080,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         logfn(f"HPUModelRunner.execute_model.start: is_prompt={model_input.is_prompt}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, num_steps={num_steps}")
         is_prompt = model_input.is_prompt
         is_multi_step = not (model_input.is_first_multi_step and model_input.is_last_step) or num_steps > 1
-        if False and not is_prompt: # is_multi_step:
+        if not is_prompt: # is_multi_step:
             return self.execute_model_multi(
                 model_input,
                 kv_caches,
@@ -3897,7 +3897,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 for seq_idx, seq_group_metadata in enumerate(
                         seq_group_metadata_list):
                     # Skip empty steps
-                    seq_group_metadata.state.current_step += 1
+                    seq_group_metadata.state.current_step += (
+                                num_steps - 2)
                     # Cache the original output token ids
                     cache_orig_output_tokens_len.append({})
                     for j, data in seq_group_metadata.seq_data.items():
