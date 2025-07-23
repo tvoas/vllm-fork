@@ -467,8 +467,11 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_11")
             return [None]
         if get_pp_group().is_last_rank and not model_input.is_last_step:
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_12")
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_12: output={output}")
             get_pp_group().send_tensor_dict(output,
                                             all_gather_group=get_tp_group())
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_13")
             return []
         if (self.observability_config is not None
                 and self.observability_config.collect_model_execute_time
@@ -478,7 +481,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                                         model_execute_time)
 
         # output is List[SamplerOutput]
-        logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_12")
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_14")
         return output
 
     def _execute_model_spmd(
