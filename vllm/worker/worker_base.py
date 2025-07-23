@@ -487,7 +487,8 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                                             all_gather_group=get_tp_group())
             logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_11")
             src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
-            broadcast_data = world_broadcast_tensor_dict(src=src)
+            if not model_input.is_last_step:
+                broadcast_data = world_broadcast_tensor_dict(src=src)
             logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_11.2")
             return [None]
         elif num_steps > 1:
