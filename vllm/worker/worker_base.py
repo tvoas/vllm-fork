@@ -12,7 +12,9 @@ import torch.nn as nn
 
 from vllm.config import (ObservabilityConfig, VllmConfig,
                          set_current_vllm_config)
-from vllm.distributed import broadcast_tensor_dict, get_pp_group, get_tp_group
+from vllm.distributed import broadcast_tensor_dict
+from vllm.distributed.parallel_state import (get_tp_group, get_pp_group,
+                                             get_world_group)
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
@@ -26,6 +28,9 @@ from vllm.worker.model_runner_base import (BroadcastableModelInput,
                                            ModelRunnerInputBase)
 
 logger = init_logger(__name__)
+
+def logfn(in_str):
+    logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}]: {in_str}")
 
 
 @warn_for_unimplemented_methods
@@ -435,6 +440,10 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             execution_count=self.execution_count,
             **kwargs,
         )
+        if type(output) is list:
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.return: output={[type(out) for out in output]}")
+        else:
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.return: output={type(output)}")
 
         model_execute_time = time.perf_counter() - start_time
         if not get_pp_group().is_last_rank:
