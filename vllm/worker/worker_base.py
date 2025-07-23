@@ -498,7 +498,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             get_pp_group().send_tensor_dict(output,
                                             all_gather_group=get_tp_group())
             logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_13")
-            return []
+            return [None]
         if (self.observability_config is not None
                 and self.observability_config.collect_model_execute_time
                 and output is not None):
