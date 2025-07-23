@@ -408,10 +408,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
 
         intermediate_tensors = None
         orig_model_execute_time = 0.0
-        if num_steps > 1:
-            # If this is a multi-step request, we don't need to send
-            pass
-        elif not get_pp_group().is_first_rank:
+        if not get_pp_group().is_first_rank:
             if model_input.is_first_multi_step:
                 intermediate_tensors = IntermediateTensors(
                     get_pp_group().recv_tensor_dict(
@@ -437,10 +434,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         )
 
         model_execute_time = time.perf_counter() - start_time
-        if num_steps > 1:
-            # If this is a multi-step request, we don't need to recv
-            return [None]
-        elif not get_pp_group().is_last_rank:
+        if not get_pp_group().is_last_rank:
             if model_input.is_first_multi_step:
                 # output is IntermediateTensors
                 assert isinstance(output, IntermediateTensors)
