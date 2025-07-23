@@ -566,8 +566,8 @@ class GroupCoordinator:
                                                          group=group,
                                                          async_op=True)
                 async_handles.append(handle)
-            for async_handle in async_handles:
-                async_handle.wait()
+            #for async_handle in async_handles:
+            #    async_handle.wait()
 
         else:
             metadata_list = self.broadcast_object(None, src=src)
@@ -600,8 +600,8 @@ class GroupCoordinator:
                     tensor_dict[key] = tensor
                 else:
                     tensor_dict[key] = value
-            for async_handle in async_handles:
-                async_handle.wait()
+            #for async_handle in async_handles:
+            #    async_handle.wait()
         return tensor_dict
 
     def send_tensor_dict(
