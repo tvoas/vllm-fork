@@ -79,6 +79,9 @@ def logfn(in_str):
     return
     logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}]: {in_str}")
 
+def logfn2(in_str):
+    logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}]: {in_str}")
+
 _TYPE_CACHE = {}
 # These values are assumed to be zero in several places.
 # Use caution when updating them!
@@ -3079,7 +3082,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         broadcast_data=None,
         execution_count=0,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
-        logfn(f"HPUModelRunner.execute_model.start: is_prompt={model_input.is_prompt}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, num_steps={num_steps}")
+        logfn2(f"HPUModelRunner.execute_model.start: is_prompt={model_input.is_prompt}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, num_steps={num_steps}")
+        logfn2(f"HPUModelRunner.execute_model.info_01: model_input.seq_ids={[seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
+        logfn2(f"HPUModelRunner.execute_model.info_02: seqs={seqs}")
         is_prompt = model_input.is_prompt
         is_multi_step = not (model_input.is_first_multi_step and model_input.is_last_step) or num_steps > 1
         if not is_prompt: # is_multi_step:
