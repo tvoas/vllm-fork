@@ -3075,6 +3075,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         warmup_mode=False,
         previous_hidden_states: Optional[torch.Tensor] = None,
         seqs=None,
+        broadcast_data=None,
         execution_count=0,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
         logfn(f"HPUModelRunner.execute_model.start: is_prompt={model_input.is_prompt}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, num_steps={num_steps}")
@@ -3089,6 +3090,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 warmup_mode,
                 previous_hidden_states,
                 seqs,
+                broadcast_data,
                 execution_count
             )
         logfn(f"HPUModelRunner.execute_model.{execution_count}.info_1: in old branch")
@@ -3537,6 +3539,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         warmup_mode=False,
         previous_hidden_states: Optional[torch.Tensor] = None,
         seqs=None,
+        broadcast_data=None,
         execution_count=0,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
         logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_01: in new branch")
@@ -3553,6 +3556,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             'Delayed sampling is not compatible with speculative decoding!'
         assert model_input.input_tokens is not None
         output = None
+        model_kwargs_broadcast_data = {}
         logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_02")
         if use_delayed_sampling and not model_input.is_prompt and \
                 self.is_driver_worker:
@@ -3925,7 +3929,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             return [output]
                         else:
                             try_revert_dummy_output_tokens()
-                            return []
+                            return {'early_exit': True}
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_51")
 
             result = self._prepare_decode(seq_group_metadata_list,
@@ -3954,12 +3958,12 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 lora_mask,
             })
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_54")
-            model_kwargs_broadcast_data = {
+            model_kwargs_broadcast_data.update({
                 "input_ids": result.input_tokens,
                 "positions": result.input_positions,
                 "attn_metadata": vars(result.attn_metadata),
                 "lora_mask": lora_mask,
-            }
+            })
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_55")
             src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_56")
@@ -4017,7 +4021,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             return output if type(output) is list else [output]
         else:
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_64")
-            return []
+            return model_kwargs_broadcast_data
 
     def _delayed_sampler_outputs(self, model_input):
         next_token_ids = [[DUMMY_TOKEN_ID]] * len(
