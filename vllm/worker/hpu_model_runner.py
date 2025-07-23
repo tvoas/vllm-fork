@@ -3075,6 +3075,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         warmup_mode=False,
         previous_hidden_states: Optional[torch.Tensor] = None,
         seqs=None,
+        broadcast_data=None,
         execution_count=0,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
         logfn(f"HPUModelRunner.execute_model.start: is_prompt={model_input.is_prompt}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, num_steps={num_steps}")
@@ -3089,6 +3090,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 warmup_mode,
                 previous_hidden_states,
                 seqs,
+                broadcast_data,
                 execution_count
             )
         logfn(f"HPUModelRunner.execute_model.{execution_count}.info_1: in old branch")
@@ -3537,6 +3539,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         warmup_mode=False,
         previous_hidden_states: Optional[torch.Tensor] = None,
         seqs=None,
+        broadcast_data=None,
         execution_count=0,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
         logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_01: in new branch")
@@ -3736,7 +3739,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         if not model_input.is_first_multi_step and not (self.is_driver_worker and get_pp_group().is_last_rank):
             src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_21")
-            broadcast_data = world_broadcast_tensor_dict(src=src)
+            #broadcast_data = world_broadcast_tensor_dict(src=src)
             #broadcast_data = get_pp_group().recv_tensor_dict(
             #        all_gather_group=get_tp_group(), src=1)
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_22")

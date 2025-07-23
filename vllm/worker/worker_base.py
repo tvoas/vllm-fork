@@ -60,6 +60,7 @@ class WorkerBase:
         from vllm.platforms import current_platform
         self.current_platform = current_platform
         self.execution_count = 0
+        self.broadcast_data = {}
 
     def init_device(self) -> None:
         """Initialize device state, such as loading the model or other on-device
@@ -452,6 +453,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             intermediate_tensors=intermediate_tensors,
             num_steps=num_steps,
             seqs=seqs,
+            broadcast_data=self.broadcast_data,
             execution_count=self.execution_count,
             **kwargs,
         )
@@ -488,7 +490,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_11")
             src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
             if not model_input.is_last_step:
-                broadcast_data = world_broadcast_tensor_dict(src=src)
+                self.broadcast_data = world_broadcast_tensor_dict(src=src)
             logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_11.2")
             return [None]
         elif num_steps > 1:
