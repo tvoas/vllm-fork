@@ -4006,7 +4006,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 model_input) if self.is_driver_worker else []
             torch.hpu.synchronize()
             return output if type(output) is list else [output]
-        else
+        else:
             logfn(f"HPUModelRunner.execute_model_multi.info_64")
             return []
 
