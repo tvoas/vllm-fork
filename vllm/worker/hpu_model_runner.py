@@ -75,6 +75,9 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+def logfn(in_str):
+    logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}]: {in_str}")
+
 _TYPE_CACHE = {}
 # These values are assumed to be zero in several places.
 # Use caution when updating them!
@@ -3073,6 +3076,467 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         previous_hidden_states: Optional[torch.Tensor] = None,
         seqs=None,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
+        logfn(f"HPUModelRunner.execute_model.start: is_prompt={model_input.is_prompt}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, num_steps={num_steps}")
+        is_prompt = model_input.is_prompt
+        is_multi_step = not (model_input.is_first_multi_step and model_input.is_last_step) or num_steps > 1
+        if is_multi_step:
+            return self.execute_model_multi(
+                model_input,
+                kv_caches,
+                intermediate_tensors,
+                num_steps,
+                warmup_mode,
+                previous_hidden_states,
+                seqs
+            )
+        logfn(f"HPUModelRunner.execute_model.info: in old branch")
+        self.has_patched_prev_output = False
+        use_delayed_sampling = self.use_delayed_sampling and not warmup_mode
+        assert not (use_delayed_sampling and num_steps != 1), \
+            'Delayed sampling is not compatible with MSS!'
+        assert not (use_delayed_sampling and
+            self.parallel_config.pipeline_parallel_size != 1), \
+            'Delayed sampling is not compatible with Pipeline Parallelism!'
+        assert not (use_delayed_sampling and self.spec_decode_enabled), \
+            'Delayed sampling is not compatible with speculative decoding!'
+        assert model_input.input_tokens is not None
+        output = None
+        if use_delayed_sampling and not model_input.is_prompt and \
+                self.is_driver_worker:
+            num_cached = len(self.cached_step_outputs)
+            assert num_cached > 0
+            cur_seq_ids = self._get_seq_ids(model_input)
+            cur_seq_id_pos = {
+                sid: idx
+                for idx, sid in enumerate(cur_seq_ids) if sid >= 0
+            }
+            htorch.core.mark_step()
+            for i in range(num_cached):
+                prev_seq_ids = self._get_seq_ids(self.cached_step_inputs[i])
+                target_indices = [
+                    cur_seq_id_pos.get(psi, -1) for psi in prev_seq_ids
+                ]
+                padding = self.cached_step_outputs[i].size(0) - len(
+                    target_indices)
+                target_indices.extend([-1] * padding)
+                target_indices = torch.tensor(
+                    target_indices,
+                    device=model_input.input_tokens.device,
+                    dtype=model_input.input_tokens.dtype)
+                model_input.input_tokens.index_copy_(
+                    0, target_indices, self.cached_step_outputs[i])
+                htorch.core.mark_step()
+
+        if not model_input.is_first_multi_step:
+            if get_pp_group().is_last_rank:
+                if not model_input.is_last_step:
+                    # not first or last multi-step
+                    return []
+                # last multi-step
+                output = self._decode_sampler_outputs(
+                    model_input) if self.is_driver_worker else []
+                torch.hpu.synchronize()
+        if model_input.is_first_multi_step:
+            # first multi-step
+            if self.lora_config:
+                assert model_input.lora_requests is not None
+                assert model_input.lora_mapping is not None
+                self.set_active_loras(model_input.lora_requests,
+                                      model_input.lora_mapping)
+            # Rank!=0 workers has is_prompt==None
+            if use_delayed_sampling and not model_input.is_prompt and \
+                    model_input.input_tokens.size(1) == 1:
+                if self.is_driver_worker:
+                    model_kwargs_broadcast_data = {
+                        "input_tokens": model_input.input_tokens
+                    }
+                    broadcast_tensor_dict(model_kwargs_broadcast_data, src=0)
+                    input_tokens = model_input.input_tokens
+
+                else:
+                    model_kwargs_broadcast_data = broadcast_tensor_dict(src=0)
+                    input_tokens = model_kwargs_broadcast_data["input_tokens"]
+            else:
+                input_tokens = model_input.input_tokens
+            input_positions = model_input.input_positions
+            attn_metadata = model_input.attn_metadata
+            sampling_metadata = model_input.sampling_metadata
+            real_batch_size = model_input.real_batch_size
+            batch_size_padded = model_input.batch_size_padded
+            assert input_tokens is not None
+            assert input_positions is not None
+            assert sampling_metadata is not None
+            assert attn_metadata is not None
+            is_prompt = attn_metadata.is_prompt
+            assert is_prompt is not None
+            batch_size = input_tokens.size(0)
+            seq_len = self._seq_len(attn_metadata)
+            num_patches = self._get_num_patches_from_model_input(model_input)
+            use_graphs = self._use_graphs(batch_size=batch_size,
+                                          seq_len=seq_len,
+                                          is_prompt=is_prompt,
+                                          num_patches=num_patches)
+            self._check_config(batch_size, seq_len, attn_metadata, warmup_mode)
+
+            lora_mask: torch.Tensor = None
+            lora_logits_mask: torch.Tensor = None
+            if self.lora_config:
+                assert model_input.lora_ids is not None
+                lora_mask, lora_logits_mask = self.create_lora_mask(
+                    input_tokens, model_input.lora_ids,
+                    attn_metadata.is_prompt)
+            if model_input.multi_modal_kwargs is not None \
+                and 'embed_is_patch' in model_input.multi_modal_kwargs:
+
+                def fix_embed_is_patch(embed_is_patch):
+                    if isinstance(embed_is_patch, torch.Tensor):
+                        if embed_is_patch.dim() == 3:
+                            result = []
+                            if embed_is_patch.size(1) > 1:
+                                embed_is_patch = embed_is_patch.transpose(0, 1)
+                            for i in range(embed_is_patch.size(0)):
+                                result.append(embed_is_patch[i])
+                            return result
+                        elif embed_is_patch.dim() == 2:
+                            result = []
+                            result.append(embed_is_patch)
+                            return result
+                    elif isinstance(embed_is_patch, (list, tuple)):
+                        # Apply only once per item, avoid repeated recursion
+                        result = []
+                        for item in embed_is_patch:
+                            fixed = fix_embed_is_patch(item)
+                            if isinstance(fixed, list):
+                                result.extend(fixed)
+                            else:
+                                result.append(fixed)
+                        return result
+                    else:
+                        return None
+
+                model_input.multi_modal_kwargs[
+                    'embed_is_patch'] = fix_embed_is_patch(
+                        model_input.multi_modal_kwargs['embed_is_patch'])
+            execute_model_kwargs = {
+                "input_ids": input_tokens,
+                "positions": input_positions,
+                "kv_caches": kv_caches,
+                "attn_metadata": self.trim_attn_metadata(attn_metadata),
+                "intermediate_tensors": intermediate_tensors,
+                "lora_mask": lora_mask,
+                "virtual_engine": model_input.virtual_engine,
+                **(model_input.multi_modal_kwargs or {}),
+            }
+            if previous_hidden_states is not None:
+                # HPU will pad up to block_size,
+                # pad previous_hidden_states as well
+                previous_hidden_states = previous_hidden_states.unsqueeze(
+                    1).expand(-1, input_tokens.shape[-1], -1)
+                batch_size_padding = batch_size - previous_hidden_states.shape[
+                    0]
+                if batch_size_padding > 0:
+                    dummy_previous_hidden_states = torch.zeros(
+                        batch_size_padding,
+                        *previous_hidden_states.shape[1:],
+                        dtype=previous_hidden_states.dtype,
+                        device=previous_hidden_states.device)
+                    previous_hidden_states = torch.cat(
+                        [previous_hidden_states, dummy_previous_hidden_states],
+                        dim=0)
+                execute_model_kwargs.update(
+                    {"previous_hidden_states": previous_hidden_states})
+            if htorch.utils.internal.is_lazy():
+                execute_model_kwargs.update(
+                    {"bypass_hpu_graphs": not use_graphs})
+
+            htorch.core.mark_step()
+            if self.is_driver_worker:
+                model_event_name = ("model_"
+                                    f"{'prompt' if is_prompt else 'decode'}_"
+                                    f"bs{batch_size}_"
+                                    f"seq{seq_len}_"
+                                    f"graphs{'T' if use_graphs else 'F'}")
+            else:
+                model_event_name = 'model_executable'
+            if num_steps > 1 or use_delayed_sampling:
+                # in case of multi-step scheduling
+                # we only want to pythonize in the last step
+                sampling_metadata.skip_sampler_cpu_output = True
+                self.sampler.include_gpu_probs_tensor = True
+            cache_orig_output_tokens_len: List[Dict] = []
+
+            def try_revert_dummy_output_tokens():
+                if len(cache_orig_output_tokens_len) > 0:
+                    # Reuse the original output token ids length
+                    for i in range(len(cache_orig_output_tokens_len)):
+                        seq_group_metadata = seq_group_metadata_list[i]
+                        for j, data in seq_group_metadata.seq_data.items():
+                            orig_output_tokens_len = \
+                                cache_orig_output_tokens_len[i][j]
+                            data.output_token_ids = \
+                                data.output_token_ids[:orig_output_tokens_len]
+
+            for i in range(num_steps):
+                if i != 0 and not (self.is_driver_worker and get_pp_group().is_last_rank):
+                    src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
+                    broadcast_data = world_broadcast_tensor_dict(src=src)
+                    if 'early_exit' in broadcast_data and broadcast_data[
+                            'early_exit']:
+                        return [output] if num_steps == 1 else []
+                    execute_model_kwargs.update({
+                        "input_ids":
+                        broadcast_data["input_ids"],
+                        "positions":
+                        broadcast_data["positions"],
+                        "attn_metadata":
+                        self.trim_attn_metadata(
+                            broadcast_data["attn_metadata"])
+                    })
+
+                if num_steps > 1 and not get_pp_group().is_first_rank:
+                    execute_model_kwargs["intermediate_tensors"] = IntermediateTensors(
+                        get_pp_group().recv_tensor_dict(
+                            all_gather_group=get_tp_group()))
+
+                profiler_args = {
+                    'real_seq_len': model_input.seq_lens,
+                    'real_batch_size': real_batch_size
+                }
+
+                if self.model_is_mrope:
+                    # run multimodal encoder for mrope before forward
+                    inputs_embeds = \
+                        self.model.compute_input_embeddings_for_mrope(
+                            **execute_model_kwargs
+                        )
+                    execute_model_kwargs.update({
+                        'inputs_embeds': inputs_embeds,
+                    })
+                    # done compute the visual tokens
+                    execute_model_kwargs.pop('pixel_values', None)
+                    execute_model_kwargs.pop('image_grid_thw', None)
+
+                with self.profiler.record_event('internal',
+                                                model_event_name,
+                                                args=profiler_args):
+                    hidden_states = self.model.forward(
+                        **execute_model_kwargs,
+                        selected_token_indices=sampling_metadata.
+                        selected_token_indices)
+                    if warmup_mode:
+                        torch.hpu.synchronize()
+                        import torch.distributed as dist
+                        if dist.is_initialized():
+                            get_tp_group().barrier()
+
+                if self.lora_config:
+                    LoraMask.setLoraMask(
+                        lora_logits_mask.index_select(
+                            0, sampling_metadata.selected_token_indices))
+                if not get_pp_group().is_last_rank:
+                    if num_steps == 1:
+                        return hidden_states
+                    else:
+                        assert isinstance(hidden_states, IntermediateTensors)
+                        get_pp_group().send_tensor_dict(hidden_states.tensors,
+                                                        all_gather_group=get_tp_group())
+                        if i == num_steps - 1:
+                            return hidden_states
+                        continue
+
+                # In case there are any logits processors pending
+                # we need to sync with host earlier
+                if use_delayed_sampling \
+                   and self.is_driver_worker:
+                    self._patch_prev_output()
+
+                if (use_delayed_sampling and self.is_driver_worker
+                        and self.has_logits_processors(sampling_metadata)):
+                    # when use_delayed_sampling if the computation
+                    # of logits depends on the sampled results
+                    # we obtain the actual sampled results in advance
+                    self._patch_prev_output()
+                # Compute the logits.
+                with self.profiler.record_event(
+                        'internal',
+                    ('compute_logits_'
+                     f'{"prompt" if is_prompt else "decode"}_bs'
+                     f'{batch_size}_'
+                     f'seq{seq_len}'),
+                        args=profiler_args):
+                    if num_steps == 1:
+                        sampling_metadata.selected_token_indices = None
+                    logits = self.model.compute_logits(hidden_states,
+                                                       sampling_metadata)
+
+                htorch.core.mark_step()
+                # Only perform sampling in the driver worker.
+                if not self.is_driver_worker:
+                    continue
+
+                if use_delayed_sampling:
+                    fake_output = self._delayed_sampler_outputs(model_input)
+                elif model_input.async_callback is not None:
+                    model_input.async_callback()
+
+                with self.profiler.record_event(
+                        'internal', ('sample_'
+                                     f'{"prompt" if is_prompt else "decode"}_'
+                                     f'bs{batch_size}_'
+                                     f'seq{seq_len}'),
+                        args=profiler_args):
+                    output = self.sampler(
+                        logits=logits,
+                        sampling_metadata=sampling_metadata,
+                    )
+                    if output.sampled_token_ids is None:
+                        output.sampled_token_ids_cpu = output[0].samples[0].output_token
+                    else:
+                        output.sampled_token_ids_cpu = output.sampled_token_ids
+                    output.sampled_token_ids = None
+                    output.sampled_token_probs = None
+                    output.logprobs = None
+                    if num_steps > 1:
+                        output = output.sampled_token_ids_cpu
+                        self.cached_step_outputs.append((output, [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]))
+                    if use_delayed_sampling and self.is_driver_worker:
+                        output = self._pad_to_max_num_seqs(
+                            output.sampled_token_ids, DUMMY_TOKEN_ID)
+                        self.cached_step_outputs.append(output)
+                        self.cached_step_inputs.append(model_input)
+                htorch.core.mark_step()
+                if use_delayed_sampling \
+                   and model_input.async_callback is not None:
+                    model_input.async_callback()
+                if i < num_steps - 1:
+                    if i == 0:
+                        if model_input.async_callback is not None:
+                            ctx = model_input.async_callback.keywords[  # type: ignore
+                                "ctx"]
+                            seq_group_metadata_list = \
+                                ctx.seq_group_metadata_list
+                        elif seqs is not None:
+                            seq_group_metadata_list = seqs
+                        else:
+                            raise RuntimeError(
+                                "seq_group_metadata_list is uninitialized")
+                        for seq_idx, seq_group_metadata in enumerate(
+                                seq_group_metadata_list):
+                            # Skip empty steps
+                            seq_group_metadata.state.current_step += (
+                                num_steps - 2)
+                            # Cache the original output token ids
+                            cache_orig_output_tokens_len.append({})
+                            for j, data in seq_group_metadata.seq_data.items():
+                                cache_orig_output_tokens_len[seq_idx][j] = \
+                                    len(data.output_token_ids)
+                    seq_group_metadata_list, _, _ = self._add_dummy_seq(
+                        seq_group_metadata_list, is_prompt=False)
+                    for seq_group_metadata in seq_group_metadata_list:
+                        for data in seq_group_metadata.seq_data.values():
+                            max_output_len = sampling_metadata.seq_groups[
+                                0].sampling_params.max_tokens
+                            if len(data.output_token_ids) < max_output_len - 1:
+                                # add a place holder for prepare_decode
+                                # arbitrary value, this could be any token
+                                dummy_token = (540, )
+                                data.output_token_ids += (dummy_token)
+                            else:
+                                src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
+                                world_broadcast_tensor_dict({'early_exit': True},
+                                                      src=src)
+                                if num_steps == 1:
+                                    return [output]
+                                else:
+                                    try_revert_dummy_output_tokens()
+                                    return []
+
+                    result = self._prepare_decode(seq_group_metadata_list,
+                                                  output=output)
+
+                    if self.lora_config:
+                        lora_mapping = LoRAMapping(
+                            **dict(index_mapping=result.lora_index_mapping,
+                                   prompt_mapping=result.lora_prompt_mapping,
+                                   is_prefill=False))
+                        self.set_active_loras(result.lora_requests,
+                                              lora_mapping)
+                        lora_mask, lora_logits_mask = self.create_lora_mask(
+                            result.input_tokens, result.lora_ids, False)
+
+                    execute_model_kwargs.update({
+                        "input_ids":
+                        result.input_tokens,
+                        "positions":
+                        result.input_positions,
+                        "attn_metadata":
+                        self.trim_attn_metadata(result.attn_metadata),
+                        "lora_mask":
+                        lora_mask,
+                    })
+                    model_kwargs_broadcast_data = {
+                        "input_ids": result.input_tokens,
+                        "positions": result.input_positions,
+                        "attn_metadata": vars(result.attn_metadata),
+                        "lora_mask": lora_mask,
+                    }
+                    src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
+                    world_broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
+                else:
+                    try_revert_dummy_output_tokens()
+
+            if self.is_driver_worker and self.profiler.enabled:
+                # Stop recording 'execute_model' event
+                self.profiler.end()
+                event_end = self.profiler.get_timestamp_us()
+                counters = self.profiler_counter_helper.get_counter_dict(
+                    cache_config=self.cache_config,
+                    duration=event_end - self.event_start,
+                    seq_len=seq_len,
+                    batch_size_padded=batch_size_padded,
+                    real_batch_size=real_batch_size,
+                    is_prompt=is_prompt)
+                self.profiler.record_counter(self.event_start, counters)
+            if num_steps == 1:
+                if self.spec_decode_enabled and isinstance(
+                        output, SamplerOutput):
+                    output.sampled_token_ids = output.sampled_token_ids[:
+                                                                        real_batch_size]
+                    output.sampled_token_probs = output.sampled_token_probs[:
+                                                                            real_batch_size]
+                    output.logprobs = output.logprobs[:real_batch_size]
+                if self.return_hidden_states and isinstance(
+                        output, SamplerOutput):
+                    # we only need to pass hidden states of most recent token
+                    assert model_input.sampling_metadata is not None
+                    hidden_states = hidden_states[:real_batch_size]
+                    if model_input.is_prompt:
+                        output.prefill_hidden_states = hidden_states
+                    output.hidden_states = hidden_states
+
+                if use_delayed_sampling:
+                    if self.is_driver_worker:
+                        return [fake_output]
+                    else:
+                        return []
+                return [output] if self.is_driver_worker else []
+            else:
+                return []
+        if not get_pp_group().is_last_rank:
+            return []
+        return output if type(output) is list else [output]
+    
+    def execute_model_multi(
+        self,
+        model_input: ModelInputForHPUWithSamplingMetadata,
+        kv_caches: List[torch.Tensor],
+        intermediate_tensors: Optional[IntermediateTensors] = None,
+        num_steps: int = 1,
+        warmup_mode=False,
+        previous_hidden_states: Optional[torch.Tensor] = None,
+        seqs=None,
+    ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
+        logfn(f"HPUModelRunner.execute_model.info: in old branch")
         self.has_patched_prev_output = False
         use_delayed_sampling = self.use_delayed_sampling and not warmup_mode
         assert not (use_delayed_sampling and num_steps != 1), \
