@@ -30,6 +30,7 @@ from vllm.worker.model_runner_base import (BroadcastableModelInput,
 logger = init_logger(__name__)
 
 def logfn(in_str):
+    return
     logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}]: {in_str}")
 
 

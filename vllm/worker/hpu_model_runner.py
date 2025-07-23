@@ -76,6 +76,7 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 def logfn(in_str):
+    return
     logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}]: {in_str}")
 
 _TYPE_CACHE = {}
@@ -3746,16 +3747,25 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             if 'early_exit' in broadcast_data and broadcast_data[
                     'early_exit']:
                 logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_23")
+                if not get_pp_group().is_last_rank:
+                    intermediate_tensors = \
+                        self.model.make_empty_intermediate_tensors(
+                            batch_size=batch_size,
+                            context_size=seq_len if is_prompt else 1,
+                            dtype=self.model_config.dtype,
+                            device=self.device)
+                    return intermediate_tensors
                 return [output] if not is_multi_step else []
-            execute_model_kwargs.update({
-                "input_ids":
-                broadcast_data["input_ids"],
-                "positions":
-                broadcast_data["positions"],
-                "attn_metadata":
-                self.trim_attn_metadata(
-                    broadcast_data["attn_metadata"])
-            })
+            if not model_input.is_first_multi_step:
+                execute_model_kwargs.update({
+                    "input_ids":
+                    broadcast_data["input_ids"],
+                    "positions":
+                    broadcast_data["positions"],
+                    "attn_metadata":
+                    self.trim_attn_metadata(
+                        broadcast_data["attn_metadata"])
+                })
         logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_24")
         profiler_args = {
             'real_seq_len': model_input.seq_lens,
