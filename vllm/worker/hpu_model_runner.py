@@ -3737,8 +3737,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_21")
             #broadcast_data = world_broadcast_tensor_dict(src=src)
-            broadcast_data = get_pp_group().recv_tensor_dict(
-                    all_gather_group=get_tp_group(), src=1)
+            #broadcast_data = get_pp_group().recv_tensor_dict(
+            #        all_gather_group=get_tp_group(), src=1)
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_22")
             if 'early_exit' in broadcast_data and broadcast_data[
                     'early_exit']:
@@ -3917,8 +3917,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         data.output_token_ids += (dummy_token)
                     else:
                         src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
-                        get_pp_group().send_tensor_dict({'early_exit': True},
-                                            all_gather_group=get_tp_group(), dst=0)
+                        #get_pp_group().send_tensor_dict({'early_exit': True},
+                        #                    all_gather_group=get_tp_group(), dst=0)
                         #world_broadcast_tensor_dict({'early_exit': True},
                         #                        src=src)
                         if not is_multi_step:
@@ -3963,8 +3963,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_55")
             src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_56")
-            get_pp_group().send_tensor_dict(model_kwargs_broadcast_data,
-                                            all_gather_group=get_tp_group(), dst=0)
+            #get_pp_group().send_tensor_dict(model_kwargs_broadcast_data,
+            #                                all_gather_group=get_tp_group(), dst=0)
             #world_broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_57")
         else:
