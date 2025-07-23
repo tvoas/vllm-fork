@@ -12,7 +12,7 @@ import torch.nn as nn
 
 from vllm.config import (ObservabilityConfig, VllmConfig,
                          set_current_vllm_config)
-from vllm.distributed import broadcast_tensor_dict
+from vllm.distributed import broadcast_tensor_dict, world_broadcast_tensor_dict
 from vllm.distributed.parallel_state import (get_tp_group, get_pp_group,
                                              get_world_group)
 from vllm.logger import init_logger
@@ -486,6 +486,9 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             get_pp_group().send_tensor_dict(output.tensors,
                                             all_gather_group=get_tp_group())
             logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_11")
+            src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
+            broadcast_data = world_broadcast_tensor_dict(src=src)
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_11.2")
             return [None]
         elif num_steps > 1:
             return [None]
