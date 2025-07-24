@@ -3083,8 +3083,12 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         execution_count=0,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
         logfn2(f"HPUModelRunner.execute_model.{execution_count}.start: is_prompt={model_input.is_prompt}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, num_steps={num_steps}")
-        logfn2(f"HPUModelRunner.execute_model.{execution_count}.info_01: model_input.seq_ids={[seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
-        logfn2(f"HPUModelRunner.execute_model.{execution_count}.info_02: seqs={None if seqs is None else [(None if sgmd.seq_data is None else list(sgmd.seq_data.keys())) for sgmd in seqs]}")
+        model_input_seq_ids = str([seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups])
+        if seqs is not None:
+            seqs_data_keys=str([(None if sgmd.seq_data is None else list(sgmd.seq_data.keys())) for sgmd in seqs])
+            assert model_input_seq_ids==seqs_data_keys, f"HPUModelRunner.execute_model.{execution_count}.seqs_mismatch: model_input.seq_ids={model_input_seq_ids}, seqs={seqs_data_keys}"
+        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_01: model_input.seq_ids={[seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]}")
+        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_02: seqs={None if seqs is None else [(None if sgmd.seq_data is None else list(sgmd.seq_data.keys())) for sgmd in seqs]}")
         is_prompt = model_input.is_prompt
         is_multi_step = not (model_input.is_first_multi_step and model_input.is_last_step) or num_steps > 1
         if not is_prompt: # is_multi_step:
