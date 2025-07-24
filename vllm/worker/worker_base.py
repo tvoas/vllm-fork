@@ -462,8 +462,9 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             execution_count=self.execution_count,
             **kwargs,
         )
+        output, return_loc = output
         if type(output) is list:
-            logfn2(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_08: output={[type(out) for out in output]}")
+            logfn2(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_08: output_{return_loc}={[type(out) for out in output]}")
             if len(len(output) > 0):
                 if type(output[0]) is SamplerOutput:
                     for sampler in output:
@@ -480,7 +481,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                                 logfn2(f"Updated chain for parent_seq_id {parent_id}: {self.seq_token_cache[parent_id]}")    
 
         else:
-            logfn2(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_09: output={type(output)}")
+            logfn2(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_09: output_{return_loc}={type(output)}")
 
         model_execute_time = time.perf_counter() - start_time
         #if num_steps > 1:

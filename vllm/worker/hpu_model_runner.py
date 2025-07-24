@@ -3145,7 +3145,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             if get_pp_group().is_last_rank:
                 if not model_input.is_last_step:
                     # not first or last multi-step
-                    return []
+                    return [], 1
                 # last multi-step
                 output = self._decode_sampler_outputs(
                     model_input) if self.is_driver_worker else []
@@ -3296,6 +3296,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     broadcast_data = world_broadcast_tensor_dict(src=src)
                     if 'early_exit' in broadcast_data and broadcast_data[
                             'early_exit']:
+                        if num_steps == 1:
+                            return [output], 2
+                        else:
+                            return [], 3
                         return [output] if num_steps == 1 else []
                     execute_model_kwargs.update({
                         "input_ids":
@@ -3349,13 +3353,13 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             0, sampling_metadata.selected_token_indices))
                 if not get_pp_group().is_last_rank:
                     if num_steps == 1:
-                        return hidden_states
+                        return hidden_states, 4
                     else:
                         assert isinstance(hidden_states, IntermediateTensors)
                         get_pp_group().send_tensor_dict(hidden_states.tensors,
                                                         all_gather_group=get_tp_group())
                         if i == num_steps - 1:
-                            return hidden_states
+                            return hidden_states, 5
                         continue
 
                 # In case there are any logits processors pending
@@ -3460,10 +3464,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 world_broadcast_tensor_dict({'early_exit': True},
                                                       src=src)
                                 if num_steps == 1:
-                                    return [output]
+                                    return [output], 6
                                 else:
                                     try_revert_dummy_output_tokens()
-                                    return []
+                                    return [], 7
 
                     result = self._prepare_decode(seq_group_metadata_list,
                                                   output=output)
@@ -3530,14 +3534,22 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
 
                 if use_delayed_sampling:
                     if self.is_driver_worker:
-                        return [fake_output]
+                        return [fake_output], 8
                     else:
-                        return []
+                        return [], 9
+                if self.is_driver_worker:
+                    return [output], 10
+                else:
+                    return [], 11
                 return [output] if self.is_driver_worker else []
             else:
-                return []
+                return [], 12
         if not get_pp_group().is_last_rank:
-            return []
+            return [], 13
+        if type(output) is list:
+            return output, 14
+        else:
+            return [output], 15
         return output if type(output) is list else [output]
 
     def execute_model_multi(
@@ -3763,7 +3775,11 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             context_size=seq_len if is_prompt else 1,
                             dtype=self.model_config.dtype,
                             device=self.device)
-                    return intermediate_tensors
+                    return intermediate_tensors, 16
+                if not is_multi_step:
+                    return [output], 17
+                else:
+                    return [], 18
                 return [output] if not is_multi_step else []
             if not model_input.is_first_multi_step:
                 execute_model_kwargs.update({
@@ -3821,7 +3837,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_33")
         if not get_pp_group().is_last_rank:
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_34")
-            return hidden_states
+            return hidden_states, 19
         logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_35")
 
         # In case there are any logits processors pending
@@ -3857,7 +3873,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         # Only perform sampling in the driver worker.
         if not self.is_driver_worker:
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_39")
-            return []
+            return [], 20
         logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_40")
 
         if use_delayed_sampling:
@@ -3945,10 +3961,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         world_broadcast_tensor_dict({'early_exit': True},
                                                 src=src)
                         if not is_multi_step:
-                            return [output]
+                            return [output], 21
                         else:
                             try_revert_dummy_output_tokens()
-                            return {'early_exit': True}
+                            return {'early_exit': True}, 22
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_51")
 
             result = self._prepare_decode(seq_group_metadata_list,
@@ -4028,19 +4044,27 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
 
             if use_delayed_sampling:
                 if self.is_driver_worker:
-                    return [fake_output]
+                    return [fake_output], 23
                 else:
-                    return []
+                    return [], 24
+            if self.is_driver_worker:
+                return [output], 25
+            else:
+                return [], 26
             return [output] if self.is_driver_worker else []
         elif get_pp_group().is_last_rank and model_input.is_last_step:
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_63")
             output = self._decode_sampler_outputs(
                 model_input) if self.is_driver_worker else []
             torch.hpu.synchronize()
+            if type(output) is list:
+                return output, 27
+            else:
+                return [output], 28
             return output if type(output) is list else [output]
         else:
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_64")
-            return model_kwargs_broadcast_data
+            return model_kwargs_broadcast_data, 29
 
     def _delayed_sampler_outputs(self, model_input):
         next_token_ids = [[DUMMY_TOKEN_ID]] * len(
