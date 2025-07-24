@@ -498,7 +498,7 @@ class GroupCoordinator:
         size_tensor = torch.empty(1, dtype=torch.long, device="cpu")
 
         # Receive object size
-        rank_size = torch.distributed.irecv(size_tensor,
+        rank_size = torch.distributed.recv(size_tensor,
                                            src=self.ranks[src],
                                            group=self.cpu_group)
 
@@ -508,7 +508,7 @@ class GroupCoordinator:
             dtype=torch.uint8,
             device="cpu")
 
-        rank_object = torch.distributed.irecv(object_tensor,
+        rank_object = torch.distributed.recv(object_tensor,
                                              src=self.ranks[src],
                                              group=self.cpu_group)
 
