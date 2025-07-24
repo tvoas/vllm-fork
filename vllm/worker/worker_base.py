@@ -462,7 +462,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             execution_count=self.execution_count,
             **kwargs,
         )
-        if type(output) is list:
+        if type(output) is list and len(output) > 0:
             logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_08: output={[out for out in output]}")
             if type(output[0]) is SamplerOutput:
                 for sampler in output:
