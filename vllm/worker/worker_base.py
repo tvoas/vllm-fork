@@ -503,11 +503,14 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                         self.seq_token_cache[seq_id] = []
                     self.seq_token_cache[seq_id].append((str(type(output)), self.execution_count, return_loc))
         # Write all sequences to the file, sorted by parent_seq_id.
-        file_path = f"seq_cache_{get_world_group().rank_in_group}.txt"
+        file_path = f"logs/seq_cache_{'old' if use_old_pipeline else 'new'}_{get_world_group().rank_in_group}.txt"
         with open(file_path, "w") as f:
+            f.write("seq_id,return_token,execution_count,return_loc\n")
             for key in sorted(self.seq_token_cache.keys()):
-                seq_line = f"{key}: {self.seq_token_cache[key]}\n"
-                f.write(seq_line)
+                for item in self.seq_token_cache[key]:
+                    token, execution_count, return_loc = item
+                    seq_line = f"{key},{token},{execution_count},{return_loc}\n"
+                    f.write(seq_line)
 
         model_execute_time = time.perf_counter() - start_time
         if use_old_pipeline:
