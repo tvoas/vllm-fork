@@ -480,9 +480,15 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                                 # Append token to the cache.
                                 if parent_id not in self.seq_token_cache:
                                     self.seq_token_cache[parent_id] = []
-                                self.seq_token_cache[parent_id].append(token)
+                                self.seq_token_cache[parent_id].append((token, self.execution_count, return_loc))
                                 # Print the updated chain.
-                                logfn2(f"Updated chain for parent_seq_id {parent_id}: {self.seq_token_cache[parent_id]}")    
+                                logfn2(f"Updated chain for {self.execution_count}.parent_seq_id.{parent_id}: {self.seq_token_cache[parent_id]}")
+                    # Write all sequences to the file, sorted by parent_seq_id.
+                    file_path = "seq_cache.txt"
+                    with open(file_path, "w") as f:
+                        for key in sorted(self.seq_token_cache.keys()):
+                            seq_line = f"{key}: {self.seq_token_cache[key]}\n"
+                            f.write(seq_line)
 
         else:
             logfn2(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_09: output_{return_loc}={type(output)}")
