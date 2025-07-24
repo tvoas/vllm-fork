@@ -463,15 +463,23 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             **kwargs,
         )
         if type(output) is list:
-            logfn2(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_08: output={[out for out in output]}")
-            #if type(output[0]) is SamplerOutput:
-                #model_input_seq_ids = str([seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups])
-                #if model_input_seq_ids not in self.seq_token_cache:
-                #    self.seq_token_cache[model_input_seq_ids] = set()
-                #for out in output:
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_08: output={[out for out in output]}")
+            if type(output[0]) is SamplerOutput:
+                for sampler in output:
+                    for seq_group in sampler.outputs:
+                        for sample in seq_group.samples:
+                            # Get the current parent_seq_id and new token.
+                            parent_id = sample.parent_seq_id
+                            token = sample.output_token
+                            # Append token to the cache.
+                            if parent_id not in self.seq_token_cache:
+                                self.seq_token_cache[parent_id] = []
+                            self.seq_token_cache[parent_id].append(token)
+                            # Print the updated chain.
+                            logfn2(f"Updated chain for parent_seq_id {parent_id}: {self.seq_token_cache[parent_id]}")    
 
         else:
-            logfn2(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_09: output={type(output)}")
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_09: output={type(output)}")
 
         model_execute_time = time.perf_counter() - start_time
         #if num_steps > 1:
