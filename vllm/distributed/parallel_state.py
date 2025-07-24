@@ -694,6 +694,7 @@ class GroupCoordinator:
 
         recv_metadata_list = self.recv_object(src=src)
         tensor_dict: Dict[str, Any] = {}
+        handles = []
         for key, value in recv_metadata_list:
             if isinstance(value, TensorMetadata):
                 tensor = torch.empty(value.size,
@@ -715,22 +716,22 @@ class GroupCoordinator:
 
                 if tensor.is_cpu:
                     # use metadata_group for CPU tensors
-                    torch.distributed.recv(tensor,
+                    handles += [torch.distributed.irecv(tensor,
                                            src=self.ranks[src],
-                                           group=metadata_group)
+                                           group=metadata_group)]
                 elif self.force_cpu_for_pp:
                     # use metadata_group for CPU tensors
                     orig_device = tensor.device
                     tensor = tensor.to('cpu')
-                    torch.distributed.recv(tensor,
+                    handles += [torch.distributed.irecv(tensor,
                                         src=self.ranks[src],
-                                        group=metadata_group)
+                                        group=metadata_group)]
                     tensor = tensor.to(orig_device)
                 else:
                     # use group for GPU tensors
-                    torch.distributed.recv(tensor,
+                    handles += [torch.distributed.irecv(tensor,
                                            src=self.ranks[src],
-                                           group=group)
+                                           group=group)]
                 if use_all_gather:
                     # do the allgather
                     tensor = all_gather_group.all_gather(  # type: ignore
@@ -740,6 +741,8 @@ class GroupCoordinator:
                 tensor_dict[key] = tensor
             else:
                 tensor_dict[key] = value
+        for handle in handles:
+            handle.wait()
         return tensor_dict
 
     def barrier(self):
