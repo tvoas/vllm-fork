@@ -475,16 +475,16 @@ class GroupCoordinator:
 
         # Send object size
 
-        torch.distributed.send(size_tensor,
+        handle_size = torch.distributed.isend(size_tensor,
                                dst=self.ranks[dst],
                                group=self.cpu_group)
 
         # Send object
-        torch.distributed.send(object_tensor,
+        handle_object = torch.distributed.isend(object_tensor,
                                dst=self.ranks[dst],
                                group=self.cpu_group)
 
-        return None
+        return [handle_size, handle_object]
 
     def recv_object(self, src: int) -> Any:
         """Receive the input object list from the source rank."""
@@ -499,9 +499,10 @@ class GroupCoordinator:
         size_tensor = torch.empty(1, dtype=torch.long, device="cpu")
 
         # Receive object size
-        rank_size = torch.distributed.recv(size_tensor,
+        handle_size = torch.distributed.irecv(size_tensor,
                                            src=self.ranks[src],
                                            group=self.cpu_group)
+        handle_size.wait()
 
         # Tensor to receive serialized objects into.
         object_tensor = torch.empty(  # type: ignore[call-overload]
@@ -509,12 +510,11 @@ class GroupCoordinator:
             dtype=torch.uint8,
             device="cpu")
 
-        rank_object = torch.distributed.recv(object_tensor,
+        handle_object = torch.distributed.irecv(object_tensor,
                                              src=self.ranks[src],
                                              group=self.cpu_group)
+        handle_object.wait()
 
-        assert rank_object == rank_size, (
-            "Received object sender rank does not match the size sender rank.")
 
         obj = pickle.loads(object_tensor.numpy().tobytes())
 
@@ -644,7 +644,7 @@ class GroupCoordinator:
         # `metadata_list` lives in CPU memory.
         # `send_object_list` has serialization & deserialization,
         # all happening on CPU. Therefore, we can use the CPU group.
-        self.send_object(metadata_list, dst=dst)
+        self.last_send_td_handles[self.ranks[dst]] += self.send_object(metadata_list, dst=dst)
         for tensor in tensor_list:
             if tensor.numel() == 0:
                 # Skip sending empty tensors.
