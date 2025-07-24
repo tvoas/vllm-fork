@@ -474,12 +474,12 @@ class GroupCoordinator:
 
         # Send object size
 
-        torch.distributed.send(size_tensor,
+        torch.distributed.isend(size_tensor,
                                dst=self.ranks[dst],
                                group=self.cpu_group)
 
         # Send object
-        torch.distributed.send(object_tensor,
+        torch.distributed.isend(object_tensor,
                                dst=self.ranks[dst],
                                group=self.cpu_group)
 
@@ -498,7 +498,7 @@ class GroupCoordinator:
         size_tensor = torch.empty(1, dtype=torch.long, device="cpu")
 
         # Receive object size
-        rank_size = torch.distributed.recv(size_tensor,
+        rank_size = torch.distributed.irecv(size_tensor,
                                            src=self.ranks[src],
                                            group=self.cpu_group)
 
@@ -508,7 +508,7 @@ class GroupCoordinator:
             dtype=torch.uint8,
             device="cpu")
 
-        rank_object = torch.distributed.recv(object_tensor,
+        rank_object = torch.distributed.irecv(object_tensor,
                                              src=self.ranks[src],
                                              group=self.cpu_group)
 
@@ -650,20 +650,20 @@ class GroupCoordinator:
 
             if tensor.is_cpu:
                 # use metadata_group for CPU tensors
-                torch.distributed.send(tensor,
+                torch.distributed.isend(tensor,
                                        dst=self.ranks[dst],
                                        group=metadata_group)
             elif self.force_cpu_for_pp:
                 # use metadata_group for CPU tensors
                 orig_device = tensor.device
                 tensor = tensor.to('cpu')
-                torch.distributed.send(tensor,
+                torch.distributed.isend(tensor,
                                     dst=self.ranks[dst],
                                     group=metadata_group)
                 tensor = tensor.to(orig_device)
             else:
                 # use group for GPU tensors
-                torch.distributed.send(tensor,
+                torch.distributed.isend(tensor,
                                        dst=self.ranks[dst],
                                        group=group)
         return None
@@ -715,20 +715,20 @@ class GroupCoordinator:
 
                 if tensor.is_cpu:
                     # use metadata_group for CPU tensors
-                    torch.distributed.recv(tensor,
+                    torch.distributed.irecv(tensor,
                                            src=self.ranks[src],
                                            group=metadata_group)
                 elif self.force_cpu_for_pp:
                     # use metadata_group for CPU tensors
                     orig_device = tensor.device
                     tensor = tensor.to('cpu')
-                    torch.distributed.recv(tensor,
+                    torch.distributed.irecv(tensor,
                                         src=self.ranks[src],
                                         group=metadata_group)
                     tensor = tensor.to(orig_device)
                 else:
                     # use group for GPU tensors
-                    torch.distributed.recv(tensor,
+                    torch.distributed.irecv(tensor,
                                            src=self.ranks[src],
                                            group=group)
                 if use_all_gather:
