@@ -401,7 +401,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
     ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
-        use_old_pipeline=True
+        use_old_pipeline=False
         self.execution_count += 1
         start_time = time.perf_counter()
         logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_01")
@@ -454,8 +454,6 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         else:
             seqs = None
         logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_07")
-        if model_input.is_first_multi_step:
-            self.broadcast_data = None
         output = self.model_runner.execute_model(
             model_input=model_input,
             kv_caches=self.kv_cache[worker_input.virtual_engine]
@@ -545,6 +543,8 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                 src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
                 if not model_input.is_last_step:
                     self.broadcast_data = world_broadcast_tensor_dict(src=src)
+                else:
+                    self.broadcast_data = None
                 logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_11.2")
                 return [None]
             elif get_pp_group().is_last_rank and not model_input.is_last_step and type(output) == dict:
