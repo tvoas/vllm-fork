@@ -467,31 +467,47 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             **kwargs,
         )
         output, return_loc = output
+        model_input_seq_ids = [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]
         if type(output) is list:
             logfn2(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_08: output_{return_loc}={[type(out) for out in output]}")
-            if len(output) > 0:
-                if type(output[0]) is SamplerOutput:
-                    for sampler in output:
-                        for seq_group in sampler.outputs:
-                            for sample in seq_group.samples:
-                                # Get the current parent_seq_id and new token.
-                                parent_id = sample.parent_seq_id
-                                token = sample.output_token
-                                # Append token to the cache.
-                                if parent_id not in self.seq_token_cache:
-                                    self.seq_token_cache[parent_id] = []
-                                self.seq_token_cache[parent_id].append((token, self.execution_count, return_loc))
-                                # Print the updated chain.
-                                logfn2(f"Updated chain for {self.execution_count}.parent_seq_id.{parent_id}: {self.seq_token_cache[parent_id]}")
-                    # Write all sequences to the file, sorted by parent_seq_id.
-                    file_path = "seq_cache.txt"
-                    with open(file_path, "w") as f:
-                        for key in sorted(self.seq_token_cache.keys()):
-                            seq_line = f"{key}: {self.seq_token_cache[key]}\n"
-                            f.write(seq_line)
-
+            if len(output) > 0 and type(output[0]) is SamplerOutput:
+                for sampler in output:
+                    for seq_group in sampler.outputs:
+                        for sample in seq_group.samples:
+                            # Get the current parent_seq_id and new token.
+                            parent_id = sample.parent_seq_id
+                            token = sample.output_token
+                            # Append token to the cache.
+                            if parent_id not in self.seq_token_cache:
+                                self.seq_token_cache[parent_id] = []
+                            self.seq_token_cache[parent_id].append((token, self.execution_count, return_loc))
+                            # Print the updated chain.
+                            logfn2(f"Updated chain for {self.execution_count}.parent_seq_id.{parent_id}: {self.seq_token_cache[parent_id]}")
+            else:
+                for seq_group in model_input_seq_ids:
+                    for seq_id in seq_group:
+                        if seq_id not in self.seq_token_cache:
+                            self.seq_token_cache[seq_id] = []
+                        self.seq_token_cache[seq_id].append((str(output), self.execution_count, return_loc))
+        elif type(output) is dict:
+            for seq_group in model_input_seq_ids:
+                for seq_id in seq_group:
+                    if seq_id not in self.seq_token_cache:
+                        self.seq_token_cache[seq_id] = []
+                    self.seq_token_cache[seq_id].append((str(list(output.keys())), self.execution_count, return_loc))
         else:
             logfn2(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_09: output_{return_loc}={type(output)}")
+            for seq_group in model_input_seq_ids:
+                for seq_id in seq_group:
+                    if seq_id not in self.seq_token_cache:
+                        self.seq_token_cache[seq_id] = []
+                    self.seq_token_cache[seq_id].append((str(type(output)), self.execution_count, return_loc))
+        # Write all sequences to the file, sorted by parent_seq_id.
+        file_path = f"seq_cache_{get_world_group().rank_in_group}.txt"
+        with open(file_path, "w") as f:
+            for key in sorted(self.seq_token_cache.keys()):
+                seq_line = f"{key}: {self.seq_token_cache[key]}\n"
+                f.write(seq_line)
 
         model_execute_time = time.perf_counter() - start_time
         if use_old_pipeline:
