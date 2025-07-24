@@ -465,7 +465,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         output, return_loc = output
         if type(output) is list:
             logfn2(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_08: output_{return_loc}={[type(out) for out in output]}")
-            if len(len(output) > 0):
+            if len(output) > 0:
                 if type(output[0]) is SamplerOutput:
                     for sampler in output:
                         for seq_group in sampler.outputs:
