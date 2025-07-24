@@ -65,6 +65,7 @@ class WorkerBase:
         self.current_platform = current_platform
         self.execution_count = 0
         self.broadcast_data = {}
+        self.seq_token_cache = {}
 
     def init_device(self) -> None:
         """Initialize device state, such as loading the model or other on-device
@@ -463,6 +464,12 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         )
         if type(output) is list:
             logfn2(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_08: output={[out for out in output]}")
+            #if type(output[0]) is SamplerOutput:
+                #model_input_seq_ids = str([seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups])
+                #if model_input_seq_ids not in self.seq_token_cache:
+                #    self.seq_token_cache[model_input_seq_ids] = set()
+                #for out in output:
+
         else:
             logfn2(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_09: output={type(output)}")
 
