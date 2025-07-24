@@ -799,6 +799,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         is_causal: bool = True,
     ):
         ModelRunnerBase.__init__(self, vllm_config=vllm_config)
+        self.exited_early = False
         environment.set_model_config(self.model_config)
         self.is_driver_worker = is_driver_worker
         self.return_hidden_states = return_hidden_states
@@ -3091,7 +3092,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         logfn(f"HPUModelRunner.execute_model.{execution_count}.info_02: seqs={None if seqs is None else [(None if sgmd.seq_data is None else list(sgmd.seq_data.keys())) for sgmd in seqs]}")
         is_prompt = model_input.is_prompt
         is_multi_step = not (model_input.is_first_multi_step and model_input.is_last_step) or num_steps > 1
-        if False: #not is_prompt: # is_multi_step:
+        if not is_prompt: # is_multi_step:
             return self.execute_model_multi(
                 model_input,
                 kv_caches,
@@ -3610,6 +3611,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             assert model_input.lora_mapping is not None
             self.set_active_loras(model_input.lora_requests,
                                     model_input.lora_mapping)
+        if model_input.is_first_multi_step:
+            self.exited_early = False
+        logfn2(f"HPUModelRunner.execute_model_multi.{execution_count}.info: exited_early={self.exited_early}")
+
         logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_04")
         # Rank!=0 workers has is_prompt==None
         if use_delayed_sampling and not model_input.is_prompt and \
@@ -3766,7 +3771,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             #        all_gather_group=get_tp_group(), src=1)
             logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_22")
             if 'early_exit' in broadcast_data and broadcast_data[
-                    'early_exit']:
+                    'early_exit'] or self.exited_early:
+                self.exited_early = True
                 logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_23")
                 if not get_pp_group().is_last_rank:
                     intermediate_tensors = \
@@ -3904,7 +3910,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             if is_multi_step:
                 output = output.sampled_token_ids_cpu
                 output = output.to("cpu", non_blocking=True)
-                self.cached_step_outputs.append((output, [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]))
+                if not self.exited_early:
+                    self.cached_step_outputs.append((output, [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]))
             if use_delayed_sampling and self.is_driver_worker:
                 output = self._pad_to_max_num_seqs(
                     output.sampled_token_ids, DUMMY_TOKEN_ID)
@@ -3960,6 +3967,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         #                    all_gather_group=get_tp_group(), dst=0)
                         world_broadcast_tensor_dict({'early_exit': True},
                                                 src=src)
+                        self.exited_early = True
                         if not is_multi_step:
                             return [output], 21
                         else:
