@@ -454,6 +454,8 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         else:
             seqs = None
         logfn(f"LocalOrDistributedWorkerBase.execute_model.{self.execution_count}.info_07")
+        if model_input.is_first_multi_step:
+            self.broadcast_data = None
         output = self.model_runner.execute_model(
             model_input=model_input,
             kv_caches=self.kv_cache[worker_input.virtual_engine]
