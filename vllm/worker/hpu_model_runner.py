@@ -3762,18 +3762,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             cache_orig_output_tokens_len[i][j]
                         data.output_token_ids = \
                             data.output_token_ids[:orig_output_tokens_len]
-                        
-        if self.exited_early:
-            logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.early_exit: skipping forward/logits/sampling")
-            if not get_pp_group().is_last_rank:
-                intermediate_tensors = self.model.make_empty_intermediate_tensors(
-                    batch_size=batch_size,
-                    context_size=seq_len if is_prompt else 1,
-                    dtype=self.model_config.dtype,
-                    device=self.device)
-                return intermediate_tensors, 99
-            else:
-                return {'early_exit': True}, 99
         logfn(f"HPUModelRunner.execute_model_multi.{execution_count}.info_20")
         if not model_input.is_first_multi_step and not (self.is_driver_worker and get_pp_group().is_last_rank):
             src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
@@ -3922,7 +3910,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             if is_multi_step:
                 output = output.sampled_token_ids_cpu
                 output = output.to("cpu", non_blocking=True)
-                self.cached_step_outputs.append((output, [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]))
+                if not self.exited_early:
+                    self.cached_step_outputs.append((output, [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]))
             if use_delayed_sampling and self.is_driver_worker:
                 output = self._pad_to_max_num_seqs(
                     output.sampled_token_ids, DUMMY_TOKEN_ID)
