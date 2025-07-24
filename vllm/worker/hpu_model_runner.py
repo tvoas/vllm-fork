@@ -3082,6 +3082,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         seqs=None,
         broadcast_data=None,
         execution_count=0,
+        use_old_pipeline=True
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
         logfn2(f"HPUModelRunner.execute_model.{execution_count}.start: is_prompt={model_input.is_prompt}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, num_steps={num_steps}")
         model_input_seq_ids = str([seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups])
@@ -3092,7 +3093,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         logfn(f"HPUModelRunner.execute_model.{execution_count}.info_02: seqs={None if seqs is None else [(None if sgmd.seq_data is None else list(sgmd.seq_data.keys())) for sgmd in seqs]}")
         is_prompt = model_input.is_prompt
         is_multi_step = not (model_input.is_first_multi_step and model_input.is_last_step) or num_steps > 1
-        if not is_prompt: # is_multi_step:
+        if not use_old_pipeline and not is_prompt: # is_multi_step:
             return self.execute_model_multi(
                 model_input,
                 kv_caches,
