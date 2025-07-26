@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import threading
 import dataclasses
 import os
 import time
@@ -54,6 +55,10 @@ class WorkerBase:
         self.compilation_config = vllm_config.compilation_config
         from vllm.platforms import current_platform
         self.current_platform = current_platform
+        self.execution_count = 0
+        self.recv_pp_lock = threading.Lock()
+        self.runner_pp_lock = threading.Lock()
+        self.send_pp_lock = threading.Lock()
 
     def init_device(self) -> None:
         """Initialize device state, such as loading the model or other on-device
@@ -409,6 +414,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         intermediate_tensors = None
         orig_model_execute_time = 0.0
         if not get_pp_group().is_first_rank:
+            #with self.recv_pp_lock:
             intermediate_tensors = IntermediateTensors(
                 get_pp_group().recv_tensor_dict(
                     all_gather_group=get_tp_group()))
@@ -417,35 +423,50 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                 orig_model_execute_time = intermediate_tensors.tensors.get(
                     "model_execute_time", torch.tensor(0)).item()
 
-        output = self.model_runner.execute_model(
-            model_input=model_input,
-            kv_caches=self.kv_cache[worker_input.virtual_engine]
-            if self.kv_cache is not None else None,
-            intermediate_tensors=intermediate_tensors,
-            num_steps=num_steps,
-            **kwargs,
-        )
+        with self.runner_pp_lock:
+            self.execution_count += 1
+            func_name = f"runner_{self.execution_count}"
+            import textwrap
+            func_code = textwrap.dedent(f"""
+            def {func_name}(self, *args, **kwargs):
+                return self.model_runner.execute_model(*args, **kwargs)
+                return self.model_runner.execute_model(*args, **kwargs)
+            """)
 
-        model_execute_time = time.perf_counter() - start_time
-        if not get_pp_group().is_last_rank:
-            # output is IntermediateTensors
-            assert isinstance(output, IntermediateTensors)
+            namespace = {}
+            exec(func_code, namespace)
+            output = namespace[func_name](
+                self,
+                model_input=model_input,
+                kv_caches=self.kv_cache[worker_input.virtual_engine]
+                if self.kv_cache is not None else None,
+                intermediate_tensors=intermediate_tensors,
+                num_steps=num_steps,
+                **kwargs,
+            )
+
+            model_execute_time = time.perf_counter() - start_time
+            if not get_pp_group().is_last_rank:
+                # output is IntermediateTensors
+                assert isinstance(output, IntermediateTensors)
+                if (self.observability_config is not None
+                        and self.observability_config.collect_model_execute_time):
+                    output.tensors["model_execute_time"] = torch.tensor(
+                        model_execute_time + orig_model_execute_time)
+                #with self.send_pp_lock:
+                #    torch.hpu.synchronize()
+                get_pp_group().send_tensor_dict(output.tensors,
+                                                all_gather_group=get_tp_group())
+                return [None]
             if (self.observability_config is not None
-                    and self.observability_config.collect_model_execute_time):
-                output.tensors["model_execute_time"] = torch.tensor(
-                    model_execute_time + orig_model_execute_time)
-            get_pp_group().send_tensor_dict(output.tensors,
-                                            all_gather_group=get_tp_group())
-            return [None]
-        if (self.observability_config is not None
-                and self.observability_config.collect_model_execute_time
-                and output is not None):
-            for o in output:
-                o.model_execute_time = (orig_model_execute_time +
-                                        model_execute_time)
+                    and self.observability_config.collect_model_execute_time
+                    and output is not None):
+                for o in output:
+                    o.model_execute_time = (orig_model_execute_time +
+                                            model_execute_time)
 
-        # output is List[SamplerOutput]
-        return output
+            # output is List[SamplerOutput]
+            return output
 
     def _execute_model_spmd(
         self,

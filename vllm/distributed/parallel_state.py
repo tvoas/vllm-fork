@@ -638,13 +638,17 @@ class GroupCoordinator:
         if self.ranks[dst] not in self.last_send_td_handles:
             self.last_send_td_handles[self.ranks[dst]] = []
         else:
-            for handle in self.last_send_td_handles[self.ranks[dst]]:
-                handle.wait()
-            self.last_send_td_handles[self.ranks[dst]] = []
+            if len(self.last_send_td_handles[self.ranks[dst]]) >= 1:
+                for handle in self.last_send_td_handles[self.ranks[dst]][0]:
+                    handle.wait()
+                del self.last_send_td_handles[self.ranks[dst]][0]
         # `metadata_list` lives in CPU memory.
         # `send_object_list` has serialization & deserialization,
         # all happening on CPU. Therefore, we can use the CPU group.
-        self.last_send_td_handles[self.ranks[dst]] += self.send_object(metadata_list, dst=dst)
+        self.last_send_td_handles[self.ranks[dst]] += [[]]
+        torch.hpu.synchronize()
+        self.last_send_td_handles[self.ranks[dst]][-1] += self.send_object(metadata_list, dst=dst)
+
         for tensor in tensor_list:
             if tensor.numel() == 0:
                 # Skip sending empty tensors.
@@ -657,20 +661,20 @@ class GroupCoordinator:
 
             if tensor.is_cpu:
                 # use metadata_group for CPU tensors
-                self.last_send_td_handles[self.ranks[dst]] += [torch.distributed.isend(tensor,
+                self.last_send_td_handles[self.ranks[dst]][-1] += [torch.distributed.isend(tensor,
                                        dst=self.ranks[dst],
                                        group=metadata_group)]
             elif self.force_cpu_for_pp:
                 # use metadata_group for CPU tensors
                 orig_device = tensor.device
                 tensor = tensor.to('cpu')
-                self.last_send_td_handles[self.ranks[dst]] += [torch.distributed.isend(tensor,
+                self.last_send_td_handles[self.ranks[dst]][-1] += [torch.distributed.isend(tensor,
                                     dst=self.ranks[dst],
                                     group=metadata_group)]
                 tensor = tensor.to(orig_device)
             else:
                 # use group for GPU tensors
-                self.last_send_td_handles[self.ranks[dst]] += [torch.distributed.isend(tensor,
+                self.last_send_td_handles[self.ranks[dst]][-1] += [torch.distributed.isend(tensor,
                                        dst=self.ranks[dst],
                                        group=group)]
         return None
