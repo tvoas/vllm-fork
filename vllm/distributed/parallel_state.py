@@ -534,8 +534,10 @@ class GroupCoordinator:
         if (not torch.distributed.is_initialized() or self.world_size == 1):
             return tensor_dict
 
-        group = self.device_group
-        metadata_group = self.cpu_group
+        if not group:
+            group = self.cpu_group if self.force_cpu_for_pp else self.device_group
+        if not metadata_group:
+            metadata_group = self.cpu_group
         assert src < self.world_size, f"Invalid src rank ({src})"
 
         rank_in_group = self.rank_in_group
@@ -545,11 +547,19 @@ class GroupCoordinator:
                 tensor_dict,
                 dict), (f"Expecting a dictionary, got {type(tensor_dict)}")
             metadata_list, tensor_list = _split_tensor_dict(tensor_dict)
+            if src not in self.last_broadcast_td_handles:
+                self.last_broadcast_td_handles[src] = []
+            else:
+                if len(self.last_broadcast_td_handles[src]) >= 1:
+                    for handle in self.last_broadcast_td_handles[src][0]:
+                        handle.wait()
+                    del self.last_broadcast_td_handles[src][0]
+            self.last_broadcast_td_handles[src] += [[]]
             # `metadata_list` lives in CPU memory.
             # `broadcast_object_list` has serialization & deserialization,
             # all happening on CPU. Therefore, we can use the CPU group.
+            self.last_broadcast_td_handles[src] += [[]]
             self.broadcast_object(metadata_list, src=src)
-            async_handles = []
             for tensor in tensor_list:
                 if tensor.numel() == 0:
                     # Skip broadcasting empty tensors.
@@ -560,16 +570,22 @@ class GroupCoordinator:
                                                          src=self.ranks[src],
                                                          group=metadata_group,
                                                          async_op=True)
+                elif self.force_cpu_for_pp:
+                    # use metadata_group for CPU tensors
+                    orig_device = tensor.device
+                    tensor = tensor.to('cpu')
+                    handle = torch.distributed.broadcast(tensor,
+                                                         src=self.ranks[src],
+                                                         group=group,
+                                                         async_op=True)
+                    tensor = tensor.to(orig_device)
                 else:
                     # use group for GPU tensors
                     handle = torch.distributed.broadcast(tensor,
                                                          src=self.ranks[src],
                                                          group=group,
                                                          async_op=True)
-                async_handles.append(handle)
-            for async_handle in async_handles:
-                async_handle.wait()
-
+                self.last_broadcast_td_handles[src][-1].append(handle)
         else:
             metadata_list = self.broadcast_object(None, src=src)
             tensor_dict = {}
@@ -590,6 +606,16 @@ class GroupCoordinator:
                             src=self.ranks[src],
                             group=metadata_group,
                             async_op=True)
+                    elif self.force_cpu_for_pp:
+                        # use metadata_group for CPU tensors
+                        orig_device = tensor.device
+                        tensor = tensor.to('cpu')
+                        handle = torch.distributed.broadcast(
+                            tensor,
+                            src=self.ranks[src],
+                            group=group,
+                            async_op=True)
+                        tensor = tensor.to(orig_device)
                     else:
                         # use group for GPU tensors
                         handle = torch.distributed.broadcast(
@@ -646,7 +672,6 @@ class GroupCoordinator:
         # `send_object_list` has serialization & deserialization,
         # all happening on CPU. Therefore, we can use the CPU group.
         self.last_send_td_handles[self.ranks[dst]] += [[]]
-        torch.hpu.synchronize()
         self.last_send_td_handles[self.ranks[dst]][-1] += self.send_object(metadata_list, dst=dst)
 
         for tensor in tensor_list:
@@ -826,7 +851,7 @@ def init_model_parallel_group(
         use_message_queue_broadcaster=use_message_queue_broadcaster,
         group_name=group_name,
         force_cpu_for_pp=envs.VLLM_PP_USE_CPU_COMS \
-            if group_name.lower() == "pp" else False,
+            if group_name.lower() in ["pp", "world"] else False,
     )
 
 
