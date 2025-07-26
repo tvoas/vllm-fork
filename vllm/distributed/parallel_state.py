@@ -266,6 +266,7 @@ class GroupCoordinator:
                 self.cpu_group, 1 << 22, 6)
         self.force_cpu_for_pp: bool = force_cpu_for_pp
         self.last_send_td_handles = {}
+        self.last_broadcast_td_handles = {}
 
         from vllm.platforms import current_platform
         self.use_custom_op_call = (current_platform.is_cuda_alike()
