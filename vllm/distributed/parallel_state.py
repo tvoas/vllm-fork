@@ -43,6 +43,8 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 from vllm.utils import (direct_register_custom_op, resolve_obj_by_qualname,
                         supports_custom_op)
+from vllm.logger import init_logger
+logger = init_logger(__name__)
 
 
 @dataclass
@@ -211,6 +213,7 @@ class GroupCoordinator:
         force_cpu_for_pp: bool = False,
     ):
         group_name = group_name or "anonymous"
+        self.group_name = group_name
         self.unique_name = _get_unique_name(group_name)
         _register_group(self)
 
@@ -415,7 +418,7 @@ class GroupCoordinator:
                                     group=self.device_group)
         return input_
 
-    def broadcast_object(self, obj: Optional[Any] = None, src: int = 0):
+    def broadcast_object(self, obj: Optional[Any] = None, src: int = 0, group: Optional[ProcessGroup] = None):
         """Broadcast the input object.
         NOTE: `src` is the local rank of the source rank.
         """
@@ -430,13 +433,13 @@ class GroupCoordinator:
         if self.rank_in_group == src:
             torch.distributed.broadcast_object_list([obj],
                                                     src=self.ranks[src],
-                                                    group=self.cpu_group)
+                                                    group=group if group is not None else self.cpu_group)
             return obj
         else:
             recv = [None]
             torch.distributed.broadcast_object_list(recv,
                                                     src=self.ranks[src],
-                                                    group=self.cpu_group)
+                                                    group=group if group is not None else self.cpu_group)
             return recv[0]
 
     def broadcast_object_list(self,
@@ -454,7 +457,7 @@ class GroupCoordinator:
         # Broadcast.
         torch.distributed.broadcast_object_list(obj_list,
                                                 src=self.ranks[src],
-                                                group=self.device_group)
+                                                group=group if group is not None else group)
         return obj_list
 
     def send_object(self, obj: Any, dst: int) -> None:
@@ -560,11 +563,12 @@ class GroupCoordinator:
             # `broadcast_object_list` has serialization & deserialization,
             # all happening on CPU. Therefore, we can use the CPU group.
             self.last_broadcast_td_handles[src] += [[]]
-            self.broadcast_object(metadata_list, src=src)
+            self.broadcast_object(metadata_list, src=src, group=group)
             for tensor in tensor_list:
                 if tensor.numel() == 0:
                     # Skip broadcasting empty tensors.
                     continue
+                logger.info(f"Broadcasting tensor out with {self.force_cpu_for_pp} for name {self.group_name} ")
                 if tensor.is_cpu:
                     # use metadata_group for CPU tensors
                     handle = torch.distributed.broadcast(tensor,
