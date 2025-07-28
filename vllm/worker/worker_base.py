@@ -12,7 +12,7 @@ import torch.nn as nn
 
 from vllm.config import (ObservabilityConfig, VllmConfig,
                          set_current_vllm_config)
-from vllm.distributed import broadcast_tensor_dict, get_pp_group, get_tp_group
+from vllm.distributed import broadcast_tensor_dict, get_pp_group, get_tp_group, get_world_group
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
@@ -26,6 +26,9 @@ from vllm.worker.model_runner_base import (BroadcastableModelInput,
                                            ModelRunnerInputBase)
 
 logger = init_logger(__name__)
+
+def logfn(in_str):
+    logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}]: {in_str}")
 
 
 @warn_for_unimplemented_methods
@@ -54,6 +57,7 @@ class WorkerBase:
         self.compilation_config = vllm_config.compilation_config
         from vllm.platforms import current_platform
         self.current_platform = current_platform
+        self.execution_count = 0
 
     def init_device(self) -> None:
         """Initialize device state, such as loading the model or other on-device
@@ -389,6 +393,8 @@ class LocalOrDistributedWorkerBase(WorkerBase):
     ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
+        self.execution_count += 1
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.info_{__LINE__}")
         start_time = time.perf_counter()
 
         inputs = self.prepare_input(execute_model_req)
