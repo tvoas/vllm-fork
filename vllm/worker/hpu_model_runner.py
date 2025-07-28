@@ -3388,11 +3388,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                      f'bs{batch_size}_'
                                      f'seq{seq_len}'),
                         args=profiler_args):
-                    with contextlib.nullcontext() if num_steps == 1 else runner_pp_lock:
-                        output = self.sampler(
-                            logits=logits,
-                            sampling_metadata=sampling_metadata,
-                        )
+                    output = self.sampler(
+                        logits=logits,
+                        sampling_metadata=sampling_metadata,
+                    )
                     if output.sampled_token_ids is None:
                         output.sampled_token_ids_cpu = output[0].samples[0].output_token
                     else:
