@@ -29,7 +29,8 @@ from vllm.worker.model_runner_base import (BroadcastableModelInput,
 logger = init_logger(__name__)
 
 def logfn(in_str):
-    logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}][LN{inspect.currentframe().f_lineno}]: {in_str}")
+    torch.hpu.synchronize()
+    logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}]: {in_str}")
 
 
 @warn_for_unimplemented_methods
@@ -395,43 +396,53 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
         self.execution_count += 1
-        logfn(f"LocalOrDistributedWorkerBase.execute_model.info")
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
         start_time = time.perf_counter()
 
         inputs = self.prepare_input(execute_model_req)
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
         if inputs is None:
             return None
-
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
         model_input, worker_input, kwargs = inputs
         num_steps = worker_input.num_steps
         if (execute_model_req is not None and execute_model_req.spec_step_idx):
             kwargs["spec_step_idx"] = execute_model_req.spec_step_idx
-
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
         self.execute_worker(worker_input)
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
 
         # If there is no input, we don't need to execute the model.
         if worker_input.num_seq_groups == 0:
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
             return []
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
 
         intermediate_tensors = None
         orig_model_execute_time = 0.0
         if num_steps > 1:
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
             # If this is a multi-step request, we don't need to send
             pass
         elif not get_pp_group().is_first_rank:
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
             if model_input.is_first_multi_step:
+                logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
                 intermediate_tensors = IntermediateTensors(
                     get_pp_group().recv_tensor_dict(
                         all_gather_group=get_tp_group()))
+                logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
                 if (self.observability_config is not None
                         and self.observability_config.collect_model_execute_time):
                     orig_model_execute_time = intermediate_tensors.tensors.get(
                         "model_execute_time", torch.tensor(0)).item()
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
 
         if execute_model_req is not None:
             seqs = execute_model_req.seq_group_metadata_list.copy()
         else:
             seqs = None
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
 
         output = self.model_runner.execute_model(
             model_input=model_input,
@@ -442,28 +453,37 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             seqs=seqs,
             **kwargs,
         )
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
 
         model_execute_time = time.perf_counter() - start_time
         if num_steps > 1:
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
             # If this is a multi-step request, we don't need to recv
             return [None]
         elif not get_pp_group().is_last_rank:
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
             if model_input.is_first_multi_step:
+                logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
                 # output is IntermediateTensors
                 assert isinstance(output, IntermediateTensors)
                 if (self.observability_config is not None
                         and self.observability_config.collect_model_execute_time):
                     output.tensors["model_execute_time"] = torch.tensor(
                         model_execute_time + orig_model_execute_time)
+                logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
                 get_pp_group().send_tensor_dict(output.tensors,
                                                 all_gather_group=get_tp_group())
+                logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
+            logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
             return [None]
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
         if (self.observability_config is not None
                 and self.observability_config.collect_model_execute_time
                 and output is not None):
             for o in output:
                 o.model_execute_time = (orig_model_execute_time +
                                         model_execute_time)
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.info_LN{inspect.currentframe().f_lineno}")
 
         # output is List[SamplerOutput]
         return output

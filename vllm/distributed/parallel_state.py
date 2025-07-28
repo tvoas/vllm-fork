@@ -21,6 +21,7 @@ If you only need to use the distributed environment without model/pipeline
  parallelism, you can skip the model parallel initialization and destruction
  steps.
 """
+import inspect
 import contextlib
 import gc
 import pickle
@@ -47,6 +48,7 @@ from vllm.utils import (direct_register_custom_op, resolve_obj_by_qualname,
 from vllm.logger import init_logger
 logger = init_logger(__name__)
 def logfn(in_str):
+    torch.hpu.synchronize()
     logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}]: {in_str}")
 
 
@@ -427,19 +429,25 @@ class GroupCoordinator:
         # Bypass the function if we are using only 1 GPU.
         if self.world_size == 1:
             return obj
+        logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
         if self.mq_broadcaster is not None:
             assert src == 0, "Message queue broadcaster only supports src=0"
             return self.mq_broadcaster.broadcast_object(obj)
+        logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
         if self.rank_in_group == src:
+            logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
             torch.distributed.broadcast_object_list([obj],
                                                     src=self.ranks[src],
                                                     group=group if group is not None else self.cpu_group)
+            logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
             return obj
         else:
             recv = [None]
+            logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
             torch.distributed.broadcast_object_list(recv,
                                                     src=self.ranks[src],
                                                     group=group if group is not None else self.cpu_group)
+            logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
             return recv[0]
 
     def broadcast_object_list(self,
@@ -455,9 +463,11 @@ class GroupCoordinator:
         if self.world_size == 1:
             return obj_list
         # Broadcast.
+        logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
         torch.distributed.broadcast_object_list(obj_list,
                                                 src=self.ranks[src],
                                                 group=group if group is not None else self.cpu_group)
+        logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
         return obj_list
 
     def send_object(self, obj: Any, dst: int) -> None:
@@ -471,22 +481,27 @@ class GroupCoordinator:
             "as the current rank.")
 
         # Serialize object to tensor and get the size as well
+        logfn(f"GroupCoordinator.send_object.info_LN{inspect.currentframe().f_lineno}")
         object_tensor = torch.frombuffer(pickle.dumps(obj), dtype=torch.uint8)
 
+        logfn(f"GroupCoordinator.send_object.info_LN{inspect.currentframe().f_lineno}")
         size_tensor = torch.tensor([object_tensor.numel()],
                                    dtype=torch.long,
                                    device="cpu")
+        logfn(f"GroupCoordinator.send_object.info_LN{inspect.currentframe().f_lineno}")
 
         # Send object size
-
+        logfn(f"GroupCoordinator.send_object.info_LN{inspect.currentframe().f_lineno}")
         torch.distributed.send(size_tensor,
                                dst=self.ranks[dst],
                                group=self.cpu_group)
+        logfn(f"GroupCoordinator.send_object.info_LN{inspect.currentframe().f_lineno}")
 
         # Send object
         torch.distributed.send(object_tensor,
                                dst=self.ranks[dst],
                                group=self.cpu_group)
+        logfn(f"GroupCoordinator.send_object.info_LN{inspect.currentframe().f_lineno}")
 
         return None
 
@@ -499,28 +514,34 @@ class GroupCoordinator:
         assert src != self.rank_in_group, (
             "Invalid source rank. Source rank is the same as the current rank."
         )
+        logfn(f"GroupCoordinator.recv_object.info_LN{inspect.currentframe().f_lineno}")
 
         size_tensor = torch.empty(1, dtype=torch.long, device="cpu")
+        logfn(f"GroupCoordinator.recv_object.info_LN{inspect.currentframe().f_lineno}")
 
         # Receive object size
         rank_size = torch.distributed.recv(size_tensor,
                                            src=self.ranks[src],
                                            group=self.cpu_group)
+        logfn(f"GroupCoordinator.recv_object.info_LN{inspect.currentframe().f_lineno}")
 
         # Tensor to receive serialized objects into.
         object_tensor = torch.empty(  # type: ignore[call-overload]
             size_tensor.item(),  # type: ignore[arg-type]
             dtype=torch.uint8,
             device="cpu")
+        logfn(f"GroupCoordinator.recv_object.info_LN{inspect.currentframe().f_lineno}")
 
         rank_object = torch.distributed.recv(object_tensor,
                                              src=self.ranks[src],
                                              group=self.cpu_group)
+        logfn(f"GroupCoordinator.recv_object.info_LN{inspect.currentframe().f_lineno}")
 
         assert rank_object == rank_size, (
             "Received object sender rank does not match the size sender rank.")
-
+        logfn(f"GroupCoordinator.recv_object.info_LN{inspect.currentframe().f_lineno}")
         obj = pickle.loads(object_tensor.numpy().tobytes())
+        logfn(f"GroupCoordinator.recv_object.info_LN{inspect.currentframe().f_lineno}")
 
         return obj
 
@@ -554,7 +575,9 @@ class GroupCoordinator:
             # `metadata_list` lives in CPU memory.
             # `broadcast_object_list` has serialization & deserialization,
             # all happening on CPU. Therefore, we can use the CPU group.
+            logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
             self.broadcast_object(metadata_list, src=src, group=group)
+            logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
             async_handles = []
             for tensor in tensor_list:
                 if tensor.numel() == 0:
@@ -562,31 +585,43 @@ class GroupCoordinator:
                     continue
                 if tensor.is_cpu:
                     # use metadata_group for CPU tensors
+                    logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     handle = torch.distributed.broadcast(tensor,
                                                          src=self.ranks[src],
                                                          group=metadata_group,
                                                          async_op=True)
+                    logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                 elif self.force_cpu_for_pp:
                     # use metadata_group for CPU tensors
                     orig_device = tensor.device
+                    logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     tensor = tensor.to('cpu')
+                    logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     handle = torch.distributed.broadcast(tensor,
                                                          src=self.ranks[src],
                                                          group=group,
                                                          async_op=True)
+                    logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     tensor = tensor.to(orig_device)
+                    logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                 else:
                     # use group for GPU tensors
+                    logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     handle = torch.distributed.broadcast(tensor,
                                                          src=self.ranks[src],
                                                          group=group,
                                                          async_op=True)
+                    logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                 async_handles.append(handle)
+            logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
             for async_handle in async_handles:
                 async_handle.wait()
+            logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
 
         else:
+            logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
             metadata_list = self.broadcast_object(None, src=src)
+            logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
             tensor_dict = {}
             async_handles = []
             for key, value in metadata_list:
@@ -600,34 +635,44 @@ class GroupCoordinator:
                         continue
                     if tensor.is_cpu:
                         # use metadata_group for CPU tensors
+                        logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                         handle = torch.distributed.broadcast(
                             tensor,
                             src=self.ranks[src],
                             group=metadata_group,
                             async_op=True)
+                        logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     elif self.force_cpu_for_pp:
                         # use metadata_group for CPU tensors
                         orig_device = tensor.device
+                        logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                         tensor = tensor.to('cpu')
+                        logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                         handle = torch.distributed.broadcast(
                             tensor,
                             src=self.ranks[src],
                             group=group,
                             async_op=True)
+                        logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                         tensor = tensor.to(orig_device)
+                        logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     else:
                         # use group for GPU tensors
+                        logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                         handle = torch.distributed.broadcast(
                             tensor,
                             src=self.ranks[src],
                             group=group,
                             async_op=True)
+                        logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     async_handles.append(handle)
                     tensor_dict[key] = tensor
                 else:
                     tensor_dict[key] = value
+            logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
             for async_handle in async_handles:
                 async_handle.wait()
+            logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
         return tensor_dict
 
     def send_tensor_dict(
@@ -663,7 +708,9 @@ class GroupCoordinator:
         # `metadata_list` lives in CPU memory.
         # `send_object_list` has serialization & deserialization,
         # all happening on CPU. Therefore, we can use the CPU group.
+        logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
         self.send_object(metadata_list, dst=dst)
+        logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
         for tensor in tensor_list:
             if tensor.numel() == 0:
                 # Skip sending empty tensors.
@@ -672,26 +719,36 @@ class GroupCoordinator:
             # send-allgather: send only a slice, then do allgather.
             if (all_gather_group is not None
                     and tensor.numel() % all_gather_size == 0):
+                logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                 tensor = tensor.reshape(all_gather_size, -1)[all_gather_rank]
+                logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
 
             if tensor.is_cpu:
                 # use metadata_group for CPU tensors
+                logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                 torch.distributed.send(tensor,
                                        dst=self.ranks[dst],
                                        group=metadata_group)
+                logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
             elif self.force_cpu_for_pp:
                 # use metadata_group for CPU tensors
                 orig_device = tensor.device
+                logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                 tensor = tensor.to('cpu')
+                logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                 torch.distributed.send(tensor,
                                     dst=self.ranks[dst],
                                     group=metadata_group)
+                logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                 tensor = tensor.to(orig_device)
+                logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
             else:
                 # use group for GPU tensors
+                logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                 torch.distributed.send(tensor,
                                        dst=self.ranks[dst],
                                        group=group)
+                logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
         return None
 
     def recv_tensor_dict(
@@ -717,8 +774,9 @@ class GroupCoordinator:
         if src is None:
             src = (self.rank_in_group - 1) % self.world_size
         assert src < self.world_size, f"Invalid src rank ({src})"
-
+        logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
         recv_metadata_list = self.recv_object(src=src)
+        logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
         tensor_dict: Dict[str, Any] = {}
         for key, value in recv_metadata_list:
             if isinstance(value, TensorMetadata):
@@ -735,33 +793,46 @@ class GroupCoordinator:
                                   and tensor.numel() % all_gather_size == 0)
 
                 if use_all_gather:
+                    logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     orig_shape = tensor.shape
                     tensor = tensor.reshape(all_gather_size,
                                             -1)[all_gather_rank]
+                    logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
 
                 if tensor.is_cpu:
                     # use metadata_group for CPU tensors
+                    logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     torch.distributed.recv(tensor,
                                            src=self.ranks[src],
                                            group=metadata_group)
+                    logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                 elif self.force_cpu_for_pp:
                     # use metadata_group for CPU tensors
                     orig_device = tensor.device
+                    logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     tensor = tensor.to('cpu')
+                    logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     torch.distributed.recv(tensor,
                                         src=self.ranks[src],
                                         group=metadata_group)
+                    logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     tensor = tensor.to(orig_device)
+                    logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                 else:
                     # use group for GPU tensors
+                    logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     torch.distributed.recv(tensor,
                                            src=self.ranks[src],
                                            group=group)
+                    logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                 if use_all_gather:
                     # do the allgather
+                    logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     tensor = all_gather_group.all_gather(  # type: ignore
                         tensor, dim=0)
+                    logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
                     tensor = tensor.reshape(orig_shape)
+                    logfn(f"GroupCoordinator.recv_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
 
                 tensor_dict[key] = tensor
             else:
