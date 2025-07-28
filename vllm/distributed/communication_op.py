@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, Union
 import torch
 import torch.distributed
 
-from .parallel_state import get_tp_group, get_world_group
+from .parallel_state import get_tp_group, get_world_group, get_pp_group
 
 
 def tensor_model_parallel_all_reduce(input_: torch.Tensor) -> torch.Tensor:
@@ -44,4 +44,16 @@ def world_broadcast_tensor_dict(tensor_dict: Optional[Dict[Any, Union[torch.Tens
                           src: int = 0):
     if not torch.distributed.is_initialized():
         return tensor_dict
+    if get_world_group().rank_in_group == src:
+        get_pp_group().send_tensor_dict(
+            tensor_dict,
+            all_gather_group=get_tp_group(),
+            dst=0,
+        )
+    else:
+        get_pp_group().recv_tensor_dict(
+            all_gather_group=get_tp_group(),
+            src=1,
+        )
+
     return get_world_group().broadcast_tensor_dict(tensor_dict, src)
