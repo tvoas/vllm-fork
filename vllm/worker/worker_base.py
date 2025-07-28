@@ -63,10 +63,10 @@ class WorkerBase:
         from vllm.platforms import current_platform
         self.current_platform = current_platform
         self.execution_count = 0
-        self.prepare_pp_lock = threading.Lock()
+        self.prepare_pp_lock = contextlib.nullcontext()
         self.recv_pp_lock = contextlib.nullcontext()
         self.runner_pp_lock = threading.Lock()
-        self.send_pp_lock = contextlib.nullcontext()
+        self.send_pp_lock = threading.Lock()
 
     def init_device(self) -> None:
         """Initialize device state, such as loading the model or other on-device
