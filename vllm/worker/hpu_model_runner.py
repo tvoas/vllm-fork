@@ -3368,9 +3368,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         args=profiler_args):
                     if num_steps == 1:
                         sampling_metadata.selected_token_indices = None
-                    with contextlib.nullcontext() if num_steps == 1 else runner_pp_lock:
-                        logits = self.model.compute_logits(hidden_states,
-                                                           sampling_metadata)
+                    logits = self.model.compute_logits(hidden_states,
+                                                        sampling_metadata)
 
                 htorch.core.mark_step()
                 # Only perform sampling in the driver worker.
