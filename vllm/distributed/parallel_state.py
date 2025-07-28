@@ -420,7 +420,7 @@ class GroupCoordinator:
                                     group=self.device_group)
         return input_
 
-    def broadcast_object(self, obj: Optional[Any] = None, src: int = 0, group: Optional[ProcessGroup] = None):
+    def broadcast_object(self, obj: Optional[Any] = None, src: int = 0):
         """Broadcast the input object.
         NOTE: `src` is the local rank of the source rank.
         """
@@ -438,7 +438,7 @@ class GroupCoordinator:
             logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
             torch.distributed.broadcast_object_list([obj],
                                                     src=self.ranks[src],
-                                                    group=group if group is not None else self.cpu_group)
+                                                    group=self.cpu_group)
             logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
             return obj
         else:
@@ -446,7 +446,7 @@ class GroupCoordinator:
             logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
             torch.distributed.broadcast_object_list(recv,
                                                     src=self.ranks[src],
-                                                    group=group if group is not None else self.cpu_group)
+                                                    group=self.cpu_group)
             logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
             return recv[0]
 
@@ -466,7 +466,7 @@ class GroupCoordinator:
         logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
         torch.distributed.broadcast_object_list(obj_list,
                                                 src=self.ranks[src],
-                                                group=group if group is not None else self.cpu_group)
+                                                group=self.device_group)
         logfn(f"GroupCoordinator.broadcast_object.info_LN{inspect.currentframe().f_lineno}")
         return obj_list
 
@@ -559,10 +559,8 @@ class GroupCoordinator:
         if (not torch.distributed.is_initialized() or self.world_size == 1):
             return tensor_dict
 
-        if group is None:
-            group = self.cpu_group if self.force_cpu_for_pp else self.device_group
-        if not metadata_group:
-            metadata_group = self.cpu_group
+        group = self.device_group
+        metadata_group = self.cpu_group
         assert src < self.world_size, f"Invalid src rank ({src})"
 
         rank_in_group = self.rank_in_group
@@ -576,7 +574,7 @@ class GroupCoordinator:
             # `broadcast_object_list` has serialization & deserialization,
             # all happening on CPU. Therefore, we can use the CPU group.
             logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
-            self.broadcast_object(metadata_list, src=src, group=group)
+            self.broadcast_object(metadata_list, src=src)
             logfn(f"GroupCoordinator.broadcast_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
             async_handles = []
             for tensor in tensor_list:
