@@ -494,18 +494,18 @@ class GroupCoordinator:
 
         # Send object size
         logfn(f"GroupCoordinator.send_object.info_LN{inspect.currentframe().f_lineno}")
-        handle_size = torch.distributed.isend(size_tensor,
+        torch.distributed.send(size_tensor,
                                dst=self.ranks[dst],
                                group=self.cpu_group)
         logfn(f"GroupCoordinator.send_object.info_LN{inspect.currentframe().f_lineno}")
 
         # Send object
-        handle_object = torch.distributed.isend(object_tensor,
+        torch.distributed.send(object_tensor,
                                dst=self.ranks[dst],
                                group=self.cpu_group)
         logfn(f"GroupCoordinator.send_object.info_LN{inspect.currentframe().f_lineno}")
 
-        return [handle_size, handle_object]
+        return None
 
     def recv_object(self, src: int) -> Any:
         """Receive the input object list from the source rank."""
@@ -522,10 +522,10 @@ class GroupCoordinator:
         logfn(f"GroupCoordinator.recv_object.info_LN{inspect.currentframe().f_lineno}")
 
         # Receive object size
-        handle_size = torch.distributed.irecv(size_tensor,
+        rank_size = torch.distributed.recv(size_tensor,
                                            src=self.ranks[src],
                                            group=self.cpu_group)
-        handle_size.wait()
+        logfn(f"GroupCoordinator.recv_object.info_LN{inspect.currentframe().f_lineno}")
 
         # Tensor to receive serialized objects into.
         object_tensor = torch.empty(  # type: ignore[call-overload]
@@ -534,12 +534,13 @@ class GroupCoordinator:
             device="cpu")
         logfn(f"GroupCoordinator.recv_object.info_LN{inspect.currentframe().f_lineno}")
 
-        handle_object = torch.distributed.irecv(object_tensor,
+        rank_object = torch.distributed.recv(object_tensor,
                                              src=self.ranks[src],
                                              group=self.cpu_group)
-        handle_object.wait()
         logfn(f"GroupCoordinator.recv_object.info_LN{inspect.currentframe().f_lineno}")
 
+        assert rank_object == rank_size, (
+            "Received object sender rank does not match the size sender rank.")
         logfn(f"GroupCoordinator.recv_object.info_LN{inspect.currentframe().f_lineno}")
         obj = pickle.loads(object_tensor.numpy().tobytes())
         logfn(f"GroupCoordinator.recv_object.info_LN{inspect.currentframe().f_lineno}")
@@ -718,7 +719,7 @@ class GroupCoordinator:
         # all happening on CPU. Therefore, we can use the CPU group.
         logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
         self.last_send_td_handles[self.ranks[dst]] += [[]]
-        self.last_send_td_handles[self.ranks[dst]][-1] += self.send_object(metadata_list, dst=dst)
+        self.send_object(metadata_list, dst=dst)
         logfn(f"GroupCoordinator.send_tensor_dict.info_LN{inspect.currentframe().f_lineno}")
         for tensor in tensor_list:
             if tensor.numel() == 0:
