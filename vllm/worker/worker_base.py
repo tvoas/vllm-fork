@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import dataclasses
 import os
 import time
@@ -28,7 +29,7 @@ from vllm.worker.model_runner_base import (BroadcastableModelInput,
 logger = init_logger(__name__)
 
 def logfn(in_str):
-    logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}]: {in_str}")
+    logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}][LN{inspect.currentframe().f_lineno}]: {in_str}")
 
 
 @warn_for_unimplemented_methods
@@ -394,7 +395,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
         self.execution_count += 1
-        logfn(f"LocalOrDistributedWorkerBase.execute_model.info_{__LINE__}")
+        logfn(f"LocalOrDistributedWorkerBase.execute_model.info")
         start_time = time.perf_counter()
 
         inputs = self.prepare_input(execute_model_req)
