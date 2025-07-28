@@ -890,6 +890,7 @@ def init_world_group(ranks: List[int], local_rank: int,
         torch_distributed_backend=backend,
         use_device_communicator=False,
         group_name="world",
+        force_cpu_for_pp=envs.VLLM_PP_USE_CPU_COMS,
     )
 
 
@@ -909,7 +910,7 @@ def init_model_parallel_group(
         use_message_queue_broadcaster=use_message_queue_broadcaster,
         group_name=group_name,
         force_cpu_for_pp=envs.VLLM_PP_USE_CPU_COMS \
-            if group_name.lower() in ["pp", "world"] else False,
+            if group_name.lower() == "pp" else False,
     )
 
 
