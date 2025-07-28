@@ -2432,6 +2432,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    intermediate_tensors=intermediate_tensors,
                                    warmup_mode=True,
                                    num_steps=2,
+                                   recv_pp_lock=contextlib.nullcontext(),
+                                   runner_pp_lock=contextlib.nullcontext(),
                                    seqs=seqs)
                 inputs = dataclasses.replace(inputs,
                                              is_first_multi_step=False,
@@ -2441,6 +2443,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    intermediate_tensors=intermediate_tensors,
                                    warmup_mode=True,
                                    num_steps=2,
+                                   recv_pp_lock=contextlib.nullcontext(),
+                                   runner_pp_lock=contextlib.nullcontext(),
                                    seqs=seqs)
             torch.hpu.synchronize()
             if profiler:
@@ -3078,6 +3082,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         warmup_mode=False,
         previous_hidden_states: Optional[torch.Tensor] = None,
         seqs=None,
+        recv_pp_lock=None,
+        runner_pp_lock=None,
         execution_count=0,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
         logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}: is_prompt={model_input.is_prompt}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, num_steps={num_steps}")
@@ -3290,7 +3296,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
-                    broadcast_data = world_broadcast_tensor_dict(src=src)
+                    with recv_pp_lock:
+                        broadcast_data = world_broadcast_tensor_dict(src=src)
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     if 'early_exit' in broadcast_data and broadcast_data[
                             'early_exit']:
@@ -3310,9 +3317,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
 
                 if num_steps > 1 and not get_pp_group().is_first_rank:
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
-                    execute_model_kwargs["intermediate_tensors"] = IntermediateTensors(
-                        get_pp_group().recv_tensor_dict(
-                            all_gather_group=get_tp_group()))
+                    with recv_pp_lock:
+                        execute_model_kwargs["intermediate_tensors"] = IntermediateTensors(
+                            get_pp_group().recv_tensor_dict(
+                                all_gather_group=get_tp_group()))
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
 
                 profiler_args = {
@@ -3338,11 +3346,12 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 with self.profiler.record_event('internal',
                                                 model_event_name,
                                                 args=profiler_args):
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
-                    hidden_states = self.model.forward(
-                        **execute_model_kwargs,
-                        selected_token_indices=sampling_metadata.
-                        selected_token_indices)
+                    with contextlib.nullcontext() if num_steps == 1 else runner_pp_lock:
+                        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
+                        hidden_states = self.model.forward(
+                            **execute_model_kwargs,
+                            selected_token_indices=sampling_metadata.
+                            selected_token_indices)
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     if warmup_mode:
                         logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
@@ -3367,8 +3376,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                         assert isinstance(hidden_states, IntermediateTensors)
                         logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
-                        get_pp_group().send_tensor_dict(hidden_states.tensors,
-                                                        all_gather_group=get_tp_group())
+                        with send_pp_lock:
+                            get_pp_group().send_tensor_dict(hidden_states.tensors,
+                                                            all_gather_group=get_tp_group())
                         logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                         if i == num_steps - 1:
                             logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
@@ -3401,8 +3411,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     if num_steps == 1:
                         sampling_metadata.selected_token_indices = None
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
-                    logits = self.model.compute_logits(hidden_states,
-                                                       sampling_metadata)
+                    with contextlib.nullcontext() if num_steps == 1 else runner_pp_lock:
+                        logits = self.model.compute_logits(hidden_states,
+                                                           sampling_metadata)
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
 
                 htorch.core.mark_step()
@@ -3426,10 +3437,11 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                      f'seq{seq_len}'),
                         args=profiler_args):
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
-                    output = self.sampler(
-                        logits=logits,
-                        sampling_metadata=sampling_metadata,
-                    )
+                    with contextlib.nullcontext() if num_steps == 1 else runner_pp_lock:
+                        output = self.sampler(
+                            logits=logits,
+                            sampling_metadata=sampling_metadata,
+                        )
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     if output.sampled_token_ids is None:
                         output.sampled_token_ids_cpu = output[0].samples[0].output_token
@@ -3493,8 +3505,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 data.output_token_ids += (dummy_token)
                             else:
                                 src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
-                                world_broadcast_tensor_dict({'early_exit': True},
-                                                      src=src)
+                                with contextlib.nullcontext() if num_steps == 1 else send_pp_lock:
+                                    world_broadcast_tensor_dict({'early_exit': True},
+                                                          src=src)
                                 if num_steps == 1:
                                     return [output]
                                 else:
@@ -3535,7 +3548,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     }
                     src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
-                    world_broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
+                    with contextlib.nullcontext() if num_steps == 1 else send_pp_lock:
+                        world_broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                 else:
                     logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
