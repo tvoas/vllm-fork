@@ -44,6 +44,9 @@ def world_broadcast_tensor_dict(tensor_dict: Optional[Dict[Any, Union[torch.Tens
                           src: int = 0):
     if not torch.distributed.is_initialized():
         return tensor_dict
+
+    # NOTE(Tanner): This is hacky. And only works when PP=2 and TP=1.
+    # Required for G2E without topboard though. Broadcast is ruining MSS.
     if get_world_group().rank_in_group == src:
         get_pp_group().send_tensor_dict(
             tensor_dict,
