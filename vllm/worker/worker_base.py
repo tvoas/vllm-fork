@@ -64,9 +64,9 @@ class WorkerBase:
         self.current_platform = current_platform
         self.execution_count = 0
         self.prepare_pp_lock = threading.Lock()
-        self.recv_pp_lock = contextlib.nullcontext() #threading.Lock()
+        self.recv_pp_lock = contextlib.nullcontext()
         self.runner_pp_lock = threading.Lock()
-        self.send_pp_lock = threading.Lock()
+        self.send_pp_lock = contextlib.nullcontext()
 
     def init_device(self) -> None:
         """Initialize device state, such as loading the model or other on-device
