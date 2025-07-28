@@ -2432,6 +2432,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    intermediate_tensors=intermediate_tensors,
                                    warmup_mode=True,
                                    num_steps=2,
+                                   cache_recv={},
                                    recv_pp_lock=contextlib.nullcontext(),
                                    runner_pp_lock=contextlib.nullcontext(),
                                    send_pp_lock=contextlib.nullcontext(),
@@ -2444,6 +2445,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    intermediate_tensors=intermediate_tensors,
                                    warmup_mode=True,
                                    num_steps=2,
+                                   cache_recv={},
                                    recv_pp_lock=contextlib.nullcontext(),
                                    runner_pp_lock=contextlib.nullcontext(),
                                    send_pp_lock=contextlib.nullcontext(),
@@ -3084,6 +3086,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         warmup_mode=False,
         previous_hidden_states: Optional[torch.Tensor] = None,
         seqs=None,
+        cache_recv=None,
         recv_pp_lock=None,
         runner_pp_lock=None,
         send_pp_lock=None,
@@ -3278,8 +3281,23 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             for i in range(num_steps):
                 if i != 0 and not (self.is_driver_worker and get_pp_group().is_last_rank):
                     src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
-                    with recv_pp_lock:
-                        broadcast_data = world_broadcast_tensor_dict(src=src)
+                    if execution_count in cache_recv:
+                        received = cache_recv[execution_count][0]
+                        if len(cache_recv[execution_count]) == 1:
+                            del cache_recv[execution_count]
+                        else:
+                            cache_recv[execution_count] = \
+                                cache_recv[execution_count][1:]
+                    else:
+                        with self.recv_pp_lock:
+                            received = world_broadcast_tensor_dict(src=src)
+                            while received["execution_count"] != execution_count:
+                                if received["execution_count"] not in cache_recv:
+                                    cache_recv[received["execution_count"]] = []    
+                                cache_recv[received["execution_count"]] += [received]
+                                received = world_broadcast_tensor_dict(src=src)
+                    del received["execution_count"]
+                    broadcast_data = received
                     if 'early_exit' in broadcast_data and broadcast_data[
                             'early_exit']:
                         return [output] if num_steps == 1 else []
@@ -3294,10 +3312,25 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     })
 
                 if num_steps > 1 and not get_pp_group().is_first_rank:
-                    with recv_pp_lock:
-                        execute_model_kwargs["intermediate_tensors"] = IntermediateTensors(
-                            get_pp_group().recv_tensor_dict(
-                                all_gather_group=get_tp_group()))
+                    if execution_count in cache_recv:
+                        received = cache_recv[execution_count][0]
+                        if len(cache_recv[execution_count]) == 1:
+                            del cache_recv[execution_count]
+                        else:
+                            cache_recv[execution_count] = \
+                                cache_recv[execution_count][1:]
+                    else:
+                        with self.recv_pp_lock:
+                            received = get_pp_group().recv_tensor_dict(
+                                all_gather_group=get_tp_group())
+                            while received["execution_count"] != execution_count:
+                                if received["execution_count"] not in cache_recv:
+                                    cache_recv[received["execution_count"]] = []    
+                                cache_recv[received["execution_count"]] += [received]
+                                received = get_pp_group().recv_tensor_dict(
+                                    all_gather_group=get_tp_group())
+                    del received["execution_count"]
+                    execute_model_kwargs["intermediate_tensors"] = IntermediateTensors(received)
 
                 profiler_args = {
                     'real_seq_len': model_input.seq_lens,
@@ -3340,8 +3373,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         return hidden_states
                     else:
                         assert isinstance(hidden_states, IntermediateTensors)
+                        to_send = hidden_states.tensors
+                        to_send["execution_count"] = execution_count
                         with send_pp_lock:
-                            get_pp_group().send_tensor_dict(hidden_states.tensors,
+                            get_pp_group().send_tensor_dict(to_send,
                                                             all_gather_group=get_tp_group())
                         if i == num_steps - 1:
                             return hidden_states
@@ -3448,7 +3483,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             else:
                                 src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
                                 with contextlib.nullcontext() if num_steps == 1 else send_pp_lock:
-                                    world_broadcast_tensor_dict({'early_exit': True},
+                                    world_broadcast_tensor_dict({'early_exit': True, 'execution_count': execution_count},
                                                           src=src)
                                 if num_steps == 1:
                                     return [output]
@@ -3484,6 +3519,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         "positions": result.input_positions,
                         "attn_metadata": vars(result.attn_metadata),
                         "lora_mask": lora_mask,
+                        "execution_count": execution_count,
                     }
                     src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
                     with contextlib.nullcontext() if num_steps == 1 else send_pp_lock:
