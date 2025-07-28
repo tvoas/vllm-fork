@@ -3079,7 +3079,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         seqs=None,
         execution_count=0,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
-        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
+        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}: is_prompt={model_input.is_prompt}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, num_steps={num_steps}")
         self.has_patched_prev_output = False
         use_delayed_sampling = self.use_delayed_sampling and not warmup_mode
         assert not (use_delayed_sampling and num_steps != 1), \
