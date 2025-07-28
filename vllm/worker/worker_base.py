@@ -63,6 +63,7 @@ class WorkerBase:
         from vllm.platforms import current_platform
         self.current_platform = current_platform
         self.execution_count = 0
+        self.prepare_pp_lock = threading.Lock()
         self.recv_pp_lock = threading.Lock()
         self.runner_pp_lock = threading.Lock()
         self.send_pp_lock = threading.Lock()
@@ -465,6 +466,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                 execution_count=execution_count,
                 recv_pp_lock=self.recv_pp_lock,
                 runner_pp_lock=self.runner_pp_lock,
+                send_pp_lock=self.send_pp_lock,
                 **kwargs,
             )
             logfn(f"LocalOrDistributedWorkerBase.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")

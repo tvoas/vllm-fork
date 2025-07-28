@@ -2434,6 +2434,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    num_steps=2,
                                    recv_pp_lock=contextlib.nullcontext(),
                                    runner_pp_lock=contextlib.nullcontext(),
+                                   send_pp_lock=contextlib.nullcontext(),
                                    seqs=seqs)
                 inputs = dataclasses.replace(inputs,
                                              is_first_multi_step=False,
@@ -2445,6 +2446,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                    num_steps=2,
                                    recv_pp_lock=contextlib.nullcontext(),
                                    runner_pp_lock=contextlib.nullcontext(),
+                                   send_pp_lock=contextlib.nullcontext(),
                                    seqs=seqs)
             torch.hpu.synchronize()
             if profiler:
@@ -3084,6 +3086,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         seqs=None,
         recv_pp_lock=None,
         runner_pp_lock=None,
+        send_pp_lock=None,
         execution_count=0,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
         logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}: is_prompt={model_input.is_prompt}, is_first={model_input.is_first_multi_step}, is_last={model_input.is_last_step}, num_steps={num_steps}")
