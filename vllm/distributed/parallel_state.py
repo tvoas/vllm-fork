@@ -559,8 +559,10 @@ class GroupCoordinator:
         if (not torch.distributed.is_initialized() or self.world_size == 1):
             return tensor_dict
 
-        group = self.device_group
-        metadata_group = self.cpu_group
+        if group is None:
+            group = self.cpu_group if self.force_cpu_for_pp else self.device_group
+        if not metadata_group:
+            metadata_group = self.cpu_group
         assert src < self.world_size, f"Invalid src rank ({src})"
 
         rank_in_group = self.rank_in_group
