@@ -43,8 +43,6 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 from vllm.utils import (direct_register_custom_op, resolve_obj_by_qualname,
                         supports_custom_op)
-from vllm.logger import init_logger
-logger = init_logger(__name__)
 
 
 @dataclass
@@ -213,7 +211,6 @@ class GroupCoordinator:
         force_cpu_for_pp: bool = False,
     ):
         group_name = group_name or "anonymous"
-        self.group_name = group_name
         self.unique_name = _get_unique_name(group_name)
         _register_group(self)
 
@@ -268,8 +265,6 @@ class GroupCoordinator:
             self.mq_broadcaster = MessageQueue.create_from_process_group(
                 self.cpu_group, 1 << 22, 6)
         self.force_cpu_for_pp: bool = force_cpu_for_pp
-        self.last_send_td_handles = {}
-        self.last_broadcast_td_handles = {}
 
         from vllm.platforms import current_platform
         self.use_custom_op_call = (current_platform.is_cuda_alike()
@@ -457,7 +452,7 @@ class GroupCoordinator:
         # Broadcast.
         torch.distributed.broadcast_object_list(obj_list,
                                                 src=self.ranks[src],
-                                                group=group if group is not None else group)
+                                                group=group if group is not None else self.cpu_group)
         return obj_list
 
     def send_object(self, obj: Any, dst: int) -> None:
@@ -479,16 +474,16 @@ class GroupCoordinator:
 
         # Send object size
 
-        handle_size = torch.distributed.isend(size_tensor,
+        torch.distributed.send(size_tensor,
                                dst=self.ranks[dst],
                                group=self.cpu_group)
 
         # Send object
-        handle_object = torch.distributed.isend(object_tensor,
+        torch.distributed.send(object_tensor,
                                dst=self.ranks[dst],
                                group=self.cpu_group)
 
-        return [handle_size, handle_object]
+        return None
 
     def recv_object(self, src: int) -> Any:
         """Receive the input object list from the source rank."""
@@ -503,10 +498,9 @@ class GroupCoordinator:
         size_tensor = torch.empty(1, dtype=torch.long, device="cpu")
 
         # Receive object size
-        handle_size = torch.distributed.irecv(size_tensor,
+        rank_size = torch.distributed.recv(size_tensor,
                                            src=self.ranks[src],
                                            group=self.cpu_group)
-        handle_size.wait()
 
         # Tensor to receive serialized objects into.
         object_tensor = torch.empty(  # type: ignore[call-overload]
@@ -514,11 +508,12 @@ class GroupCoordinator:
             dtype=torch.uint8,
             device="cpu")
 
-        handle_object = torch.distributed.irecv(object_tensor,
+        rank_object = torch.distributed.recv(object_tensor,
                                              src=self.ranks[src],
                                              group=self.cpu_group)
-        handle_object.wait()
 
+        assert rank_object == rank_size, (
+            "Received object sender rank does not match the size sender rank.")
 
         obj = pickle.loads(object_tensor.numpy().tobytes())
 
@@ -538,7 +533,7 @@ class GroupCoordinator:
         if (not torch.distributed.is_initialized() or self.world_size == 1):
             return tensor_dict
 
-        if not group:
+        if group is None:
             group = self.cpu_group if self.force_cpu_for_pp else self.device_group
         if not metadata_group:
             metadata_group = self.cpu_group
@@ -551,24 +546,15 @@ class GroupCoordinator:
                 tensor_dict,
                 dict), (f"Expecting a dictionary, got {type(tensor_dict)}")
             metadata_list, tensor_list = _split_tensor_dict(tensor_dict)
-            if src not in self.last_broadcast_td_handles:
-                self.last_broadcast_td_handles[src] = []
-            else:
-                if len(self.last_broadcast_td_handles[src]) >= 1:
-                    for handle in self.last_broadcast_td_handles[src][0]:
-                        handle.wait()
-                    del self.last_broadcast_td_handles[src][0]
-            self.last_broadcast_td_handles[src] += [[]]
             # `metadata_list` lives in CPU memory.
             # `broadcast_object_list` has serialization & deserialization,
             # all happening on CPU. Therefore, we can use the CPU group.
-            self.last_broadcast_td_handles[src] += [[]]
             self.broadcast_object(metadata_list, src=src, group=group)
+            async_handles = []
             for tensor in tensor_list:
                 if tensor.numel() == 0:
                     # Skip broadcasting empty tensors.
                     continue
-                logger.info(f"Broadcasting tensor out with {self.force_cpu_for_pp} for name {self.group_name} ")
                 if tensor.is_cpu:
                     # use metadata_group for CPU tensors
                     handle = torch.distributed.broadcast(tensor,
@@ -590,7 +576,10 @@ class GroupCoordinator:
                                                          src=self.ranks[src],
                                                          group=group,
                                                          async_op=True)
-                self.last_broadcast_td_handles[src][-1].append(handle)
+                async_handles.append(handle)
+            for async_handle in async_handles:
+                async_handle.wait()
+
         else:
             metadata_list = self.broadcast_object(None, src=src)
             tensor_dict = {}
@@ -666,19 +655,10 @@ class GroupCoordinator:
             tensor_dict,
             dict), f"Expecting a dictionary, got {type(tensor_dict)}"
         metadata_list, tensor_list = _split_tensor_dict(tensor_dict)
-        if self.ranks[dst] not in self.last_send_td_handles:
-            self.last_send_td_handles[self.ranks[dst]] = []
-        else:
-            if len(self.last_send_td_handles[self.ranks[dst]]) >= 1:
-                for handle in self.last_send_td_handles[self.ranks[dst]][0]:
-                    handle.wait()
-                del self.last_send_td_handles[self.ranks[dst]][0]
         # `metadata_list` lives in CPU memory.
         # `send_object_list` has serialization & deserialization,
         # all happening on CPU. Therefore, we can use the CPU group.
-        self.last_send_td_handles[self.ranks[dst]] += [[]]
-        self.last_send_td_handles[self.ranks[dst]][-1] += self.send_object(metadata_list, dst=dst)
-
+        self.send_object(metadata_list, dst=dst)
         for tensor in tensor_list:
             if tensor.numel() == 0:
                 # Skip sending empty tensors.
@@ -691,22 +671,22 @@ class GroupCoordinator:
 
             if tensor.is_cpu:
                 # use metadata_group for CPU tensors
-                self.last_send_td_handles[self.ranks[dst]][-1] += [torch.distributed.isend(tensor,
+                torch.distributed.send(tensor,
                                        dst=self.ranks[dst],
-                                       group=metadata_group)]
+                                       group=metadata_group)
             elif self.force_cpu_for_pp:
                 # use metadata_group for CPU tensors
                 orig_device = tensor.device
                 tensor = tensor.to('cpu')
-                self.last_send_td_handles[self.ranks[dst]][-1] += [torch.distributed.isend(tensor,
+                torch.distributed.send(tensor,
                                     dst=self.ranks[dst],
-                                    group=metadata_group)]
+                                    group=metadata_group)
                 tensor = tensor.to(orig_device)
             else:
                 # use group for GPU tensors
-                self.last_send_td_handles[self.ranks[dst]][-1] += [torch.distributed.isend(tensor,
+                torch.distributed.send(tensor,
                                        dst=self.ranks[dst],
-                                       group=group)]
+                                       group=group)
         return None
 
     def recv_tensor_dict(
@@ -735,7 +715,6 @@ class GroupCoordinator:
 
         recv_metadata_list = self.recv_object(src=src)
         tensor_dict: Dict[str, Any] = {}
-        handles = []
         for key, value in recv_metadata_list:
             if isinstance(value, TensorMetadata):
                 tensor = torch.empty(value.size,
@@ -757,22 +736,22 @@ class GroupCoordinator:
 
                 if tensor.is_cpu:
                     # use metadata_group for CPU tensors
-                    handles += [torch.distributed.irecv(tensor,
+                    torch.distributed.recv(tensor,
                                            src=self.ranks[src],
-                                           group=metadata_group)]
+                                           group=metadata_group)
                 elif self.force_cpu_for_pp:
                     # use metadata_group for CPU tensors
                     orig_device = tensor.device
                     tensor = tensor.to('cpu')
-                    handles += [torch.distributed.irecv(tensor,
+                    torch.distributed.recv(tensor,
                                         src=self.ranks[src],
-                                        group=metadata_group)]
+                                        group=metadata_group)
                     tensor = tensor.to(orig_device)
                 else:
                     # use group for GPU tensors
-                    handles += [torch.distributed.irecv(tensor,
+                    torch.distributed.recv(tensor,
                                            src=self.ranks[src],
-                                           group=group)]
+                                           group=group)
                 if use_all_gather:
                     # do the allgather
                     tensor = all_gather_group.all_gather(  # type: ignore
@@ -782,8 +761,6 @@ class GroupCoordinator:
                 tensor_dict[key] = tensor
             else:
                 tensor_dict[key] = value
-        for handle in handles:
-            handle.wait()
         return tensor_dict
 
     def barrier(self):
