@@ -3101,7 +3101,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             'Delayed sampling is not compatible with speculative decoding!'
         assert model_input.input_tokens is not None
         output = None
-        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
         if use_delayed_sampling and not model_input.is_prompt and \
                 self.is_driver_worker:
             num_cached = len(self.cached_step_outputs)
@@ -3127,33 +3126,23 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 model_input.input_tokens.index_copy_(
                     0, target_indices, self.cached_step_outputs[i])
                 htorch.core.mark_step()
-        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
 
         if not model_input.is_first_multi_step:
-            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
             if get_pp_group().is_last_rank:
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
                 if not model_input.is_last_step:
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
                     # not first or last multi-step
                     return []
                 # last multi-step
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
                 output = self._decode_sampler_outputs(
                     model_input) if self.is_driver_worker else []
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
                 torch.hpu.synchronize()
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
-        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
         if model_input.is_first_multi_step:
-            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
             # first multi-step
             if self.lora_config:
                 assert model_input.lora_requests is not None
                 assert model_input.lora_mapping is not None
                 self.set_active_loras(model_input.lora_requests,
                                       model_input.lora_mapping)
-            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
             # Rank!=0 workers has is_prompt==None
             if use_delayed_sampling and not model_input.is_prompt and \
                     model_input.input_tokens.size(1) == 1:
@@ -3188,7 +3177,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                           is_prompt=is_prompt,
                                           num_patches=num_patches)
             self._check_config(batch_size, seq_len, attn_metadata, warmup_mode)
-            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
 
             lora_mask: torch.Tensor = None
             lora_logits_mask: torch.Tensor = None
@@ -3197,7 +3185,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 lora_mask, lora_logits_mask = self.create_lora_mask(
                     input_tokens, model_input.lora_ids,
                     attn_metadata.is_prompt)
-            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
             if model_input.multi_modal_kwargs is not None \
                 and 'embed_is_patch' in model_input.multi_modal_kwargs:
 
@@ -3230,7 +3217,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 model_input.multi_modal_kwargs[
                     'embed_is_patch'] = fix_embed_is_patch(
                         model_input.multi_modal_kwargs['embed_is_patch'])
-            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
             execute_model_kwargs = {
                 "input_ids": input_tokens,
                 "positions": input_positions,
@@ -3241,7 +3227,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 "virtual_engine": model_input.virtual_engine,
                 **(model_input.multi_modal_kwargs or {}),
             }
-            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
             if previous_hidden_states is not None:
                 # HPU will pad up to block_size,
                 # pad previous_hidden_states as well
@@ -3260,7 +3245,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         dim=0)
                 execute_model_kwargs.update(
                     {"previous_hidden_states": previous_hidden_states})
-            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
             if htorch.utils.internal.is_lazy():
                 execute_model_kwargs.update(
                     {"bypass_hpu_graphs": not use_graphs})
@@ -3274,7 +3258,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                     f"graphs{'T' if use_graphs else 'F'}")
             else:
                 model_event_name = 'model_executable'
-            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
             if num_steps > 1 or use_delayed_sampling:
                 # in case of multi-step scheduling
                 # we only want to pythonize in the last step
@@ -3292,21 +3275,14 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 cache_orig_output_tokens_len[i][j]
                             data.output_token_ids = \
                                 data.output_token_ids[:orig_output_tokens_len]
-            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
             for i in range(num_steps):
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                 if i != 0 and not (self.is_driver_worker and get_pp_group().is_last_rank):
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     with recv_pp_lock:
                         broadcast_data = world_broadcast_tensor_dict(src=src)
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     if 'early_exit' in broadcast_data and broadcast_data[
                             'early_exit']:
-                        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                         return [output] if num_steps == 1 else []
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     execute_model_kwargs.update({
                         "input_ids":
                         broadcast_data["input_ids"],
@@ -3316,21 +3292,17 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         self.trim_attn_metadata(
                             broadcast_data["attn_metadata"])
                     })
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
 
                 if num_steps > 1 and not get_pp_group().is_first_rank:
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     with recv_pp_lock:
                         execute_model_kwargs["intermediate_tensors"] = IntermediateTensors(
                             get_pp_group().recv_tensor_dict(
                                 all_gather_group=get_tp_group()))
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
 
                 profiler_args = {
                     'real_seq_len': model_input.seq_lens,
                     'real_batch_size': real_batch_size
                 }
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
 
                 if self.model_is_mrope:
                     # run multimodal encoder for mrope before forward
@@ -3344,57 +3316,41 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     # done compute the visual tokens
                     execute_model_kwargs.pop('pixel_values', None)
                     execute_model_kwargs.pop('image_grid_thw', None)
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
 
                 with self.profiler.record_event('internal',
                                                 model_event_name,
                                                 args=profiler_args):
                     with contextlib.nullcontext() if num_steps == 1 else runner_pp_lock:
-                        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                         hidden_states = self.model.forward(
                             **execute_model_kwargs,
                             selected_token_indices=sampling_metadata.
                             selected_token_indices)
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     if warmup_mode:
-                        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                         torch.hpu.synchronize()
                         import torch.distributed as dist
                         if dist.is_initialized():
-                            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                             get_tp_group().barrier()
-                            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
 
                 if self.lora_config:
                     LoraMask.setLoraMask(
                         lora_logits_mask.index_select(
                             0, sampling_metadata.selected_token_indices))
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                 if not get_pp_group().is_last_rank:
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     if num_steps == 1:
-                        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                         return hidden_states
                     else:
-                        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                         assert isinstance(hidden_states, IntermediateTensors)
-                        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                         with send_pp_lock:
                             get_pp_group().send_tensor_dict(hidden_states.tensors,
                                                             all_gather_group=get_tp_group())
-                        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                         if i == num_steps - 1:
-                            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                             return hidden_states
-                        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                         continue
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                 # In case there are any logits processors pending
                 # we need to sync with host earlier
                 if use_delayed_sampling \
                    and self.is_driver_worker:
                     self._patch_prev_output()
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
 
                 if (use_delayed_sampling and self.is_driver_worker
                         and self.has_logits_processors(sampling_metadata)):
@@ -3402,7 +3358,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     # of logits depends on the sampled results
                     # we obtain the actual sampled results in advance
                     self._patch_prev_output()
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                 # Compute the logits.
                 with self.profiler.record_event(
                         'internal',
@@ -3413,25 +3368,19 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         args=profiler_args):
                     if num_steps == 1:
                         sampling_metadata.selected_token_indices = None
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     with contextlib.nullcontext() if num_steps == 1 else runner_pp_lock:
                         logits = self.model.compute_logits(hidden_states,
                                                            sampling_metadata)
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
 
                 htorch.core.mark_step()
                 # Only perform sampling in the driver worker.
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                 if not self.is_driver_worker:
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     continue
 
                 if use_delayed_sampling:
                     fake_output = self._delayed_sampler_outputs(model_input)
                 elif model_input.async_callback is not None:
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     model_input.async_callback()
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
 
                 with self.profiler.record_event(
                         'internal', ('sample_'
@@ -3439,13 +3388,11 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                      f'bs{batch_size}_'
                                      f'seq{seq_len}'),
                         args=profiler_args):
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     with contextlib.nullcontext() if num_steps == 1 else runner_pp_lock:
                         output = self.sampler(
                             logits=logits,
                             sampling_metadata=sampling_metadata,
                         )
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     if output.sampled_token_ids is None:
                         output.sampled_token_ids_cpu = output[0].samples[0].output_token
                     else:
@@ -3453,26 +3400,20 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     output.sampled_token_ids = None
                     output.sampled_token_probs = None
                     output.logprobs = None
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     if num_steps > 1:
-                        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                         output = output.sampled_token_ids_cpu
                         self.cached_step_outputs.append((output, [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]))
-                        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     if use_delayed_sampling and self.is_driver_worker:
                         output = self._pad_to_max_num_seqs(
                             output.sampled_token_ids, DUMMY_TOKEN_ID)
                         self.cached_step_outputs.append(output)
                         self.cached_step_inputs.append(model_input)
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                 htorch.core.mark_step()
                 if use_delayed_sampling \
                    and model_input.async_callback is not None:
                     model_input.async_callback()
                 if i < num_steps - 1:
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     if i == 0:
-                        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                         if model_input.async_callback is not None:
                             ctx = model_input.async_callback.keywords[  # type: ignore
                                 "ctx"]
@@ -3483,7 +3424,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         else:
                             raise RuntimeError(
                                 "seq_group_metadata_list is uninitialized")
-                        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                         for seq_idx, seq_group_metadata in enumerate(
                                 seq_group_metadata_list):
                             # Skip empty steps
@@ -3494,7 +3434,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             for j, data in seq_group_metadata.seq_data.items():
                                 cache_orig_output_tokens_len[seq_idx][j] = \
                                     len(data.output_token_ids)
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     seq_group_metadata_list, _, _ = self._add_dummy_seq(
                         seq_group_metadata_list, is_prompt=False)
                     for seq_group_metadata in seq_group_metadata_list:
@@ -3516,11 +3455,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 else:
                                     try_revert_dummy_output_tokens()
                                     return []
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
 
                     result = self._prepare_decode(seq_group_metadata_list,
                                                   output=output)
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
 
                     if self.lora_config:
                         lora_mapping = LoRAMapping(
@@ -3531,7 +3468,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                               lora_mapping)
                         lora_mask, lora_logits_mask = self.create_lora_mask(
                             result.input_tokens, result.lora_ids, False)
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
 
                     execute_model_kwargs.update({
                         "input_ids":
@@ -3550,17 +3486,11 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         "lora_mask": lora_mask,
                     }
                     src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     with contextlib.nullcontext() if num_steps == 1 else send_pp_lock:
                         world_broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                 else:
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
                     try_revert_dummy_output_tokens()
-                    logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}_ST{i}")
-            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
             if self.is_driver_worker and self.profiler.enabled:
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
                 # Stop recording 'execute_model' event
                 self.profiler.end()
                 event_end = self.profiler.get_timestamp_us()
@@ -3572,9 +3502,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     real_batch_size=real_batch_size,
                     is_prompt=is_prompt)
                 self.profiler.record_counter(self.event_start, counters)
-            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
             if num_steps == 1:
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
                 if self.spec_decode_enabled and isinstance(
                         output, SamplerOutput):
                     output.sampled_token_ids = output.sampled_token_ids[:
@@ -3598,13 +3526,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         return []
                 return [output] if self.is_driver_worker else []
             else:
-                logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
                 return []
-        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
         if not get_pp_group().is_last_rank:
-            logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
             return []
-        logfn(f"HPUModelRunner.execute_model.{execution_count}.info_LN{inspect.currentframe().f_lineno}")
         return output if type(output) is list else [output]
 
     def _delayed_sampler_outputs(self, model_input):
