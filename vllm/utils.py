@@ -1608,8 +1608,9 @@ class FlexibleArgumentParser(ArgumentParser):
 async def _run_task_with_lock(task: Callable, lock: asyncio.Lock, *args,
                               **kwargs):
     """Utility function to run async task in a lock"""
-    async with lock:
-        return await task(*args, **kwargs)
+    #async with lock:
+    #    return await task(*args, **kwargs)
+    return await task(*args, **kwargs)
 
 
 def supports_kw(
