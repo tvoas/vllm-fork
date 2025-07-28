@@ -3289,7 +3289,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             cache_recv[execution_count] = \
                                 cache_recv[execution_count][1:]
                     else:
-                        with self.recv_pp_lock:
+                        with recv_pp_lock:
                             received = world_broadcast_tensor_dict(src=src)
                             while received["execution_count"] != execution_count:
                                 if received["execution_count"] not in cache_recv:
@@ -3320,7 +3320,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             cache_recv[execution_count] = \
                                 cache_recv[execution_count][1:]
                     else:
-                        with self.recv_pp_lock:
+                        with recv_pp_lock:
                             received = get_pp_group().recv_tensor_dict(
                                 all_gather_group=get_tp_group())
                             while received["execution_count"] != execution_count:
