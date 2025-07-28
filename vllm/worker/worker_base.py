@@ -63,7 +63,6 @@ class WorkerBase:
         from vllm.platforms import current_platform
         self.current_platform = current_platform
         self.execution_count = 0
-        self.cache_recv = {}
         self.prepare_pp_lock = threading.Lock()
         self.recv_pp_lock = threading.Lock()
         self.runner_pp_lock = threading.Lock()
@@ -428,25 +427,10 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             pass
         elif not get_pp_group().is_first_rank:
             if model_input.is_first_multi_step:
-                if execution_count in self.cache_recv:
-                    received = self.cache_recv[execution_count][0]
-                    if len(self.cache_recv[execution_count]) == 1:
-                        del self.cache_recv[execution_count]
-                    else:
-                        self.cache_recv[execution_count] = \
-                            self.cache_recv[execution_count][1:]
-                else:
-                    with self.recv_pp_lock:
-                        received = get_pp_group().recv_tensor_dict(
-                            all_gather_group=get_tp_group())
-                        while received["execution_count"] != execution_count:
-                            if received["execution_count"] not in self.cache_recv:
-                                self.cache_recv[received["execution_count"]] = []    
-                            self.cache_recv[received["execution_count"]] += [received]
-                            received = get_pp_group().recv_tensor_dict(
-                                all_gather_group=get_tp_group())
-                del received["execution_count"]
-                intermediate_tensors = IntermediateTensors(received)
+                with self.recv_pp_lock:
+                    intermediate_tensors = IntermediateTensors(
+                        get_pp_group().recv_tensor_dict(
+                            all_gather_group=get_tp_group()))
                 if (self.observability_config is not None
                         and self.observability_config.collect_model_execute_time):
                     orig_model_execute_time = intermediate_tensors.tensors.get(
@@ -466,7 +450,6 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                 num_steps=num_steps,
                 seqs=seqs,
                 execution_count=execution_count,
-                cache_recv=self.cache_recv,
                 recv_pp_lock=self.recv_pp_lock,
                 runner_pp_lock=self.runner_pp_lock,
                 send_pp_lock=self.send_pp_lock,
@@ -485,10 +468,8 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                         and self.observability_config.collect_model_execute_time):
                     output.tensors["model_execute_time"] = torch.tensor(
                         model_execute_time + orig_model_execute_time)
-                to_send = output.tensors
-                to_send["execution_count"] = execution_count
                 with self.send_pp_lock:
-                    get_pp_group().send_tensor_dict(to_send,
+                    get_pp_group().send_tensor_dict(output.tensors,
                                                     all_gather_group=get_tp_group())
             return [None]
         if (self.observability_config is not None
