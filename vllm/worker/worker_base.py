@@ -64,7 +64,7 @@ class WorkerBase:
         self.current_platform = current_platform
         self.execution_count = 0
         self.prepare_pp_lock = threading.Lock()
-        self.recv_pp_lock = threading.Lock()
+        self.recv_pp_lock = contextlib.nullcontext() #threading.Lock()
         self.runner_pp_lock = threading.Lock()
         self.send_pp_lock = threading.Lock()
 
