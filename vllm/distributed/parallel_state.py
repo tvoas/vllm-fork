@@ -48,6 +48,7 @@ from vllm.utils import (direct_register_custom_op, resolve_obj_by_qualname,
 from vllm.logger import init_logger
 logger = init_logger(__name__)
 def logfn(in_str):
+    return
     torch.hpu.synchronize()
     logger.info(f"[WORLD{get_world_group().rank_in_group}][PP{get_pp_group().rank_in_group}][TP{get_tp_group().rank_in_group}]: {in_str}")
 
