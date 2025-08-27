@@ -53,6 +53,43 @@ from vllm.worker.worker_base import LoRANotSupportedWorkerBase, WorkerBase
 
 logger = init_logger(__name__)
 
+SPEC_DEBUG_REPORT_EVERY = 200  # change if needed
+
+_SPEC_DEBUG = {
+    "n": 0,
+    "sum_proposed": 0,
+    "sum_hits": 0,
+    "sum_batch": 0,
+    "sum_padded_batch": 0,      # expanded batch size ~= spec*k + non-spec
+    "sum_spec_bs": 0,
+    "sum_nonspec_bs": 0,
+    "sum_padded": 0,            # padded tokens = spec*k - proposed (if any)
+    "sum_full_hits": 0,         # sequences that accepted all k
+    "sum_zero_hits": 0,         # sequences that accepted none
+}
+
+def _spec_debug_log_if_needed():
+    if _SPEC_DEBUG["n"] >= SPEC_DEBUG_REPORT_EVERY:
+        denom = float(_SPEC_DEBUG["n"])
+        logger.info(
+            "[SPEC-DBG] steps=%d proposed=%d hits=%d "
+            "avg_batch=%.2f avg_padded_batch=%.2f "
+            "avg_spec_bs=%.2f avg_non_spec_bs=%.2f padded_tokens=%d "
+            "full_hits=%d zero_hits=%d",
+            _SPEC_DEBUG["n"],
+            _SPEC_DEBUG["sum_proposed"] / denom,
+            _SPEC_DEBUG["sum_hits"] / denom,
+            _SPEC_DEBUG["sum_batch"] / denom,
+            _SPEC_DEBUG["sum_padded_batch"] / denom,
+            _SPEC_DEBUG["sum_spec_bs"] / denom,
+            100 * _SPEC_DEBUG["sum_full_hits"] / denom,
+            100 * _SPEC_DEBUG["sum_zero_hits"] / denom,
+        )
+        # reset
+        for k in list(_SPEC_DEBUG.keys()):
+            _SPEC_DEBUG[k] = 0
+# --- END: temporary debug metrics (always-on) ---
+
 
 def create_spec_worker(*args, **kwargs) -> "SpecDecodeWorker":
     """Helper method that is the entrypoint for Executors which use
@@ -143,6 +180,65 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
         correctness tests pass.
         More info here https://docs.google.com/document/d/1T-JaS2T1NRfdP51qzqpyakoCXxSXTtORppiwaj5asxA/edit.
     """
+
+    def _debug_record_spec_metrics(
+        self,
+        seq_group_metadata_list: list[SequenceGroupMetadata],
+        proposals: "SpeculativeProposals",
+        accepted_token_ids: "torch.Tensor",  # shape [B, k+1]
+        k: int,
+        max_proposal_len: int,
+    ) -> None:
+        # batch sizes
+        batch_size = len(seq_group_metadata_list)
+
+        # proposal_lens is per-sequence, typically 0 or k today
+        proposal_lens = getattr(proposals, "proposal_lens", None)
+        if proposal_lens is None:
+            # fallback: consider any row whose first proposal is valid as spec
+            pli = (proposals.proposal_token_ids[:, 0] != VLLM_INVALID_TOKEN_ID)
+            spec_bs = int(pli.sum().item())
+            proposed_tokens = int(pli.sum().item()) * k
+        else:
+            if isinstance(proposal_lens, torch.Tensor):
+                lens_list = proposal_lens.tolist()
+            else:
+                lens_list = list(proposal_lens)
+            spec_bs = sum(1 for x in lens_list if x > 0)
+            proposed_tokens = sum(int(x) for x in lens_list)
+
+        non_spec_bs = batch_size - spec_bs
+
+        # Expanded batch size used by batch-expansion scoring:
+        # spec sequences contribute k, non-spec contribute 1.
+        padded_batch = spec_bs * k + non_spec_bs
+
+        # Number of padded proposal slots (when lens < k).
+        # With current assumption (lens ∈ {0, k}) this is 0, but compute anyway.
+        padded_tokens = max(spec_bs * k - proposed_tokens, 0)
+
+        # Hits = accepted speculative tokens this step
+        # accepted_token_ids is [B, k+1] with invalid ids for unaccepted;
+        # exclude the final target position.
+        hits = int((accepted_token_ids[:, :k] != VLLM_INVALID_TOKEN_ID).sum().item())
+        accepted_lens = (accepted_token_ids[:, :max_proposal_len]
+                            != VLLM_INVALID_TOKEN_ID).sum(dim=1)
+        full_hits = int((accepted_lens == max_proposal_len).sum().item())
+        zero_hits = int((accepted_lens == 0).sum().item())
+
+        # Aggregate
+        _SPEC_DEBUG["n"] += 1
+        _SPEC_DEBUG["sum_proposed"] += proposed_tokens
+        _SPEC_DEBUG["sum_hits"] += hits
+        _SPEC_DEBUG["sum_batch"] += batch_size
+        _SPEC_DEBUG["sum_padded_batch"] += padded_batch
+        _SPEC_DEBUG["sum_spec_bs"] += spec_bs
+        _SPEC_DEBUG["sum_nonspec_bs"] += non_spec_bs
+        _SPEC_DEBUG["sum_padded"] += padded_tokens
+        _SPEC_DEBUG["sum_full_hits"] += full_hits
+        _SPEC_DEBUG["sum_zero_hits"] += zero_hits
+
+        _spec_debug_log_if_needed()
 
     @classmethod
     def create_worker(
@@ -825,6 +921,19 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
             accepted_token_ids, target_logprobs = self._verify_tokens(
                 execute_model_req.seq_group_metadata_list, proposal_scores,
                 proposals, execute_model_req.num_lookahead_slots)
+
+        # Temporary always-on debug aggregation
+        try:
+            self._debug_record_spec_metrics(
+                seq_group_metadata_list=execute_model_req.seq_group_metadata_list,
+                proposals=proposals,
+                accepted_token_ids=accepted_token_ids,
+                k=num_lookahead_slots,
+                max_proposal_len=execute_model_req.num_lookahead_slots,
+            )
+        except Exception as _e:
+            # Never break the step for debug
+            logger.info("[SPEC-DBG] debug aggregation error: %s", str(_e))
 
         stage_times = (proposal_timer.elapsed_time_ms / num_lookahead_slots,
                        scoring_timer.elapsed_time_ms,
