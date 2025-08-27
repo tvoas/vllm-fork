@@ -72,7 +72,7 @@ def _spec_debug_log_if_needed():
     if _SPEC_DEBUG["n"] >= SPEC_DEBUG_REPORT_EVERY:
         denom = float(_SPEC_DEBUG["n"])
         logger.info(
-            "[SPEC-DBG][TP=%d] steps=%d proposed=%d hits=%d "
+            f"[SPEC-DBG][TP=%d] steps=%d proposed=%d hits=%d "
             "avg_batch=%.2f avg_padded_batch=%.2f "
             "avg_spec_bs=%.2f avg_non_spec_bs=%.2f padded_tokens=%d "
             "full_hits=%d zero_hits=%d",
@@ -83,6 +83,8 @@ def _spec_debug_log_if_needed():
             _SPEC_DEBUG["sum_batch"] / denom,
             _SPEC_DEBUG["sum_padded_batch"] / denom,
             _SPEC_DEBUG["sum_spec_bs"] / denom,
+            _SPEC_DEBUG["sum_nonspec_bs"] / denom,
+            _SPEC_DEBUG["sum_padded"] / denom,
             100 * _SPEC_DEBUG["sum_full_hits"] / denom,
             100 * _SPEC_DEBUG["sum_zero_hits"] / denom,
         )
