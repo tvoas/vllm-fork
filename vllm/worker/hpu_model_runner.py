@@ -3245,6 +3245,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                     f"graphs{'T' if use_graphs else 'F'}")
             else:
                 model_event_name = 'model_executable'
+            if self.is_driver_worker:
+                logger.info(f"HPUModelRunner.execute_model: {model_event_name}")
             if num_steps > 1 or use_delayed_sampling:
                 # in case of multi-step scheduling
                 # we only want to pythonize in the last step
