@@ -71,22 +71,23 @@ _SPEC_DEBUG = {
 def _spec_debug_log_if_needed():
     if _SPEC_DEBUG["n"] >= SPEC_DEBUG_REPORT_EVERY:
         denom = float(_SPEC_DEBUG["n"])
+        batch_size = _SPEC_DEBUG["sum_batch"] / denom
         logger.info(
-            f"[SPEC-DBG][TP=%d] steps=%d proposed=%d hits=%d "
+            "[SPEC-DBG][TP=%d] steps=%d proposed=%.2f hits=%.2f "
             "avg_batch=%.2f avg_padded_batch=%.2f "
-            "avg_spec_bs=%.2f avg_non_spec_bs=%.2f padded_tokens=%d "
-            "full_hits=%d zero_hits=%d",
+            "avg_spec_bs=%.2f avg_non_spec_bs=%.2f padded_tokens=%.2f "
+            "full_hits=%.2f zero_hits=%.2f",
             get_tp_group().rank_in_group,
             _SPEC_DEBUG["n"],
-            _SPEC_DEBUG["sum_proposed"] / denom,
-            _SPEC_DEBUG["sum_hits"] / denom,
+            100 * _SPEC_DEBUG["sum_proposed"] / denom / batch_size,
+            100 * _SPEC_DEBUG["sum_hits"] / denom / batch_size,
             _SPEC_DEBUG["sum_batch"] / denom,
             _SPEC_DEBUG["sum_padded_batch"] / denom,
             _SPEC_DEBUG["sum_spec_bs"] / denom,
             _SPEC_DEBUG["sum_nonspec_bs"] / denom,
             _SPEC_DEBUG["sum_padded"] / denom,
-            100 * _SPEC_DEBUG["sum_full_hits"] / denom,
-            100 * _SPEC_DEBUG["sum_zero_hits"] / denom,
+            100 * _SPEC_DEBUG["sum_full_hits"] / denom / batch_size,
+            100 * _SPEC_DEBUG["sum_zero_hits"] / denom / batch_size,
         )
         # reset
         for k in list(_SPEC_DEBUG.keys()):
@@ -200,15 +201,20 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
         if proposal_lens is None:
             # fallback: consider any row whose first proposal is valid as spec
             pli = (proposals.proposal_token_ids[:, 0] != VLLM_INVALID_TOKEN_ID)
+            spec_mask = pli
             spec_bs = int(pli.sum().item())
             proposed_tokens = int(pli.sum().item()) * k
+            lens_list = [k if b else 0 for b in pli.tolist()]
         else:
             if isinstance(proposal_lens, torch.Tensor):
-                lens_list = proposal_lens.tolist()
+                lens_tensor = proposal_lens
             else:
-                lens_list = list(proposal_lens)
-            spec_bs = sum(1 for x in lens_list if x > 0)
-            proposed_tokens = sum(int(x) for x in lens_list)
+                lens_tensor = torch.tensor(proposal_lens,
+                                           device=accepted_token_ids.device)
+            spec_mask = (lens_tensor > 0)
+            lens_list = lens_tensor.tolist()
+            spec_bs = int(spec_mask.sum().item())
+            proposed_tokens = int(lens_tensor.sum().item())
 
         non_spec_bs = batch_size - spec_bs
 
@@ -220,14 +226,19 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
         # With current assumption (lens ∈ {0, k}) this is 0, but compute anyway.
         padded_tokens = max(spec_bs * k - proposed_tokens, 0)
 
-        # Hits = accepted speculative tokens this step
-        # accepted_token_ids is [B, k+1] with invalid ids for unaccepted;
-        # exclude the final target position.
-        hits = int((accepted_token_ids[:, :k] != VLLM_INVALID_TOKEN_ID).sum().item())
-        accepted_lens = (accepted_token_ids[:, :max_proposal_len]
-                            != VLLM_INVALID_TOKEN_ID).sum(dim=1)
-        full_hits = int((accepted_lens == max_proposal_len).sum().item())
-        zero_hits = int((accepted_lens == 0).sum().item())
+        # Hits = accepted speculative tokens this step (only for spec rows)
+        acc_spec = accepted_token_ids[spec_mask, :k]
+        hits = int((acc_spec != VLLM_INVALID_TOKEN_ID).sum().item())
+
+        # Full/zero hits computed only over spec rows
+        acc_spec_for_len = accepted_token_ids[spec_mask, :max_proposal_len]
+        if acc_spec_for_len.numel() == 0:
+            full_hits = 0
+            zero_hits = 0
+        else:
+            accepted_lens = (acc_spec_for_len != VLLM_INVALID_TOKEN_ID).sum(dim=1)
+            full_hits = int((accepted_lens == max_proposal_len).sum().item())
+            zero_hits = int((accepted_lens == 0).sum().item())
 
         # Aggregate
         _SPEC_DEBUG["n"] += 1
