@@ -72,10 +72,11 @@ def _spec_debug_log_if_needed():
     if _SPEC_DEBUG["n"] >= SPEC_DEBUG_REPORT_EVERY:
         denom = float(_SPEC_DEBUG["n"])
         logger.info(
-            "[SPEC-DBG] steps=%d proposed=%d hits=%d "
+            "[SPEC-DBG][TP=%d] steps=%d proposed=%d hits=%d "
             "avg_batch=%.2f avg_padded_batch=%.2f "
             "avg_spec_bs=%.2f avg_non_spec_bs=%.2f padded_tokens=%d "
             "full_hits=%d zero_hits=%d",
+            get_tp_group().rank_in_group,
             _SPEC_DEBUG["n"],
             _SPEC_DEBUG["sum_proposed"] / denom,
             _SPEC_DEBUG["sum_hits"] / denom,
