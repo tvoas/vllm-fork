@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 
 from vllm.config import ParallelConfig, SpeculativeConfig, VllmConfig
-from vllm.distributed.communication_op import broadcast_tensor_dict, get_tp_group,
+from vllm.distributed.communication_op import broadcast_tensor_dict, get_tp_group
 from vllm.logger import init_logger
 from vllm.model_executor.layers.rejection_sampler import RejectionSampler
 from vllm.model_executor.layers.sampler import SamplerOutput
@@ -50,7 +50,7 @@ from vllm.worker.worker_base import LoraNotSupportedWorkerBase, WorkerBase
 
 logger = init_logger(__name__)
 
-SPEC_DEBUG_REPORT_EVERY = 200  # change if needed
+SPEC_DEBUG_REPORT_EVERY = 100  # change if needed
 
 _SPEC_DEBUG = {
     "n": 0,
@@ -87,8 +87,8 @@ def _spec_debug_log_if_needed():
             100 * _SPEC_DEBUG["sum_zero_hits"] / denom / batch_size,
         )
         # reset
-        for k in list(_SPEC_DEBUG.keys()):
-            _SPEC_DEBUG[k] = 0
+        #for k in list(_SPEC_DEBUG.keys()):
+        #    _SPEC_DEBUG[k] = 0
 # --- END: temporary debug metrics (always-on) ---
 
 
