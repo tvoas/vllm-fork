@@ -53,7 +53,7 @@ from vllm.worker.worker_base import LoRANotSupportedWorkerBase, WorkerBase
 
 logger = init_logger(__name__)
 
-SPEC_DEBUG_REPORT_EVERY = 200  # change if needed
+SPEC_DEBUG_REPORT_EVERY = 50  # change if needed
 
 _SPEC_DEBUG = {
     "n": 0,
@@ -69,7 +69,7 @@ _SPEC_DEBUG = {
 }
 
 def _spec_debug_log_if_needed():
-    if _SPEC_DEBUG["n"] >= SPEC_DEBUG_REPORT_EVERY:
+    if _SPEC_DEBUG["n"] % SPEC_DEBUG_REPORT_EVERY == 0 and _SPEC_DEBUG["n"] >= SPEC_DEBUG_REPORT_EVERY:
         denom = float(_SPEC_DEBUG["n"])
         batch_size = _SPEC_DEBUG["sum_batch"] / denom
         logger.info(
@@ -90,8 +90,8 @@ def _spec_debug_log_if_needed():
             100 * _SPEC_DEBUG["sum_zero_hits"] / denom / batch_size,
         )
         # reset
-        for k in list(_SPEC_DEBUG.keys()):
-            _SPEC_DEBUG[k] = 0
+        #for k in list(_SPEC_DEBUG.keys()):
+        #    _SPEC_DEBUG[k] = 0
 # --- END: temporary debug metrics (always-on) ---
 
 
