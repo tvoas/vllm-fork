@@ -66,7 +66,7 @@ _SPEC_DEBUG = {
 }
 
 def _spec_debug_log_if_needed():
-    if _SPEC_DEBUG["n"] >= SPEC_DEBUG_REPORT_EVERY:
+    if _SPEC_DEBUG["n"] % SPEC_DEBUG_REPORT_EVERY == 0 and _SPEC_DEBUG["n"] >= SPEC_DEBUG_REPORT_EVERY:
         denom = float(_SPEC_DEBUG["n"])
         batch_size = _SPEC_DEBUG["sum_batch"] / denom
         logger.info(
