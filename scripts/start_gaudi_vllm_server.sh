@@ -15,6 +15,7 @@ Help() {
     echo "    DO NOT change the model name as some of the parameters depend on it."
     echo "-t  tensor-parallel-size for vLLM, int, default=1."
     echo "    Also used to set EP size if it's enable by --enable-expert-parallel"
+    echo "-r  pipeline-parallel-size for vLLM, int, default=1."
     echo "-m  Module IDs of the HPUs to use, comma separated int in [0-7], default=None"
     echo "    Used to select HPUs and to set NUMA accordingly. It's recommended to set"
     echo "    for cases with 4 or less HPUs."
@@ -56,7 +57,7 @@ Help() {
 }
 
 # Get the options
-while getopts hw:t:m:a:d:q:x:p:b:g:u:e:l:c:sf flag; do
+while getopts hw:t:r:m:a:d:q:x:p:b:g:u:e:l:c:sf flag; do
     case $flag in
     h) # display Help
         Help
@@ -64,8 +65,10 @@ while getopts hw:t:m:a:d:q:x:p:b:g:u:e:l:c:sf flag; do
         ;;
     w) # get model path
         weights_path=$OPTARG ;;
-    t) # get number of HPUs
-        num_hpu=$OPTARG ;;
+    t) # get number of TP HPUs
+        num_tp_hpu=$OPTARG ;;
+    r) # get number of PP HPUs
+        num_pp_hpu=$OPTARG ;;
     m) # get module ids to use
         module_ids=$OPTARG ;;
     a) # get the URL of the server
@@ -121,7 +124,9 @@ if [ -z "$weights_path" ]; then
     exit
 fi
 
-num_hpu=${num_hpu:-"1"}
+num_tp_hpu=${num_tp_hpu:-"1"}
+num_pp_hpu=${num_pp_hpu:-"1"}
+num_hpu=$(( num_tp_hpu * num_pp_hpu ))
 module_ids=${module_ids:-"None"}
 host=${host:-"127.0.0.1"}
 port=${port:-"30001"}
@@ -148,11 +153,12 @@ fi
 
 echo "Starting vllm server for ${model_name} from ${weights_path} with:"
 echo "    device: ${num_hpu} HPUs with module_ids=${module_ids}"
+echo "    TP=${num_tp_hpu} PP=${num_pp_hpu}"
 echo "    URL: ${host}:${port}"
 echo "    max_num_seqs: ${max_num_seqs}"
 echo "    max_model_len: ${max_model_len}"
 
-case_name=serve_${model_name}_${dtype}_${DEVICE_NAME}_len${max_model_len}_bs${max_num_seqs}_tp${num_hpu}_$(date +%F-%H-%M-%S)
+case_name=serve_${model_name}_${dtype}_${DEVICE_NAME}_len${max_model_len}_bs${max_num_seqs}_tp${num_tp_hpu}_pp${num_pp_hpu}_$(date +%F-%H-%M-%S)
 log_file="${case_name}.log"
 
 set_config
@@ -172,7 +178,8 @@ python3 -m vllm.entrypoints.openai.api_server \
     --max-seq-len-to-capture "${max_seq_len_to_capture}" \
     --gpu-memory-utilization "${gpu_memory_utilization}" \
     --max-model-len "${max_model_len}" \
-    --tensor-parallel-size "${num_hpu}" \
+    --tensor-parallel-size "${num_tp_hpu}" \
+    --pipeline-parallel-size "${num_pp_hpu}" \
     --trust-remote-code \
     --seed 2025 \
     --distributed_executor_backend "${dist_backend}" \
