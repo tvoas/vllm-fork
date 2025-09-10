@@ -878,6 +878,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # module_id_start,module_id_stop:cpu_affinity:numa_affinity".
     "VLLM_WORKERS_NUMA_TOPO":
     lambda: os.getenv("VLLM_WORKERS_NUMA_TOPO", None),
+
+    # If PP-group comms cannot use HCCL/NCCL/etc,
+    # set VLLM_PP_USE_CPU_COMS=1 to force PP comms over
+    # Gloo on CPU and avoid hangs (send/recv/broadcast).
+    "VLLM_PP_USE_CPU_COMS":
+    lambda: bool(int(os.getenv("VLLM_PP_USE_CPU_COMS", "0"))),
 }
 
 # --8<-- [end:env-vars-definition]
