@@ -11,6 +11,7 @@ import torch
 
 from vllm.attention import AttentionMetadata
 from vllm.distributed import broadcast_tensor_dict
+import vllm.envs as envs
 from vllm.forward_context import set_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.layers.sampler import SamplerOutput
@@ -240,7 +241,7 @@ class HPUEncoderDecoderModelRunner(
         ]
         bind_kv_cache(
             self.vllm_config.compilation_config.static_forward_context,
-            [kv_caches] * self.parallel_config.pipeline_parallel_size)
+            [kv_caches] * self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
         max_batch_size = self.max_num_prefill_seqs
         max_seq_len = self.bucketing_manager.get_max_prompt_shape()
         max_seq_len = min(self.max_num_batched_tokens // max_batch_size,
