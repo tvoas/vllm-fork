@@ -232,7 +232,7 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
 
             self.pp_locks = [
                 lock_type()
-                for _ in range(self.parallel_config.pipeline_parallel_size)
+                for _ in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
             ]
 
         if current_platform.is_hpu():

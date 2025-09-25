@@ -564,11 +564,14 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             num_gpu_blocks, self.cache_config.block_size,
             self.model_config.max_model_len,
             self.parallel_config.pipeline_parallel_size)
+        target_gpu_blocks = int(
+            num_gpu_blocks // (self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE))
+        target_cpu_blocks = int(
+            num_cpu_blocks // (self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE))
+        self.cache_config.num_gpu_blocks = target_gpu_blocks * (self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+        self.cache_config.num_cpu_blocks = target_cpu_blocks * (self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
 
-        self.cache_config.num_gpu_blocks = num_gpu_blocks
-        self.cache_config.num_cpu_blocks = num_cpu_blocks
-        self.model_runner.bucketing_manager.num_hpu_blocks = (
-            num_gpu_blocks // self.parallel_config.pipeline_parallel_size)
+        self.model_runner.bucketing_manager.num_hpu_blocks = target_gpu_blocks
         self.model_runner.bucketing_manager.generate_prompt_buckets()
         if not self.model_runner.is_pooler:
             self.model_runner.bucketing_manager.generate_decode_buckets()
@@ -586,11 +589,11 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         self.cache_engine = [
             HPUCacheEngine(self.cache_config, self.model_config,
                            self.parallel_config, self.device_config)
-            for _ in range(self.parallel_config.pipeline_parallel_size)
+            for _ in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
         ]
         self.hpu_cache = [
             self.cache_engine[ve].gpu_cache
-            for ve in range(self.parallel_config.pipeline_parallel_size)
+            for ve in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
         ]
         bind_kv_cache(self.compilation_config.static_forward_context,
                       self.hpu_cache)
@@ -774,7 +777,7 @@ def raise_if_cache_size_invalid(num_gpu_blocks, block_size, max_model_len,
         raise ValueError("No available memory for the cache blocks. "
                          "Try increasing `gpu_memory_utilization` when "
                          "initializing the engine.")
-    max_seq_len = block_size * (num_gpu_blocks // pipeline_parallel_size)
+    max_seq_len = block_size * (num_gpu_blocks // (pipeline_parallel_size + envs.VLLM_PP_BONUS_VE))
     if max_model_len > max_seq_len:
         raise ValueError(
             f"The model's max seq len ({max_model_len}) "

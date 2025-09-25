@@ -878,6 +878,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Gloo on CPU and avoid hangs (send/recv/broadcast).
     "VLLM_PP_USE_CPU_COMS":
     lambda: bool(int(os.getenv("VLLM_PP_USE_CPU_COMS", "0"))),
+
+    # VLLM_PP_BONUS_VE can be used to force PP to execute with additional virtual engines.
+    "VLLM_PP_BONUS_VE":
+    lambda: int(os.getenv("VLLM_PP_BONUS_VE", "0")),
 }
 
 # --8<-- [end:env-vars-definition]

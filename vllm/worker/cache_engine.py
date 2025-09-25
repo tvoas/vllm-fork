@@ -7,6 +7,7 @@ import torch
 
 from vllm.attention import get_attn_backend
 from vllm.config import CacheConfig, DeviceConfig, ModelConfig, ParallelConfig
+import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm.utils import (STR_DTYPE_TO_TORCH_DTYPE, LayerBlockType,
                         get_dtype_size, is_pin_memory_available)
@@ -43,10 +44,10 @@ class CacheEngine:
         self.block_size = cache_config.block_size
         self.num_gpu_blocks = cache_config.num_gpu_blocks
         if self.num_gpu_blocks:
-            self.num_gpu_blocks //= parallel_config.pipeline_parallel_size
+            self.num_gpu_blocks //= (parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
         self.num_cpu_blocks = cache_config.num_cpu_blocks
         if self.num_cpu_blocks:
-            self.num_cpu_blocks //= parallel_config.pipeline_parallel_size
+            self.num_cpu_blocks //= (parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
 
         if cache_config.cache_dtype == "auto":
             self.dtype = model_config.dtype

@@ -3062,7 +3062,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         kv_caches = [None] * num_layers
         bind_kv_cache(
             self.vllm_config.compilation_config.static_forward_context,
-            [kv_caches] * self.parallel_config.pipeline_parallel_size)
+            [kv_caches] * (self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE))
         max_seq_len = self.bucketing_manager.get_max_prompt_shape()
         if self.scheduler_config.chunked_prefill_enabled:
             max_seq_len = min(max_seq_len,
