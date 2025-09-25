@@ -312,13 +312,13 @@ class LLMEngine:
 
         self.cached_scheduler_outputs = [
             SchedulerOutputState()
-            for _ in range(self.parallel_config.pipeline_parallel_size)
+            for _ in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
         ]
 
         self.scheduler_contexts = [
             SchedulerContext(multi_step_stream_outputs=self.scheduler_config.
                              multi_step_stream_outputs)
-            for _ in range(self.parallel_config.pipeline_parallel_size)
+            for _ in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
         ]
 
         if self.model_config.use_async_output_proc:
@@ -327,7 +327,7 @@ class LLMEngine:
             self.async_callbacks = [
                 partial(process_model_outputs,
                         ctx=self.scheduler_contexts[v_id])
-                for v_id in range(self.parallel_config.pipeline_parallel_size)
+                for v_id in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
             ]
         else:
             self.async_callbacks = []
@@ -350,7 +350,7 @@ class LLMEngine:
                 self.parallel_config.pipeline_parallel_size,
                 self.async_callbacks[v_id]
                 if self.model_config.use_async_output_proc else None)
-            for v_id in range(self.parallel_config.pipeline_parallel_size)
+            for v_id in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
         ]
 
         # Metric Logging.
