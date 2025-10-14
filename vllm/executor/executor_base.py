@@ -285,6 +285,9 @@ class DistributedExecutorBase(ExecutorBase):
         # in the parallel workers. It's a coroutine in the AsyncLLMEngine case.
         self.parallel_worker_tasks: Optional[Union[Any, Awaitable[Any]]] = None
         self.cached_execute_model_reqs: Dict[int, ExecuteModelRequest] = {}
+        self.execute_step_count = 0
+        import threading
+        self.step_count_lock = threading.Lock()
         super().__init__(*args, **kwargs)
 
     def execute_model(
@@ -520,6 +523,7 @@ class DistributedExecutorBase(ExecutorBase):
     def prepare_execute_model_req_patch(
         self,
         execute_model_req: Optional[Any],
+        execute_step_count: int = 0,
     ) -> Tuple[Any, Dict[Hashable, Dict[str, Any]], bool]:
         """Produce an incremental patch and optionally reuse a cached
         base request.
@@ -575,4 +579,5 @@ class DistributedExecutorBase(ExecutorBase):
             virtual_engine if use_cached_base_req else execute_model_req,
             execute_model_req_patch,
             use_cached_base_req,
+            execute_step_count,
         )

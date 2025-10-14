@@ -982,6 +982,8 @@ class ModelInputForHPUWithSamplingMetadata(ModelInputForHPU):
     # Used for speculative decoding. We do not broadcast it because it is only
     # used by the driver worker.
     is_prompt: Optional[bool] = None
+    # True if this step requires sampling (decode step or last prefill chunk).
+    needs_sampling: Optional[bool] = None
 
     def as_broadcastable_tensor_dict(self) -> Dict[str, Any]:
         tensor_dict = {
@@ -991,6 +993,7 @@ class ModelInputForHPUWithSamplingMetadata(ModelInputForHPU):
             "lora_mapping": self.lora_mapping,
             "multi_modal_kwargs": self.multi_modal_kwargs,
             "lora_ids": self.lora_ids,
+            "needs_sampling": self.needs_sampling,
         }
         _add_attn_metadata_broadcastable_dict(tensor_dict, self.attn_metadata)
         _add_sampling_metadata_broadcastable_dict(tensor_dict,
@@ -1850,11 +1853,11 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             target_query_len = sum(query_lens)
         else:
             target_query_len = max(query_lens)
-        #if self.scheduler_config.chunked_prefill_enabled:
-        #    # The query will be truncated to chunk size during chunked prefill
-        #    target_query_len = min(target_query_len,
-        #                           self.max_num_batched_tokens,
-        #                           self.max_seq_len_to_capture)
+        if self.scheduler_config.chunked_prefill_enabled:
+            # The query will be truncated to chunk size during chunked prefill
+            target_query_len = min(target_query_len,
+                                   self.max_num_batched_tokens,
+                                   self.max_seq_len_to_capture)
         ctx = len(computed_block_nums) if computed_block_nums else 0
 
         if is_enc_dec_model:
@@ -1898,12 +1901,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                 (max_prompt_len if seq_group_metadata.sampling_params and
                  seq_group_metadata.sampling_params.prompt_logprobs else 1))
 
-        if self.scheduler_config.chunked_prefill_enabled:
-            # We have non-zero context len values but not prefix catching
-            prefix_block_list_tensor = None
-        elif any(context_lens):
-            # prefix caching
-
+        if any(context_lens):
+            # prefix caching or chunked prefill is used
             max_num_block = max(len(bt) for bt in prefix_block_tables)
             prefix_block_list = list(
                 itertools.chain.from_iterable(
@@ -4000,7 +3999,11 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         ctx_blocks: int = 1,
         is_dummy_run: bool = False,
         is_pt_profiler_run: bool = False,
+        info: Optional[dict] = None,
+        execute_step_count: int = 0,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
+        if type(info) is type(None):
+            info = {}
         self.has_patched_prev_output = False
         use_delayed_sampling = self.use_delayed_sampling and not warmup_mode
         assert not (use_delayed_sampling and num_steps != 1), \
@@ -4274,6 +4277,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     else:
                         execute_model_kwargs[
                             'intermediate_tensors'] = intermediate_tensors
+                        
+                    info['recv_done'] = time.perf_counter()
 
                     with self.profiler.record_event('internal',
                                                     model_event_name,

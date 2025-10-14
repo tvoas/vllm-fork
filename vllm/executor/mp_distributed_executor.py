@@ -213,6 +213,9 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
         self,
         execute_model_req: Optional[ExecuteModelRequest] = None
     ) -> List[SamplerOutput]:
+        with self.step_count_lock:
+            self.execute_step_count += 1
+            execute_step_count = self.execute_step_count
         if not self.tp_driver_workers:
             return await self.driver_exec_model(execute_model_req)
 
@@ -237,7 +240,9 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
 
         if current_platform.is_hpu():
             execute_model_req = self.prepare_execute_model_req_patch(
-                execute_model_req)
+                execute_model_req,
+                execute_step_count,
+            )
 
         tasks = [
             asyncio.create_task(
