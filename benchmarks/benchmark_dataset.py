@@ -300,12 +300,54 @@ class RandomDataset(BenchmarkDataset):
         self,
         tokenizer: PreTrainedTokenizerBase,
         num_requests: int,
+        num_prompts: int,
         prefix_len: int = DEFAULT_PREFIX_LEN,
         range_ratio: float = DEFAULT_RANGE_RATIO,
         input_len: int = DEFAULT_INPUT_LEN,
         output_len: int = DEFAULT_OUTPUT_LEN,
         **kwargs,
     ) -> list[SampleRequest]:
+        prefix_token_ids = np.random.randint(0,
+                                            tokenizer.vocab_size,
+                                            size=prefix_len).tolist()
+        
+        input_lens = np.random.randint( 
+            int(input_len * range_ratio),
+            input_len + 1,
+            size=num_prompts,
+        )
+        output_lens = np.random.randint(
+            int(output_len * range_ratio),
+            output_len + 1,
+            size=num_prompts,
+        )
+        offsets = np.random.randint(0, tokenizer.vocab_size, size=num_prompts)
+        input_requests = []
+        for i in range(num_prompts):
+            prompt = tokenizer.decode(prefix_token_ids + 
+                                    [(offsets[i] + i + j) % tokenizer.vocab_size
+                                    for j in range(input_lens[i])])
+
+            # make sure the re-encoded prompt has the same length
+            re_encoded_sequence = tokenizer.encode(prompt, add_special_tokens=False)[
+                : input_lens[i]
+            ]
+            prompt = tokenizer.decode(re_encoded_sequence)
+
+            input_requests.append(
+                SampleRequest(
+                    prompt=prompt,
+                    prompt_len=int(prefix_len + input_lens[i]),
+                    expected_output_len=int(output_lens[i]),
+                )
+            )
+
+        return input_requests
+
+
+
+
+
         # Enforce range_ratio < 1
         assert range_ratio < 1.0, (
             "random_range_ratio must be < 1.0 to ensure a valid sampling range"
