@@ -118,20 +118,60 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 with_stack = False
             else:
                 fn = torch.profiler.tensorboard_trace_handler
-                with_stack = True
+                with_stack = False
+
+            prof_activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.HPU,
+            ]
+
             self.profiler = torch.profiler.profile(
-                activities=[
-                    torch.profiler.ProfilerActivity.CPU,
-                    torch.profiler.ProfilerActivity.HPU,
-                ],
+                activities=prof_activities,
                 with_stack=with_stack,
                 on_trace_ready=fn(torch_profiler_trace_dir, use_gzip=True))
+
         else:
             self.profiler = None
+
+        self.on_demand_profiler_mode = None
+        if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
+            self.on_demand_profiler_step_start = 0
+            self.on_demand_profiler_step_stop = 1
+            self.on_demand_profiler_step_counter = 0
+
+            self.update_on_demand_profiler_cfg()
 
         self.all_cached_seq_data: Dict[int, dict] = {}
         self.cached_execute_model_req: Dict[int, ExecuteModelRequest] = {}
         self.lock = threading.Lock()
+
+    def update_on_demand_profiler_cfg(self):
+        assert self.on_demand_profiler_step_counter==0
+
+        # read config from the file set with VLLM_ON_DEMAND_TORCH_PROFILER
+        on_demand_profiler_cfg = None
+        if os.path.isfile(envs.VLLM_ON_DEMAND_TORCH_PROFILER):
+            with open(envs.VLLM_ON_DEMAND_TORCH_PROFILER, 'r') as f:
+                on_demand_profiler_cfg = f.read().strip() # mode,step_start,step_stop
+        else:
+            logger.warning(f"VLLM_ON_DEMAND_TORCH_PROFILER file {envs.VLLM_ON_DEMAND_TORCH_PROFILER} not found, skipping")
+
+        if on_demand_profiler_cfg is not None:
+            on_demand_profiler_cfg_list = [option.strip() for option in on_demand_profiler_cfg.split(',')]
+            if len(on_demand_profiler_cfg_list) > 0:
+                self.on_demand_profiler_mode = on_demand_profiler_cfg_list[0]
+            if len(on_demand_profiler_cfg_list) > 1:
+                self.on_demand_profiler_step_start = int(on_demand_profiler_cfg_list[1])
+            if len(on_demand_profiler_cfg_list) > 2:
+                self.on_demand_profiler_step_stop = int(on_demand_profiler_cfg_list[2])
+
+            self.on_demand_profiler_step_counter = 0
+
+            logger.info(f"on_demand_profiler config: ({self.on_demand_profiler_mode}, {self.on_demand_profiler_step_start},"
+                         f" {self.on_demand_profiler_step_stop}),"
+                         f" {self.on_demand_profiler_step_counter}")
+        else:
+            logger.warning(f"Invalid on_demand_profiler config in {envs.VLLM_ON_DEMAND_TORCH_PROFILER}, skipping")
 
     def full_trace_handler(self, dir_name, use_gzip=False):
 
@@ -186,6 +226,13 @@ class HPUWorker(LocalOrDistributedWorkerBase):
     def start_profile(self):
         if self.profiler is None:
             raise RuntimeError("Profiler is not enabled.")
+
+        self.do_start_profile()
+
+    def do_start_profile(self):
+        if self.profiler is None:
+            raise RuntimeError("Profiler is not enabled.")
+
         high_level_profiler = self.model_runner.profiler
         with high_level_profiler.record_event('internal', 'start_profiler'):
             # Clean up the queue
@@ -195,11 +242,27 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 except queue.Empty:
                     break
             self.profiler.start()
+        logger.info(f"Started profiler")
 
     def stop_profile(self):
         if self.profiler is None:
             raise RuntimeError("Profiler is not enabled.")
+
+        self.do_stop_profile()
+
+    def do_stop_profile(self):
+        if self.profiler is None:
+            raise RuntimeError("Profiler is not enabled.")
+
         self.profiler.stop()
+        logger.info(f"Stopped profiler")
+
+    def do_step_profile(self):
+        if self.profiler is None:
+            raise RuntimeError("Profiler is not enabled.")
+
+        self.profiler.step()
+        logger.info(f"Stepped profiler")
 
     def _set_env_vars(self):
         local_rank = self.local_rank
@@ -445,6 +508,16 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 return None
 
             model_input, worker_input, kwargs = inputs
+
+            if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
+                if self.on_demand_profiler_mode == "p" and model_input.attn_metadata.is_prompt or \
+                    self.on_demand_profiler_mode == "d" and not model_input.attn_metadata.is_prompt or \
+                    self.on_demand_profiler_mode == "a":
+                    self.on_demand_profiler_step_counter += 1
+                    if self.on_demand_profiler_step_counter == self.on_demand_profiler_step_start:
+                        self.do_start_profile()
+                        self.on_demand_profiler_mode = "a"
+
             num_steps = worker_input.num_steps
             if (execute_model_req is not None
                     and execute_model_req.spec_step_idx):
@@ -475,6 +548,12 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 assert isinstance(output, IntermediateTensors)
                 get_pp_group().send_tensor_dict(
                     output.tensors, all_gather_group=get_tp_group())
+
+                if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
+                    #self.do_step_profile()
+                    if self.on_demand_profiler_step_counter == self.on_demand_profiler_step_stop:
+                        self.do_stop_profile()
+
                 return [None]
 
         if get_pp_group().is_last_rank and get_pp_group().world_size > 1:
@@ -483,6 +562,11 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 model_input=model_input,
                 num_steps=num_steps,
             )
+
+        if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
+            #self.do_step_profile()
+            if self.on_demand_profiler_step_counter == self.on_demand_profiler_step_stop:
+                self.do_stop_profile()
 
         # output is List[SamplerOutput]
         return output
