@@ -888,6 +888,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # VLLM_PP_BONUS_VE can be used to force PP to execute with additional virtual engines.
     "VLLM_PP_BONUS_VE":
     lambda: int(os.getenv("VLLM_PP_BONUS_VE", "0")),
+
+    # VLLM_CHUNK_PREFILL_STRAT 0, 1, or 2.
+    # 0: No special handling. Pass full req in.
+    # 1: Truncate req before pass in and pad before prepare input
+    # 2: Truncate req with no pad
+    "VLLM_CHUNK_PREFILL_STRAT":
+    lambda: int(os.getenv("VLLM_CHUNK_PREFILL_STRAT", "0")),
 }
 
 # --8<-- [end:env-vars-definition]
