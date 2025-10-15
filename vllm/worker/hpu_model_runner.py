@@ -988,6 +988,8 @@ class ModelInputForHPUWithSamplingMetadata(ModelInputForHPU):
     # Used for speculative decoding. We do not broadcast it because it is only
     # used by the driver worker.
     is_prompt: Optional[bool] = None
+    # True if this step requires sampling (decode step or last prefill chunk).
+    needs_sampling: Optional[bool] = None
 
     def as_broadcastable_tensor_dict(self) -> Dict[str, Any]:
         tensor_dict = {
@@ -997,6 +999,7 @@ class ModelInputForHPUWithSamplingMetadata(ModelInputForHPU):
             "lora_mapping": self.lora_mapping,
             "multi_modal_kwargs": self.multi_modal_kwargs,
             "lora_ids": self.lora_ids,
+            "needs_sampling": self.needs_sampling,
         }
         _add_attn_metadata_broadcastable_dict(tensor_dict, self.attn_metadata)
         _add_sampling_metadata_broadcastable_dict(tensor_dict,
@@ -1936,7 +1939,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             bs = 1
 
         if any(context_lens):
-            assert not self.scheduler_config.chunked_prefill_enabled
+            # prefix caching or chunked prefill
 
             max_num_block = max(len(bt) for bt in prefix_block_tables)
             padded_num_block = self.bucketing_manager.find_prompt_bucket(
@@ -3170,6 +3173,10 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             self.vllm_config.compilation_config.static_forward_context,
             [kv_caches] * (self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE))
         max_seq_len = self.bucketing_manager.get_max_prompt_shape()
+        if self.scheduler_config.chunked_prefill_enabled:
+            max_seq_len = min(max_seq_len,
+                              self.max_num_batched_tokens,
+                              self.max_seq_len_to_capture)
         max_batch_size = min(self.max_num_seqs,
                              self.max_num_batched_tokens // max_seq_len)
 
@@ -3473,6 +3480,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             # Graph memory usage is proportional to seq dimension in a batch
             phase = f"Graph/{'prompt' if is_prompt else 'decode'}"
             if is_prompt:
+                if batch_size > self.max_num_prefill_seqs:
+                    continue
                 seq_len = query_len + ctx * self.block_size
                 batch_seq = batch_size * seq_len
             else:
