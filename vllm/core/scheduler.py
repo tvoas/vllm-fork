@@ -1114,6 +1114,7 @@ class Scheduler:
         curr_loras: Optional[Set[int]],
         enable_chunking: bool = False,
         partial_prefill_metadata: Optional[PartialPrefillMetadata] = None,
+        max_new_prefills: Optional[int] = None,
     ) -> SchedulerPrefillOutputs:
         """Schedule sequence groups that are in prefill stage.
 
@@ -1155,7 +1156,11 @@ class Scheduler:
         waiting_queue = self.waiting
 
         leftover_waiting_sequences: Deque[SequenceGroup] = deque()
+        new_prefill_seq_count = 0
         while self._passed_delay(time.time()) and waiting_queue:
+            if max_new_prefills is not None and new_prefill_seq_count >= max_new_prefills:
+                # Reached externally imposed cap on new prefills.
+                break
             seq_group = waiting_queue[0]
 
             waiting_seqs = seq_group.get_seqs(status=SequenceStatus.WAITING)
@@ -1294,6 +1299,7 @@ class Scheduler:
             seq_groups.append(
                 ScheduledSequenceGroup(seq_group=seq_group,
                                        token_chunk_size=num_new_tokens))
+            new_prefill_seq_count += num_new_seqs
             budget.add_num_batched_tokens(
                 seq_group.request_id,
                 num_batched_tokens=num_new_tokens_uncached,
@@ -1476,6 +1482,101 @@ class Scheduler:
         prefills = SchedulerPrefillOutputs.create_empty()
         swapped_in = SchedulerSwappedInOutputs.create_empty()
 
+        # -------- Prefill-only microbatch enforcement (no mixing) --------
+        # If any prefill work exists (waiting or running in prefill stage),
+        # build a microbatch containing ONLY prefills (continuing + new).
+        prefill_waiting = any(
+            (sg.first_seq.data.stage == SequenceStage.PREFILL) for sg in self.waiting
+        )
+        prefill_running_existing = any(sg.is_prefill() for sg in self.running)
+        prefill_swapped_existing = any(sg.is_prefill() for sg in self.swapped)
+        prefill_only_mode = prefill_waiting or prefill_running_existing or prefill_swapped_existing
+        if prefill_only_mode and self.scheduler_config.max_num_prefill_seqs is not None:
+            # Temporarily restrict running/swapped queues to prefills for scheduling.
+            original_running = self.running
+            original_swapped = self.swapped
+            self.running = deque([sg for sg in original_running if sg.is_prefill()])
+            self.swapped = deque([sg for sg in original_swapped if sg.is_prefill()])
+
+            # Partial prefill metadata only over prefills.
+            partial_prefill_metadata = PartialPrefillMetadata.from_queues(
+                running=self.running,
+                waiting=self.waiting,
+                scheduler_config=self.scheduler_config,
+            )
+            running_scheduled = self._schedule_running(
+                budget,
+                curr_loras,
+                enable_chunking=True,
+                partial_prefill_metadata=partial_prefill_metadata,
+            )
+            if len(running_scheduled.preempted) + len(running_scheduled.swapped_out) == 0:
+                swapped_in = self._schedule_swapped(budget, curr_loras, enable_chunking=True)
+                # Drop any decode groups just in case (should be none in prefill-only filtering).
+                swapped_in.decode_seq_groups = []
+
+            # Enforce microbatch sequence cap = max_num_prefill_seqs (continuing + new only).
+            cfg_limit = self.scheduler_config.max_num_prefill_seqs
+            continuing_seq_count = (
+                sum(s.seq_group.get_max_num_running_seqs() for s in running_scheduled.prefill_seq_groups)
+                + sum(s.seq_group.get_max_num_running_seqs() for s in swapped_in.prefill_seq_groups)
+            )
+            remaining_capacity = cfg_limit - continuing_seq_count
+            if remaining_capacity > 0:
+                prefills = self._schedule_prefills(
+                    budget,
+                    curr_loras,
+                    enable_chunking=True,
+                    partial_prefill_metadata=partial_prefill_metadata,
+                    max_new_prefills=remaining_capacity,
+                )
+
+            # Assemble ONLY prefill groups (continuing + swapped_in + new).
+            scheduled_seq_groups = (
+                running_scheduled.prefill_seq_groups
+                + swapped_in.prefill_seq_groups
+                + prefills.seq_groups
+            )
+            num_prefill_groups = len(scheduled_seq_groups)
+
+            # Restore original queues & update state:
+            # Put back original running (decodes + prefills), then add newly created prefills.
+            self.running = original_running
+            # Add new prefills' seq_groups to running queue.
+            self.running.extend([s.seq_group for s in prefills.seq_groups])
+            # Remove any swapped-in prefills from original_swapped; add newly swapped_out.
+            swapped_in_ids = {s.seq_group.request_id for s in swapped_in.prefill_seq_groups}
+            self.swapped = deque(
+                [sg for sg in original_swapped if sg.request_id not in swapped_in_ids]
+            )
+            self.swapped.extend(running_scheduled.swapped_out)
+            # Return preempted prefills to waiting.
+            self.waiting.extendleft(running_scheduled.preempted)
+
+            assert budget.num_batched_tokens <= self.scheduler_config.max_num_batched_tokens
+            assert budget.num_curr_seqs <= self.scheduler_config.max_num_seqs
+
+            all_prefills = True
+            num_lookahead_slots = (
+                0
+                if (all_prefills and not self.scheduler_config.is_multi_step)
+                else running_scheduled.num_lookahead_slots
+            )
+            preempted = len(running_scheduled.preempted) + len(running_scheduled.swapped_out)
+            return SchedulerOutputs(
+                scheduled_seq_groups=scheduled_seq_groups,
+                num_prefill_groups=num_prefill_groups,
+                num_batched_tokens=budget.num_batched_tokens + budget.num_cached_tokens,
+                blocks_to_swap_in=swapped_in.blocks_to_swap_in,
+                blocks_to_swap_out=running_scheduled.blocks_to_swap_out,
+                blocks_to_copy=running_scheduled.blocks_to_copy + swapped_in.blocks_to_copy,
+                ignored_seq_groups=prefills.ignored_seq_groups + swapped_in.infeasible_seq_groups,
+                num_lookahead_slots=num_lookahead_slots,
+                running_queue_size=len(self.running),
+                preempted=preempted,
+            )
+        # -------- End prefill-only microbatch path --------
+ 
         # Create partial prefill metadata
         partial_prefill_metadata = PartialPrefillMetadata.from_queues(
             running=self.running,
