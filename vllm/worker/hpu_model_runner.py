@@ -1088,6 +1088,10 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         assert not (self.scheduler_config.use_padding_aware_scheduling
                     and self.use_merged_prefill), \
             'Merged prefill is not compatible with padding aware scheduling!'
+        if self.scheduler_config.chunked_prefill_enabled and \
+            not envs.VLLM_USE_V1:
+            logger.warning(
+                "Chunked prefill has accuracy issue on HPU with V0 engine.")
 
         self.pin_memory = is_pin_memory_available()
         self.kv_cache_dtype = self.cache_config.cache_dtype
@@ -1850,6 +1854,11 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             target_query_len = sum(query_lens)
         else:
             target_query_len = max(query_lens)
+        #if self.scheduler_config.chunked_prefill_enabled:
+        #    # The query will be truncated to chunk size during chunked prefill
+        #    target_query_len = min(target_query_len,
+        #                           self.max_num_batched_tokens,
+        #                           self.max_seq_len_to_capture)
         ctx = len(computed_block_nums) if computed_block_nums else 0
 
         if is_enc_dec_model:
@@ -3060,7 +3069,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             [kv_caches] * self.parallel_config.pipeline_parallel_size)
         max_seq_len = self.bucketing_manager.get_max_prompt_shape()
         if self.scheduler_config.chunked_prefill_enabled:
-            max_seq_len = min(max_seq_len, self.max_num_batched_tokens, self.max_seq_len_to_capture)
+            max_seq_len = min(max_seq_len,
+                              self.max_num_batched_tokens,
+                              self.max_seq_len_to_capture)
         max_batch_size = min(self.max_num_seqs,
                              self.max_num_batched_tokens // max_seq_len)
 

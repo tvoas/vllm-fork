@@ -2311,12 +2311,6 @@ class SchedulerConfig:
                 "num_scheduler_steps "
                 f"({self.num_scheduler_steps}) must be greater than or "
                 "equal to 1.")
-        if self.max_num_prefill_seqs is not None \
-            and not (self.use_padding_aware_scheduling
-            or self.chunked_prefill_enabled):
-            raise ValueError("max_num_prefill_seqs can be only "
-                             "used with padding-aware-scheduling or "
-                             "chunked-prefill. ")
         if self.use_padding_aware_scheduling and self.chunked_prefill_enabled:
             raise ValueError("Padding-aware scheduling currently "
                              "does not work with chunked prefill ")

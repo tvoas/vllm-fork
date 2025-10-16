@@ -1352,6 +1352,48 @@ class Scheduler:
         curr_loras = (set(
             seq_group.lora_int_id for seq_group in self.running
             if seq_group.lora_int_id > 0) if self.lora_enabled else None)
+        
+        if not self.scheduler_config.use_padding_aware_scheduling:
+            # Detect whether any prefill work exists.
+            prefill_waiting = any((sg.first_seq.data.stage == SequenceStage.PREFILL) for sg in self.waiting)
+            prefill_running_existing = any(sg.is_prefill() for sg in self.running)
+            prefill_swapped_existing = any(sg.is_prefill() for sg in self.swapped)
+            prefill_only_mode = prefill_waiting or prefill_running_existing or prefill_swapped_existing
+
+            cfg_limit = self.scheduler_config.max_num_prefill_seqs
+            if prefill_only_mode and cfg_limit is not None:
+                # Default (non-chunked) path: only schedule NEW prefills up to cfg_limit.
+                # No continuing prefills exist here.
+                remaining_capacity = cfg_limit
+                if remaining_capacity > 0:
+                    prefills = self._schedule_prefills(
+                        budget,
+                        curr_loras,
+                        enable_chunking=False,
+                        max_new_prefills=remaining_capacity,
+                )
+                # Early-exit with a prefill-only microbatch.
+                scheduled_seq_groups = prefills.seq_groups
+                num_prefill_groups = len(scheduled_seq_groups)
+
+                assert budget.num_batched_tokens <= self.scheduler_config.max_num_batched_tokens
+                assert budget.num_curr_seqs <= self.scheduler_config.max_num_seqs
+
+                if num_prefill_groups > 0:
+                    self.running.extend([s.seq_group for s in prefills.seq_groups])
+
+                return SchedulerOutputs(
+                    scheduled_seq_groups=scheduled_seq_groups,
+                    num_prefill_groups=num_prefill_groups,
+                    num_batched_tokens=budget.num_batched_tokens + budget.num_cached_tokens,
+                    blocks_to_swap_in=[],
+                    blocks_to_swap_out=[],
+                    blocks_to_copy=[],
+                    ignored_seq_groups=prefills.ignored_seq_groups,
+                    num_lookahead_slots=0 if (num_prefill_groups > 0 and not self.scheduler_config.is_multi_step) else 0,
+                    running_queue_size=len(self.running),
+                    preempted=0,
+                )
 
         prefills = SchedulerPrefillOutputs.create_empty()
         running_scheduled = SchedulerRunningOutputs.create_empty()
