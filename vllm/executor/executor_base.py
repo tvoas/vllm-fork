@@ -442,7 +442,7 @@ class DistributedExecutorBase(ExecutorBase):
                         curr_val = getattr(seq_data, attr)
                         prev_val = prev_entry[attr]
                         if isinstance(curr_val, (list, array.array, tuple)):
-                            if chunk_size > 0 and len(curr_val > chunk_size):
+                            if chunk_size > 0 and len(curr_val) > chunk_size:
                                 curr_val = curr_val[:chunk_size]
                             if len(curr_val) > len(prev_val):
                                 patch[attr] = curr_val[len(prev_val):]
@@ -621,7 +621,7 @@ class DistributedExecutorBase(ExecutorBase):
                         continue
                     # Initialize step if new.
                     step = self._prefill_chunk_steps.get(seq_key, 0)
-                    self._prefill_chunk_steps.get[seq_key] += 1
+                    self._prefill_chunk_steps[seq_key] = step + 1
 
             execute_model_req_patch = self._compute_execute_model_req_patch(
                 cached_execute_model_req, execute_model_req, tracked_attrs)
