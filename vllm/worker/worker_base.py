@@ -364,7 +364,6 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             model_input = dataclasses.replace(model_input,
                                               needs_sampling=needs_sampling)
 
-
         kwargs = extract_previous_hidden_states(execute_model_req)
 
         if self.do_metadata_broadcast:

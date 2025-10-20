@@ -1087,10 +1087,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         assert not (self.scheduler_config.use_padding_aware_scheduling
                     and self.use_merged_prefill), \
             'Merged prefill is not compatible with padding aware scheduling!'
-        if self.scheduler_config.chunked_prefill_enabled and \
-            not envs.VLLM_USE_V1:
-            logger.warning(
-                "Chunked prefill has accuracy issue on HPU with V0 engine.")
 
         self.pin_memory = is_pin_memory_available()
         self.kv_cache_dtype = self.cache_config.cache_dtype

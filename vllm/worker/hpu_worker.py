@@ -796,7 +796,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 return [None]
 
         if get_pp_group().is_last_rank and get_pp_group().world_size > 1:
-            if model_input.needs_sampling or self.is_prompt:
+            if not self.is_prompt or model_input.needs_sampling:
                 output = self.model_runner.execute_sample(
                     hidden_states=output,
                     model_input=model_input,
@@ -822,7 +822,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 self.do_stop_profile()
 
         # output is List[SamplerOutput]
-        return output, model_input.virtual_engine
+        return output
 
     @torch.inference_mode()
     def determine_num_available_blocks(self) -> Tuple[int, int]:
