@@ -16,6 +16,11 @@ import threading
 import time
 from typing import Dict, List, Optional, Set, Tuple, Type, Union
 
+from dataclasses import is_dataclass, asdict
+from typing import Any, Mapping, Iterable
+from collections import OrderedDict
+import json
+
 import habana_frameworks.torch as htorch  # noqa:F401
 import torch
 import torch.distributed
@@ -772,6 +777,90 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     f.write(line + "\n")
         except Exception:
             pass
+
+    def _to_mapping(self, obj: Any) -> Mapping[str, Any]:
+        if obj is None:
+            return {}
+        if isinstance(obj, Mapping):
+            return obj
+        if is_dataclass(obj):
+            return asdict(obj)
+        # Pydantic BaseModel
+        if hasattr(obj, "model_dump"):
+            try:
+                return obj.model_dump()
+            except Exception:
+                pass
+        if hasattr(obj, "dict"):
+            try:
+                return obj.dict()
+            except Exception:
+                pass
+        # Fallback: introspect __dict__
+        if hasattr(obj, "__dict__"):
+            return {k: v for k, v in vars(obj).items() if not k.startswith("_")}
+        return {"value": obj}
+
+    def _flatten_value(self, v: Any, max_len: int = 200) -> Any:
+        if isinstance(v, (str, bytes)):
+            s = v if isinstance(v, str) else v.decode(errors="replace")
+            return s if len(s) <= max_len else s[: max_len - 3] + "..."
+        if isinstance(v, (int, float, bool)) or v is None:
+            return v
+        if isinstance(v, (list, tuple, set)):
+            seq = list(v)
+            shown = seq[:10]
+            tail = "" if len(seq) <= 10 else f"...(+{len(seq)-10} more)"
+            return [ self._flatten_value(x, max_len//4) for x in shown ] + ([tail] if tail else [])
+        if isinstance(v, dict):
+            out = {}
+            for i, (k, val) in enumerate(v.items()):
+                if i >= 15:
+                    out["..."] = f"+{len(v)-15} more"
+                    break
+                out[str(k)] = self._flatten_value(val, max_len//2)
+            return out
+        # Try JSON serialization
+        try:
+            json.dumps(v)
+            return v
+        except Exception:
+            return repr(v)[:max_len]
+
+    def _ordered(self, mapping: Mapping[str, Any]) -> OrderedDict:
+        priority_keys = ["id", "request_id", "model", "task", "inputs", "parameters", "metadata"]
+        ordered = OrderedDict()
+        for k in priority_keys:
+            if k in mapping:
+                ordered[k] = mapping[k]
+        for k in sorted(mapping.keys()):
+            if k not in ordered:
+                ordered[k] = mapping[k]
+        return ordered
+
+    def _format(self, obj: Any) -> List[str]:
+        mapping = self._ordered(self._to_mapping(obj))
+        processed = {k: self._flatten_value(v) for k, v in mapping.items()}
+        try:
+            return json.dumps(processed, indent=2, ensure_ascii=False)
+        except Exception:
+            # Fallback manual
+            lines = []
+            for k, v in processed.items():
+                lines.append(f"{k}: {v}")
+            lines
+
+    def _log_formatted(self, prefix: str, obj: Any) -> None:
+        lines = self._format(obj)
+        logger.info(prefix)
+        for line in lines:
+            logger.info(line)
+
+    def log_execute_model_req(self, execute_model_req: Any) -> None:
+        self._log_formatted("ExecuteModelReq", execute_model_req)
+
+    def log_model_input(self, model_input: Any) -> None:
+        self._log_formatted("ModelInput", model_input)
     
     def execute_model(
         self,
@@ -823,6 +912,9 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     self.all_cached_seq_data[ve],
                     phase="after",
                 )
+
+            if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
+                self.log_execute_model_req(execute_model_req)
 
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION     - will log graph compilations per engine step, only when there was any - highly recommended to use alongside PT_HPU_METRICS_GC_DETAILS! # noqa:E501
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL - will log graph compilations per engine step, always, even if there were none # noqa:E501
@@ -1028,6 +1120,8 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 return None, None
 
             model_input, worker_input, kwargs = inputs
+            if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
+                self.log_model_input(model_input)
             self.is_prompt = model_input.is_prompt
             self._debug_log_model_input(
                 model_input,
