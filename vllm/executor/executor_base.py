@@ -430,24 +430,20 @@ class DistributedExecutorBase(ExecutorBase):
             A dict keyed by sequence key with only the incremental changes.
         """
         patch_by_key: Dict[Hashable, Dict[str, Any]] = {}
-        chunk_enabled, chunk_size = self._get_chunked_prefill_limit()
+        chunk_sizes = self._get_chunked_prefill_limits(execute_model_req)
         for seq_group in execute_model_req.seq_group_metadata_list:
             sampling_params = seq_group.sampling_params
             for seq_key, seq_data in seq_group.seq_data.items():
+                chunk_size = chunk_sizes[seq_key]
                 if seq_key in prev_cache:
                     prev_entry = prev_cache[seq_key]
                     patch: Dict[str, Any] = {}
                     for attr in tracked_attrs:
-                        raw_val = getattr(seq_data, attr)
-                        curr_val = (
-                            self._truncate_for_prefill(
-                                seq_key, seq_data, attr, raw_val, chunk_size
-                            )
-                            if chunk_enabled
-                            else raw_val
-                        )
+                        curr_val = getattr(seq_data, attr)
                         prev_val = prev_entry[attr]
                         if isinstance(curr_val, (list, array.array, tuple)):
+                            if chunk_size > 0 and len(curr_val > chunk_size):
+                                curr_val = curr_val[:chunk_size]
                             if len(curr_val) > len(prev_val):
                                 patch[attr] = curr_val[len(prev_val):]
                         else:
@@ -455,17 +451,15 @@ class DistributedExecutorBase(ExecutorBase):
                                 patch[attr] = curr_val
                     patch_by_key[seq_key] = patch
                 else:
-                    entry: Dict[str, Any] = {}
+                    patch_by_key[seq_key] = {
+                        attr: getattr(seq_data, attr)
+                        for attr in tracked_attrs
+                    }
                     for attr in tracked_attrs:
-                        raw_val = getattr(seq_data, attr)
-                        entry[attr] = (
-                            self._truncate_for_prefill(
-                                seq_key, seq_data, attr, raw_val, chunk_size
-                            )
-                            if chunk_enabled
-                            else raw_val
-                        )
-                    patch_by_key[seq_key] = entry
+                        curr_val = getattr(patch_by_key[seq_key], attr)
+                        if isinstance(curr_val, (list, array.array, tuple)):
+                            if chunk_size > 0 and len(curr_val > chunk_size):
+                                patch_by_key[seq_key] = curr_val[:chunk_size]
                     patch_by_key[seq_key]["sampling_params"] = sampling_params
 
         return patch_by_key
@@ -494,37 +488,23 @@ class DistributedExecutorBase(ExecutorBase):
         """
         if cache is None:
             cache = {}
-        chunk_enabled, chunk_size = self._get_chunked_prefill_limit()
+        chunk_sizes = self._get_chunked_prefill_limits(execute_model_req)
 
-        for seq_group in execute_model_req.seq_group_metadata_list:
+        for idx, seq_group in enumerate(execute_model_req.seq_group_metadata_list):
             for seq_key, seq_data in seq_group.seq_data.items():
+                chunk_size = chunk_sizes[seq_key]
                 if seq_key not in cache:
-                    entry: Dict[str, Any] = {}
-                    for attr in tracked_attrs:
-                        raw_val = getattr(seq_data, attr)
-                        val = (
-                            self._truncate_for_prefill(
-                                seq_key, seq_data, attr, raw_val, chunk_size
-                            )
-                            if chunk_enabled
-                            else raw_val
-                        )
-                        if isinstance(val, (list, array.array)):
-                            entry[attr] = list(val)
-                        else:
-                            entry[attr] = val
-                    cache[seq_key] = entry
+                    cache[seq_key] = {
+                        attr: (list(getattr(seq_data, attr)) if isinstance(
+                            getattr(seq_data, attr),
+                            (list, array.array)) else getattr(seq_data, attr))
+                        for attr in tracked_attrs
+                    }
+                    
                 else:
                     cached_entry = cache[seq_key]
                     for attr in tracked_attrs:
-                        raw_val = getattr(seq_data, attr)
-                        curr_val = (
-                            self._truncate_for_prefill(
-                                seq_key, seq_data, attr, raw_val, chunk_size
-                            )
-                            if chunk_enabled
-                            else raw_val
-                        )
+                        curr_val = getattr(seq_data, attr)
                         if isinstance(curr_val, (list, array.array)):
                             cached_entry[attr].extend(
                                 curr_val[len(cached_entry[attr]):])
@@ -533,6 +513,11 @@ class DistributedExecutorBase(ExecutorBase):
                                 curr_val[len(cached_entry[attr]):])
                         else:
                             cached_entry[attr] = curr_val
+                if chunk_size > 0:
+                    for attr in cache[seq_key]:
+                        if isinstance(cache[seq_key][attr], (list, array.array, tuple)):
+                            if len(cache[seq_key][attr]) > chunk_size:
+                                cache[seq_key][attr] = cache[seq_key][attr][:chunk_size]
 
         return cache
 
@@ -554,62 +539,37 @@ class DistributedExecutorBase(ExecutorBase):
                 seq_data._num_computed_tokens = 0
                 seq_data._stage = seq_data._stage.value
 
-    def _get_chunked_prefill_limit(self) -> Tuple[bool, Optional[int]]:
-        cfg = getattr(self, "scheduler_config", None)
-        if cfg is None:
-            return False, None
-        enabled = bool(getattr(cfg, "enable_chunked_prefill", False))
-        if not enabled:
-            return False, None
-        chunk_size = (
-            getattr(cfg, "prefill_chunk_size", None)
-            or getattr(cfg, "chunked_prefill_size", None)
-            or getattr(cfg, "chunk_size", None)
-        )
-        return enabled and bool(chunk_size), chunk_size
+    def _get_chunked_prefill_limits(
+        self, execute_model_req: Any
+    ) -> Dict[Hashable, int]:
+        """
+        Return per-sequence allowed prompt length window for chunked prefill.
 
-    def _truncate_for_prefill(
-        self,
-        seq_key: Hashable,
-        seq_data: Any,
-        attr: str,
-        value: Any,
-        chunk_size: int,
-    ) -> Any:
+        For each sequence:
+        - If global chunked prefill disabled: {} (callers treat as no limits).
+        - If sequence is in decode phase (_num_computed_tokens > 0): 0.
+        - If in prompt/prefill phase: step * token_chunk_size, where step is
+          read from self._prefill_chunk_steps (default 1). This function DOES
+          NOT increment the step counter; callers handle advancement.
         """
-        Return a truncated copy (non-inplace) of prompt / cached tokens for
-        chunked prefill; leave other attrs unchanged.
-        """
-        # Only during prefill stage.
-        if getattr(seq_data, "_num_computed_tokens", 0) > 0:
-            # Leave prefill tracking if sequence moved to decode.
-            self._prefill_chunk_steps.pop(seq_key, None)
-            return value
-        truncatable = {
-            "_prompt_token_ids",
-            "_prompt_token_ids_tuple",
-            "_cached_all_token_ids",
-        }
-        if attr not in truncatable:
-            return value
-        total = len(value)
-        step = self._prefill_chunk_steps.get(seq_key, 1)
-        limit = step * chunk_size
-        if total <= limit:
-            # Last (or only) chunk; remove tracker after sending full.
-            self._prefill_chunk_steps.pop(seq_key, None)
-            # Return a defensive copy.
-            return value[:] if isinstance(value, (list, array.array)) else tuple(value)
-        # More remains: advance counter for next call.
-        self._prefill_chunk_steps[seq_key] = step + 1
-        sliced = value[:limit]
-        if isinstance(value, array.array):
-            return array.array(value.typecode, sliced)
-        if isinstance(value, list):
-            return list(sliced)
-        if isinstance(value, tuple):
-            return tuple(sliced)
-        return sliced
+        if execute_model_req is None:
+            return {}
+        cfg = getattr(self, "scheduler_config", None)
+        if cfg is None or not getattr(cfg, "chunked_prefill_enabled", False):
+            return {}
+
+        limits: Dict[Hashable, int] = {}
+        for seq_group in execute_model_req.seq_group_metadata_list:
+            is_prompt = seq_group.is_prompt
+            chunk_size = getattr(seq_group, "token_chunk_size", 0) or 0
+            for seq_key, seq_data in seq_group.seq_data.items():
+                if is_prompt and chunk_size > 0:
+                    step = self._prefill_chunk_steps.get(seq_key, 0)
+                    assert step > 0, "Prefill chunk step should be greater than zero."
+                    limits[seq_key] = step * chunk_size
+                else:
+                    limits[seq_key] = 0
+        return limits
 
     def prepare_execute_model_req_patch(
         self,
@@ -652,6 +612,17 @@ class DistributedExecutorBase(ExecutorBase):
                     self.cached_execute_model_reqs[virtual_engine])
             else:
                 prev_execute_model_req_hash, cached_execute_model_req = "", {}
+
+            for seq_group in execute_model_req.seq_group_metadata_list:
+                for seq_key, seq_data in seq_group.seq_data.items():
+                    # If sequence already decoding, clear any stale counter.
+                    if not seq_group.is_prompt:
+                        self._prefill_chunk_steps.pop(seq_key, None)
+                        continue
+                    # Initialize step if new.
+                    step = self._prefill_chunk_steps.get(seq_key, 0)
+                    self._prefill_chunk_steps.get[seq_key] += 1
+
             execute_model_req_patch = self._compute_execute_model_req_patch(
                 cached_execute_model_req, execute_model_req, tracked_attrs)
             self.cached_execute_model_reqs[
