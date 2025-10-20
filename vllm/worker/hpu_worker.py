@@ -700,9 +700,9 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             is_patch = bool(execute_model_req_patch)
 
             header = (
-                f"[EXEC-PATCH] rank={world_rank} ve={ve} step={execute_step_count} phase={phase} "
-                f"use_cached_base_req={use_cached_base_req} is_patch={is_patch} "
-                f"seq_groups={num_seq_groups} seqs={num_seqs}"
+                f"[EXEC-PATCH] rank={world_rank}, ve={ve}, step={execute_step_count}, phase={phase}, "
+                f"use_cached_base_req={use_cached_base_req}, is_patch={is_patch}, "
+                f"seq_groups={num_seq_groups}, seqs={num_seqs}"
             )
 
             # Patch summary
@@ -717,7 +717,8 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         parts.append(f"{attr}+={len(val)}")
                     else:
                         parts.append(f"{attr}={val}")
-                patch_lines.append("  seq_id={key} patch={" + ",".join(parts) + "}")
+                parts = ", ".join(parts)
+                patch_lines.append("  seq_id={key}, patch={parts}")
 
             # Cache summary (lengths)
             cache_lines = []
@@ -727,12 +728,12 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         return len(v)
                     return v if isinstance(v, (int, float)) else (1 if v is not None else 0)
                 cache_lines.append(
-                    f"  cache seq_id={key} lens("
-                    f"cached={_len_safe(cdata.get('_cached_all_token_ids'))},"
-                    f"new={_len_safe(cdata.get('_new_appended_tokens'))},"
-                    f"out={_len_safe(cdata.get('_output_token_ids'))},"
-                    f"prompt={_len_safe(cdata.get('_prompt_token_ids'))},"
-                    f"prompt_tup={_len_safe(cdata.get('_prompt_token_ids_tuple'))},"
+                    f"  cache seq_id={key}, lens("
+                    f"cached={_len_safe(cdata.get('_cached_all_token_ids'))}, "
+                    f"new={_len_safe(cdata.get('_new_appended_tokens'))}, "
+                    f"out={_len_safe(cdata.get('_output_token_ids'))}, "
+                    f"prompt={_len_safe(cdata.get('_prompt_token_ids'))}, "
+                    f"prompt_tup={_len_safe(cdata.get('_prompt_token_ids_tuple'))}, "
                     f"num_comp={cdata.get('_num_computed_tokens', 0)})"
                 )
             if not cache_lines:
@@ -748,11 +749,11 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                             return len(v)
                         return v
                     final_lines.append(
-                        f"  final seq_id={seq_id} prompt={_len_attr(sd,'prompt_token_ids')} "
-                        f"output={_len_attr(sd,'output_token_ids')} "
-                        f"cached_all={_len_attr(sd,'_cached_all_token_ids')} "
-                        f"new_appended={_len_attr(sd,'_new_appended_tokens')} "
-                        f"num_comp={getattr(sd,'_num_computed_tokens',None)} "
+                        f"  final seq_id={seq_id}, prompt={_len_attr(sd,'prompt_token_ids')}, "
+                        f"output={_len_attr(sd,'output_token_ids')}, "
+                        f"cached_all={_len_attr(sd,'_cached_all_token_ids')}, "
+                        f"new_appended={_len_attr(sd,'_new_appended_tokens')}, "
+                        f"num_comp={getattr(sd,'_num_computed_tokens',None)}, "
                         f"stage={getattr(sd,'_stage',None)}"
                     )
             if not final_lines:
