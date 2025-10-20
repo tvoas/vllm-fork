@@ -3288,7 +3288,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                     self.execute_sample(
                         hidden_states=output,
                         model_input=inputs,
-                        num_steps=1,
+                        num_steps=2,
                     )
                 inputs = dataclasses.replace(inputs,
                                              is_first_multi_step=False,
@@ -3304,7 +3304,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                     self.execute_sample(
                         hidden_states=output,
                         model_input=inputs,
-                        num_steps=1,
+                        num_steps=2,
                     )
             if not is_dummy_run:
                 torch.hpu.synchronize()

@@ -1,0 +1,198 @@
+[MI] rank=0 ve=0 step=1 bsz=1 padded_len=28928 active=26852 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=1 i=0 seq_id=0 seq_len=26852 q_len=26852 active=26852 pos=[0,26851] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=1 seqs=1 prompt_len_mean=26852.00 prompt_len_min=26852 prompt_len_max=26852 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=200 bsz=1 padded_len=28928 active=26852 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=200 i=0 seq_id=1 seq_len=26852 q_len=26852 active=26852 pos=[0,26851] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=200 seqs=2 prompt_len_mean=26852.00 prompt_len_min=26852 prompt_len_max=26852 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=202 bsz=1 padded_len=28928 active=26727 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=202 i=0 seq_id=2 seq_len=26727 q_len=26727 active=26727 pos=[0,26726] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=202 seqs=3 prompt_len_mean=26810.33 prompt_len_min=26727 prompt_len_max=26852 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=597 bsz=1 padded_len=28928 active=25773 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=597 i=0 seq_id=3 seq_len=25773 q_len=25773 active=25773 pos=[0,25772] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=597 seqs=4 prompt_len_mean=26551.00 prompt_len_min=25773 prompt_len_max=26852 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=648 bsz=1 padded_len=28928 active=27384 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=648 i=0 seq_id=4 seq_len=27384 q_len=27384 active=27384 pos=[0,27383] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=648 seqs=5 prompt_len_mean=26717.60 prompt_len_min=25773 prompt_len_max=27384 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=1021 bsz=1 padded_len=32768 active=29051 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=1021 i=0 seq_id=5 seq_len=29051 q_len=29051 active=29051 pos=[0,29050] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=1021 seqs=6 prompt_len_mean=27106.50 prompt_len_min=25773 prompt_len_max=29051 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=1026 bsz=1 padded_len=32768 active=28979 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=1026 i=0 seq_id=6 seq_len=28979 q_len=28979 active=28979 pos=[0,28978] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=1026 seqs=7 prompt_len_mean=27374.00 prompt_len_min=25773 prompt_len_max=29051 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=1408 bsz=1 padded_len=32768 active=29947 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=1408 i=0 seq_id=7 seq_len=29947 q_len=29947 active=29947 pos=[0,29946] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=1408 seqs=8 prompt_len_mean=27695.62 prompt_len_min=25773 prompt_len_max=29947 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=1458 bsz=1 padded_len=28928 active=25153 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=1458 i=0 seq_id=8 seq_len=25153 q_len=25153 active=25153 pos=[0,25152] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=1458 seqs=9 prompt_len_mean=27413.11 prompt_len_min=25153 prompt_len_max=29947 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=1838 bsz=1 padded_len=28928 active=28493 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=1838 i=0 seq_id=9 seq_len=28493 q_len=28493 active=28493 pos=[0,28492] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=1838 seqs=10 prompt_len_mean=27521.10 prompt_len_min=25153 prompt_len_max=29947 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=1845 bsz=1 padded_len=32768 active=29994 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=1845 i=0 seq_id=10 seq_len=29994 q_len=29994 active=29994 pos=[0,29993] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=1845 seqs=11 prompt_len_mean=27745.91 prompt_len_min=25153 prompt_len_max=29994 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=2252 bsz=1 padded_len=32768 active=30044 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=2252 i=0 seq_id=11 seq_len=30044 q_len=30044 active=30044 pos=[0,30043] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=2252 seqs=12 prompt_len_mean=27937.42 prompt_len_min=25153 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=2284 bsz=1 padded_len=28928 active=27588 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=2284 i=0 seq_id=12 seq_len=27588 q_len=27588 active=27588 pos=[0,27587] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=2284 seqs=13 prompt_len_mean=27910.54 prompt_len_min=25153 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=2641 bsz=1 padded_len=25088 active=24825 prefill=25088 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=2641 i=0 seq_id=13 seq_len=24825 q_len=24825 active=24825 pos=[0,24824] prefills=1 pf_tokens=25088 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=2641 seqs=14 prompt_len_mean=27690.14 prompt_len_min=24825 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=2708 bsz=1 padded_len=28928 active=26719 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=2708 i=0 seq_id=14 seq_len=26719 q_len=26719 active=26719 pos=[0,26718] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=2708 seqs=15 prompt_len_mean=27625.40 prompt_len_min=24825 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=3076 bsz=1 padded_len=28928 active=26255 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=3076 i=0 seq_id=15 seq_len=26255 q_len=26255 active=26255 pos=[0,26254] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=3076 seqs=16 prompt_len_mean=27539.75 prompt_len_min=24825 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=3078 bsz=1 padded_len=28928 active=26342 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=3078 i=0 seq_id=16 seq_len=26342 q_len=26342 active=26342 pos=[0,26341] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=3078 seqs=17 prompt_len_mean=27469.29 prompt_len_min=24825 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=3445 bsz=1 padded_len=28928 active=27017 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=3445 i=0 seq_id=17 seq_len=27017 q_len=27017 active=27017 pos=[0,27016] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=3445 seqs=18 prompt_len_mean=27444.17 prompt_len_min=24825 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=3518 bsz=1 padded_len=28928 active=25819 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=3518 i=0 seq_id=18 seq_len=25819 q_len=25819 active=25819 pos=[0,25818] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=3518 seqs=19 prompt_len_mean=27358.63 prompt_len_min=24825 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=3824 bsz=1 padded_len=25088 active=24657 prefill=25088 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=3824 i=0 seq_id=19 seq_len=24657 q_len=24657 active=24657 pos=[0,24656] prefills=1 pf_tokens=25088 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=3824 seqs=20 prompt_len_mean=27223.55 prompt_len_min=24657 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=3961 bsz=1 padded_len=28928 active=27013 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=3961 i=0 seq_id=20 seq_len=27013 q_len=27013 active=27013 pos=[0,27012] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=3961 seqs=21 prompt_len_mean=27213.52 prompt_len_min=24657 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=4272 bsz=1 padded_len=28928 active=26283 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=4272 i=0 seq_id=21 seq_len=26283 q_len=26283 active=26283 pos=[0,26282] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=4272 seqs=22 prompt_len_mean=27171.23 prompt_len_min=24657 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=4364 bsz=1 padded_len=32768 active=29192 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=4364 i=0 seq_id=22 seq_len=29192 q_len=29192 active=29192 pos=[0,29191] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=4364 seqs=23 prompt_len_mean=27259.09 prompt_len_min=24657 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=4670 bsz=1 padded_len=32768 active=28971 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=4670 i=0 seq_id=23 seq_len=28971 q_len=28971 active=28971 pos=[0,28970] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=4670 seqs=24 prompt_len_mean=27330.42 prompt_len_min=24657 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=4740 bsz=1 padded_len=28928 active=26166 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=4740 i=0 seq_id=24 seq_len=26166 q_len=26166 active=26166 pos=[0,26165] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=4740 seqs=25 prompt_len_mean=27283.84 prompt_len_min=24657 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=5119 bsz=1 padded_len=28928 active=25991 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=5119 i=0 seq_id=25 seq_len=25991 q_len=25991 active=25991 pos=[0,25990] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=5119 seqs=26 prompt_len_mean=27234.12 prompt_len_min=24657 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=5192 bsz=1 padded_len=28928 active=26616 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=5192 i=0 seq_id=26 seq_len=26616 q_len=26616 active=26616 pos=[0,26615] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=5192 seqs=27 prompt_len_mean=27211.22 prompt_len_min=24657 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=5550 bsz=1 padded_len=25088 active=24219 prefill=25088 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=5550 i=0 seq_id=27 seq_len=24219 q_len=24219 active=24219 pos=[0,24218] prefills=1 pf_tokens=25088 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=5550 seqs=28 prompt_len_mean=27104.36 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=5561 bsz=1 padded_len=28928 active=26128 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=5561 i=0 seq_id=28 seq_len=26128 q_len=26128 active=26128 pos=[0,26127] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=5561 seqs=29 prompt_len_mean=27070.69 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=5920 bsz=1 padded_len=25088 active=24875 prefill=25088 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=5920 i=0 seq_id=29 seq_len=24875 q_len=24875 active=24875 pos=[0,24874] prefills=1 pf_tokens=25088 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=5920 seqs=30 prompt_len_mean=26997.50 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=6007 bsz=1 padded_len=25088 active=24917 prefill=25088 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=6007 i=0 seq_id=30 seq_len=24917 q_len=24917 active=24917 pos=[0,24916] prefills=1 pf_tokens=25088 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=6007 seqs=31 prompt_len_mean=26930.39 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=6370 bsz=1 padded_len=25088 active=24779 prefill=25088 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=6370 i=0 seq_id=31 seq_len=24779 q_len=24779 active=24779 pos=[0,24778] prefills=1 pf_tokens=25088 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=6370 seqs=32 prompt_len_mean=26863.16 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=6445 bsz=1 padded_len=28928 active=27339 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=6445 i=0 seq_id=32 seq_len=27339 q_len=27339 active=27339 pos=[0,27338] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=6445 seqs=33 prompt_len_mean=26877.58 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=6824 bsz=1 padded_len=28928 active=26852 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=6824 i=0 seq_id=33 seq_len=26852 q_len=26852 active=26852 pos=[0,26851] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=6824 seqs=34 prompt_len_mean=26876.82 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=7023 bsz=1 padded_len=28928 active=26852 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=7023 i=0 seq_id=34 seq_len=26852 q_len=26852 active=26852 pos=[0,26851] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=7023 seqs=35 prompt_len_mean=26876.11 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=7025 bsz=1 padded_len=28928 active=26727 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=7025 i=0 seq_id=35 seq_len=26727 q_len=26727 active=26727 pos=[0,26726] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=7025 seqs=36 prompt_len_mean=26871.97 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=7420 bsz=1 padded_len=28928 active=25773 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=7420 i=0 seq_id=36 seq_len=25773 q_len=25773 active=25773 pos=[0,25772] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=7420 seqs=37 prompt_len_mean=26842.27 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=7471 bsz=1 padded_len=28928 active=27384 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=7471 i=0 seq_id=37 seq_len=27384 q_len=27384 active=27384 pos=[0,27383] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=7471 seqs=38 prompt_len_mean=26856.53 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=7844 bsz=1 padded_len=32768 active=29051 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=7844 i=0 seq_id=38 seq_len=29051 q_len=29051 active=29051 pos=[0,29050] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=7844 seqs=39 prompt_len_mean=26912.79 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=7849 bsz=1 padded_len=32768 active=28979 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=7849 i=0 seq_id=39 seq_len=28979 q_len=28979 active=28979 pos=[0,28978] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=7849 seqs=40 prompt_len_mean=26964.45 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=8231 bsz=1 padded_len=32768 active=29947 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=8231 i=0 seq_id=40 seq_len=29947 q_len=29947 active=29947 pos=[0,29946] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=8231 seqs=41 prompt_len_mean=27037.20 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=8281 bsz=1 padded_len=28928 active=25153 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=8281 i=0 seq_id=41 seq_len=25153 q_len=25153 active=25153 pos=[0,25152] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=8281 seqs=42 prompt_len_mean=26992.33 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=8661 bsz=1 padded_len=28928 active=28493 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=8661 i=0 seq_id=42 seq_len=28493 q_len=28493 active=28493 pos=[0,28492] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=8661 seqs=43 prompt_len_mean=27027.23 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=8668 bsz=1 padded_len=32768 active=29994 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=8668 i=0 seq_id=43 seq_len=29994 q_len=29994 active=29994 pos=[0,29993] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=8668 seqs=44 prompt_len_mean=27094.66 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=9075 bsz=1 padded_len=32768 active=30044 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=9075 i=0 seq_id=44 seq_len=30044 q_len=30044 active=30044 pos=[0,30043] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=9075 seqs=45 prompt_len_mean=27160.20 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=9107 bsz=1 padded_len=28928 active=27588 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=9107 i=0 seq_id=45 seq_len=27588 q_len=27588 active=27588 pos=[0,27587] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=9107 seqs=46 prompt_len_mean=27169.50 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=9464 bsz=1 padded_len=25088 active=24825 prefill=25088 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=9464 i=0 seq_id=46 seq_len=24825 q_len=24825 active=24825 pos=[0,24824] prefills=1 pf_tokens=25088 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=9464 seqs=47 prompt_len_mean=27119.62 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=9531 bsz=1 padded_len=28928 active=26719 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=9531 i=0 seq_id=47 seq_len=26719 q_len=26719 active=26719 pos=[0,26718] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=9531 seqs=48 prompt_len_mean=27111.27 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=9899 bsz=1 padded_len=28928 active=26255 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=9899 i=0 seq_id=48 seq_len=26255 q_len=26255 active=26255 pos=[0,26254] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=9899 seqs=49 prompt_len_mean=27093.80 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=9901 bsz=1 padded_len=28928 active=26342 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=9901 i=0 seq_id=49 seq_len=26342 q_len=26342 active=26342 pos=[0,26341] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=9901 seqs=50 prompt_len_mean=27078.76 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=10268 bsz=1 padded_len=28928 active=27017 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=10268 i=0 seq_id=50 seq_len=27017 q_len=27017 active=27017 pos=[0,27016] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=10268 seqs=51 prompt_len_mean=27077.55 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=10341 bsz=1 padded_len=28928 active=25819 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=10341 i=0 seq_id=51 seq_len=25819 q_len=25819 active=25819 pos=[0,25818] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=10341 seqs=52 prompt_len_mean=27053.35 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=10646 bsz=1 padded_len=25088 active=24657 prefill=25088 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=10646 i=0 seq_id=52 seq_len=24657 q_len=24657 active=24657 pos=[0,24656] prefills=1 pf_tokens=25088 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=10646 seqs=53 prompt_len_mean=27008.13 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=10785 bsz=1 padded_len=28928 active=27013 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=10785 i=0 seq_id=53 seq_len=27013 q_len=27013 active=27013 pos=[0,27012] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=10785 seqs=54 prompt_len_mean=27008.22 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=11094 bsz=1 padded_len=28928 active=26283 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=11094 i=0 seq_id=54 seq_len=26283 q_len=26283 active=26283 pos=[0,26282] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=11094 seqs=55 prompt_len_mean=26995.04 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=11188 bsz=1 padded_len=32768 active=29192 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=11188 i=0 seq_id=55 seq_len=29192 q_len=29192 active=29192 pos=[0,29191] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=11188 seqs=56 prompt_len_mean=27034.27 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=11492 bsz=1 padded_len=32768 active=28971 prefill=32768 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=11492 i=0 seq_id=56 seq_len=28971 q_len=28971 active=28971 pos=[0,28970] prefills=1 pf_tokens=32768 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=11492 seqs=57 prompt_len_mean=27068.25 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=11564 bsz=1 padded_len=28928 active=26166 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=11564 i=0 seq_id=57 seq_len=26166 q_len=26166 active=26166 pos=[0,26165] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=11564 seqs=58 prompt_len_mean=27052.69 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=11941 bsz=1 padded_len=28928 active=25991 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=11941 i=0 seq_id=58 seq_len=25991 q_len=25991 active=25991 pos=[0,25990] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=11941 seqs=59 prompt_len_mean=27034.69 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=12016 bsz=1 padded_len=28928 active=26616 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=12016 i=0 seq_id=59 seq_len=26616 q_len=26616 active=26616 pos=[0,26615] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=12016 seqs=60 prompt_len_mean=27027.72 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=12372 bsz=1 padded_len=25088 active=24219 prefill=25088 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=12372 i=0 seq_id=60 seq_len=24219 q_len=24219 active=24219 pos=[0,24218] prefills=1 pf_tokens=25088 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=12372 seqs=61 prompt_len_mean=26981.67 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=12385 bsz=1 padded_len=28928 active=26128 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=12385 i=0 seq_id=61 seq_len=26128 q_len=26128 active=26128 pos=[0,26127] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=12385 seqs=62 prompt_len_mean=26967.90 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=12742 bsz=1 padded_len=25088 active=24875 prefill=25088 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=12742 i=0 seq_id=62 seq_len=24875 q_len=24875 active=24875 pos=[0,24874] prefills=1 pf_tokens=25088 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=12742 seqs=63 prompt_len_mean=26934.68 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=12831 bsz=1 padded_len=25088 active=24917 prefill=25088 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=12831 i=0 seq_id=63 seq_len=24917 q_len=24917 active=24917 pos=[0,24916] prefills=1 pf_tokens=25088 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=12831 seqs=64 prompt_len_mean=26903.16 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=0 step=13192 bsz=1 padded_len=25088 active=24779 prefill=25088 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=0 step=13192 i=0 seq_id=64 seq_len=24779 q_len=24779 active=24779 pos=[0,24778] prefills=1 pf_tokens=25088 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=0 step=13192 seqs=65 prompt_len_mean=26870.48 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1
+[MI] rank=0 ve=1 step=13269 bsz=1 padded_len=28928 active=27339 prefill=28928 decode=0 is_prompt=True first_step=True last_step=True
+[rank=0 ve=1 step=13269 i=0 seq_id=65 seq_len=27339 q_len=27339 active=27339 pos=[0,27338] prefills=1 pf_tokens=28928 dec_tokens=0]
+[MI-GLOBAL] rank=0 ve=1 step=13269 seqs=66 prompt_len_mean=26877.58 prompt_len_min=24219 prompt_len_max=30044 chunks_mean=1.00 chunks_min=1 chunks_max=1

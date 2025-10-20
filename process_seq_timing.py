@@ -1,4 +1,4 @@
-def process(base_str):
+def process(root, base_str):
     targets = [0, 4]
     aggr = {}
     ignore_target = False
@@ -6,7 +6,7 @@ def process(base_str):
     ignore_mode = False
     raw_stats = False
     for target in targets:
-        target_path = f'world{target}_seq_timing{base_str}.txt'
+        target_path = f'{root}{os.sep}world{target}_seq_timing{base_str}.txt'
         with open(target_path, 'r') as f:
             for line in f:
                 line = line.replace('[SEQ_TIMING ', '[')
@@ -41,7 +41,7 @@ def process(base_str):
     # Write CSV
     import csv, statistics
 
-    out_path = f'seq_timing_aggregated{base_str}.csv'
+    out_path = f'{root}{os.sep}seq_timing_aggregated{base_str}.csv'
     with open(out_path, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         # Determine maximum number of steps across all keys to build header
@@ -148,7 +148,7 @@ def process(base_str):
                         }
                         # Emit pct_idle row
                         writer.writerow([
-                            target, ve, mode, 'pct_idle', 'Mean',
+                            target, ve, mode, 'pct_true_idle', 'Mean',
                             min(flat_idle), max(flat_idle),
                             statistics.median(flat_idle), statistics.fmean(flat_idle),
                             len(flat_idle), *idle_step_means
@@ -181,15 +181,17 @@ if __name__ == "__main__":
     import os, re
     targets = {0, 4}
     regex = re.compile(r"world([04])_seq_timing(.*)\.txt$")
-    base_strs = set()
-    for fname in os.listdir("."):
-        m = regex.match(fname)
-        if not m:
-            continue
-        tgt = int(m.group(1))
-        if tgt in targets:
-            base_strs.add(m.group(2))
-    for b in sorted(base_strs):
-        if b != '':
-            continue
-        process(b)
+    
+    for root, dirs, files in os.walk("."):
+        base_strs = set()
+        for file in files:
+            m = regex.match(file)
+            if not m:
+                continue
+            tgt = int(m.group(1))
+            if tgt in targets:
+                base_strs.add(m.group(2))
+        for b in sorted(base_strs):
+            if b != '':
+                continue
+            process(root, b)
