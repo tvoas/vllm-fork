@@ -627,7 +627,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             # Append same log line to per-rank file.
             try:
                 #logger.info(global_line)
-                with open(f"/workspace/world{world_rank}_model_input.txt", "a") as f:
+                with open(f"/workspace/world{world_rank}_input.txt", "a") as f:
                     f.write(global_line + "\n")
             except Exception:
                 pass
@@ -759,7 +759,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             if not final_lines:
                 final_lines.append("  (no seq_data)")
 
-            with open(f"/workspace/world{world_rank}_exec_patch.txt", "a") as f:
+            with open(f"/workspace/world{world_rank}_input.txt", "a") as f:
                 f.write(header + "\n")
                 f.write("[          ] patch:\n")
                 for line in patch_lines or ["  (no patch)"]:
