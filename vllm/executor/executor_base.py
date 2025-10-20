@@ -620,6 +620,6 @@ class DistributedExecutorBase(ExecutorBase):
             virtual_engine if use_cached_base_req else execute_model_req,
             execute_model_req_patch,
             use_cached_base_req,
-            original_prompt_sizes
+            original_prompt_sizes,
             execute_step_count,
         )
