@@ -982,6 +982,8 @@ class ModelInputForHPUWithSamplingMetadata(ModelInputForHPU):
     # Used for speculative decoding. We do not broadcast it because it is only
     # used by the driver worker.
     is_prompt: Optional[bool] = None
+    # True if this step requires sampling (decode step or last prefill chunk).
+    needs_sampling: Optional[bool] = None
 
     def as_broadcastable_tensor_dict(self) -> Dict[str, Any]:
         tensor_dict = {
@@ -991,6 +993,7 @@ class ModelInputForHPUWithSamplingMetadata(ModelInputForHPU):
             "lora_mapping": self.lora_mapping,
             "multi_modal_kwargs": self.multi_modal_kwargs,
             "lora_ids": self.lora_ids,
+            "needs_sampling": self.needs_sampling,
         }
         _add_attn_metadata_broadcastable_dict(tensor_dict, self.attn_metadata)
         _add_sampling_metadata_broadcastable_dict(tensor_dict,
