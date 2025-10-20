@@ -16,11 +16,6 @@ import threading
 import time
 from typing import Dict, List, Optional, Set, Tuple, Type, Union
 
-from dataclasses import is_dataclass, asdict
-from typing import Any, Mapping, Iterable
-from collections import OrderedDict
-import json
-
 import habana_frameworks.torch as htorch  # noqa:F401
 import torch
 import torch.distributed
@@ -778,89 +773,132 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         except Exception:
             pass
 
-    def _to_mapping(self, obj: Any) -> Mapping[str, Any]:
-        if obj is None:
-            return {}
-        if isinstance(obj, Mapping):
-            return obj
-        if is_dataclass(obj):
-            return asdict(obj)
-        # Pydantic BaseModel
-        if hasattr(obj, "model_dump"):
-            try:
-                return obj.model_dump()
-            except Exception:
-                pass
-        if hasattr(obj, "dict"):
-            try:
-                return obj.dict()
-            except Exception:
-                pass
-        # Fallback: introspect __dict__
-        if hasattr(obj, "__dict__"):
-            return {k: v for k, v in vars(obj).items() if not k.startswith("_")}
-        return {"value": obj}
+    def log_execute_model_req(self, execute_model_req) -> None:
+        log = ["ExecuteModelReq"]
+        def add(label, value, depth=0):
+            header = '    ' * depth
+            log.append(f"{header}{label}: {value}")
+        for gi, group in enumerate(getattr(execute_model_req, "seq_group_metadata_list", [])):
+            add(f"SequenceGroupMetadata[{gi}]", "--------------------------------------------------", 1)
+            add("request_id", getattr(group, "request_id", None), 2)
+            add("is_prompt", getattr(group, "is_prompt", None), 2)
+            # seq_data loop
+            for seq_id, seq in getattr(group, "seq_data", {}).items():
+                add("seq_id", seq_id, 2)
+                prompt_ids = getattr(seq, "prompt_token_ids", [])
+                output_ids = getattr(seq, "output_token_ids", [])
+                add("prompt_token_ids", prompt_ids, 3)
+                add("prompt_token_ids_length", len(prompt_ids), 3)
+                add("output_token_ids", output_ids, 3)
+                add("output_token_ids_length", len(output_ids), 3)
+                add("cumulative_logprob", getattr(seq, "cumulative_logprob", None), 3)
+                # get_num_computed_tokens could be attr or method
+                computed = getattr(seq, "get_num_computed_tokens", None)
+                if callable(computed):
+                    try:
+                        computed = computed()
+                    except Exception:
+                        pass
+                add("get_num_computed_tokens", computed, 3)
+            # sampling_params.max_tokens
+            sampling_params = getattr(group, "sampling_params", None)
+            max_tokens = getattr(sampling_params, "max_tokens", None) if sampling_params else None
+            add("sampling_params.max_tokens", max_tokens, 2)
+            # block_tables loop
+            for seq_id, blocks in getattr(group, "block_tables", {}).items():
+                add(f"block_tables[seq_id={seq_id}].values", blocks, 2)
+                try:
+                    length = len(blocks)
+                except Exception:
+                    length = None
+                add(f"block_tables[seq_id={seq_id}].length", length, 2)
+            add("do_sample", getattr(group, "do_sample", getattr(sampling_params, "do_sample", None)), 2)
+            add("state", getattr(group, "state", None), 2)
+            add("token_chunk_size", getattr(group, "token_chunk_size", None), 2)
+        # Top-level fields
+        add("virtual_engine", getattr(execute_model_req, "virtual_engine", None), 1)
+        add("num_lookahead_slots", getattr(execute_model_req, "num_lookahead_slots", None), 1)
+        add("running_queue_size", getattr(execute_model_req, "running_queue_size", None), 1)
+        add("previous_hidden_states", getattr(execute_model_req, "previous_hidden_states", None), 1)
+        add("num_steps", getattr(execute_model_req, "num_steps", None), 1)
+        add("async_callback", getattr(execute_model_req, "async_callback", None), 1)
+        add("is_dummy_batch", getattr(execute_model_req, "is_dummy_batch", None), 1)
+        logger.info("\n".join(log))
 
-    def _flatten_value(self, v: Any, max_len: int = 200) -> Any:
-        if isinstance(v, (str, bytes)):
-            s = v if isinstance(v, str) else v.decode(errors="replace")
-            return s if len(s) <= max_len else s[: max_len - 3] + "..."
-        if isinstance(v, (int, float, bool)) or v is None:
-            return v
-        if isinstance(v, (list, tuple, set)):
-            seq = list(v)
-            shown = seq[:10]
-            tail = "" if len(seq) <= 10 else f"...(+{len(seq)-10} more)"
-            return [ self._flatten_value(x, max_len//4) for x in shown ] + ([tail] if tail else [])
-        if isinstance(v, dict):
-            out = {}
-            for i, (k, val) in enumerate(v.items()):
-                if i >= 15:
-                    out["..."] = f"+{len(v)-15} more"
-                    break
-                out[str(k)] = self._flatten_value(val, max_len//2)
-            return out
-        # Try JSON serialization
+    def log_model_input(self, model_input) -> None:
+        log = ["ModelInput"]
+        def add(label, value, depth=0):
+            log.append(f"{'    '*depth}{label}: {value}")
+        # Top-level simple fields
+        input_tokens = getattr(model_input, "input_tokens", None)
+        add("input_tokens", input_tokens, 1)
         try:
-            json.dumps(v)
-            return v
+            add("input_tokens.shape", getattr(input_tokens, "shape", None), 1)
         except Exception:
-            return repr(v)[:max_len]
-
-    def _ordered(self, mapping: Mapping[str, Any]) -> OrderedDict:
-        priority_keys = ["id", "request_id", "model", "task", "inputs", "parameters", "metadata"]
-        ordered = OrderedDict()
-        for k in priority_keys:
-            if k in mapping:
-                ordered[k] = mapping[k]
-        for k in sorted(mapping.keys()):
-            if k not in ordered:
-                ordered[k] = mapping[k]
-        return ordered
-
-    def _format(self, obj: Any) -> List[str]:
-        mapping = self._ordered(self._to_mapping(obj))
-        processed = {k: self._flatten_value(v) for k, v in mapping.items()}
-        try:
-            return json.dumps(processed, indent=2, ensure_ascii=False)
-        except Exception:
-            # Fallback manual
-            lines = []
-            for k, v in processed.items():
-                lines.append(f"{k}: {v}")
-            lines
-
-    def _log_formatted(self, prefix: str, obj: Any) -> None:
-        lines = self._format(obj)
-        logger.info(prefix)
-        for line in lines:
-            logger.info(line)
-
-    def log_execute_model_req(self, execute_model_req: Any) -> None:
-        self._log_formatted("ExecuteModelReq", execute_model_req)
-
-    def log_model_input(self, model_input: Any) -> None:
-        self._log_formatted("ModelInput", model_input)
+            add("input_tokens.shape", None, 1)
+        add("seq_lens", getattr(model_input, "seq_lens", None), 1)
+        add("query_lens", getattr(model_input, "query_lens", None), 1)
+        # attn_metadata
+        attn = getattr(model_input, "attn_metadata", None)
+        add("attn_metadata", "--------------------------------------------------", 1)
+        if attn:
+            add("num_prefills", getattr(attn, "num_prefills", None), 2)
+            add("num_prefill_tokens", getattr(attn, "num_prefill_tokens", None), 2)
+            add("num_decode_tokens", getattr(attn, "num_decode_tokens", None), 2)
+            slot_mapping = getattr(attn, "slot_mapping", getattr(attn, "slot_mapping_tensor", None))
+            add("slot_mapping_tensor", slot_mapping, 2)
+            add("slot_mapping_tensor.shape", getattr(slot_mapping, "shape", None), 2)
+            # block related (log if present)
+            for name in ["block_list", "block_mapping", "block_usage", "block_groups", "alibi_blocks", "block_size"]:
+                add(name, getattr(attn, name, None), 2)
+            add("is_prompt", getattr(attn, "is_prompt", None), 2)
+            add("attn_bias", getattr(attn, "attn_bias", None), 2)
+            seq_lens_tensor = getattr(attn, "seq_lens_tensor", None)
+            add("seq_lens_tensor", seq_lens_tensor, 2)
+            add("seq_lens_tensor.shape", getattr(seq_lens_tensor, "shape", None), 2)
+            context_lens_tensor = getattr(attn, "context_lens_tensor", None)
+            add("context_lens_tensor", context_lens_tensor, 2)
+            add("context_lens_tensor.shape", getattr(context_lens_tensor, "shape", None), 2)
+            add("seq_lens", getattr(attn, "seq_lens", None), 2)
+        # More top-level fields
+        add("real_batch_size", getattr(model_input, "real_batch_size", None), 1)
+        add("batch_size_padded", getattr(model_input, "batch_size_padded", None), 1)
+        add("virtual_engine", getattr(model_input, "virtual_engine", None), 1)
+        add("lora_ids", getattr(model_input, "lora_ids", None), 1)
+        add("async_callback", getattr(model_input, "async_callback", None), 1)
+        add("is_first_multi_step", getattr(model_input, "is_first_multi_step", None), 1)
+        add("is_last_step", getattr(model_input, "is_last_step", None), 1)
+        add("previous_hidden_states", getattr(model_input, "previous_hidden_states", None), 1)
+        # sampling_metadata
+        sm = getattr(model_input, "sampling_metadata", None)
+        add("sampling_metadata", "--------------------------------------------------", 1)
+        if sm:
+            for gi, sg in enumerate(getattr(sm, "seq_groups", [])):
+                add(f"SeqGroup[{gi}]", "--------------------------------------------------", 2)
+                add("seq_ids", getattr(sg, "seq_ids", None), 3)
+                sp = getattr(sg, "sampling_params", None)
+                add("sampling_params.max_tokens", getattr(sp, "max_tokens", None), 3)
+                add("sampling_params.min_tokens", getattr(sp, "min_tokens", None), 3)
+                # seq_data loop
+                for seq_id, seq in getattr(sg, "seq_data", {}).items():
+                    add(f"seq_id", seq_id, 3)
+                    prompt_ids = getattr(seq, "prompt_token_ids", [])
+                    output_ids = getattr(seq, "output_token_ids", [])
+                    add("prompt_token_ids", prompt_ids, 4)
+                    add("prompt_token_ids_length", len(prompt_ids), 4)
+                    add("output_token_ids", output_ids, 4)
+                    add("output_token_ids_length", len(output_ids), 4)
+                    computed = getattr(seq, "get_num_computed_tokens", None)
+                    if callable(computed):
+                        try:
+                            computed = computed()
+                        except Exception:
+                            pass
+                    add("get_num_computed_tokens", computed, 4)
+                add("seq_len", getattr(sg, "seq_len", None), 3)
+                add("query_len", getattr(sg, "query_len", None), 3)
+                add("is_prompt", getattr(sg, "is_prompt", None), 3)
+        logger.info("\n".join(log))
     
     def execute_model(
         self,
