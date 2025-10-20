@@ -641,6 +641,59 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 f.write("\n".join(log) + "\n\n\n")
         except Exception:
             pass
+
+    def log_cached_seq_data(
+        self,
+        cached_seq_data,
+        virtual_engine=None,
+        depth=0,
+        prefix="CachedSeqData",
+        ret=False,
+    ):
+        log = ["    " * depth + prefix]
+        def add(label, value, d=0):
+            log.append(f"{'    ' * (depth + d)}{label}: {value}")
+        add("virtual_engine", virtual_engine, 1)
+        if not cached_seq_data:
+            add("empty", True, 1)
+            if ret:
+                return log
+            try:
+                with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
+                    f.write("\n".join(log) + "\n\n\n")
+            except Exception:
+                pass
+            return
+        add("num_sequence_keys", len(cached_seq_data), 1)
+        tracked_attrs = [
+            "_cached_all_token_ids",
+            "_new_appended_tokens",
+            "_num_computed_tokens",
+            "_output_token_ids",
+            "_prompt_token_ids",
+            "_prompt_token_ids_tuple",
+            "_cumulative_logprob",
+        ]
+        for seq_key, data in cached_seq_data.items():
+            add(f"SequenceKey[{seq_key}]", "--------------------------------------------------", 1)
+            for attr in tracked_attrs:
+                if attr not in data:
+                    continue
+                val = data[attr]
+                if isinstance(val, array.array):
+                    norm = list(val)
+                else:
+                    norm = val
+                add(attr, norm, 2)
+                if isinstance(norm, (list, tuple)):
+                    add(f"{attr}.length", len(norm), 2)
+        if ret:
+            return log
+        try:
+            with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
+                f.write("\n".join(log) + "\n\n\n")
+        except Exception:
+            pass
     
     def execute_model(
         self,
@@ -678,12 +731,16 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             if execute_model_req is not None:
                 ve = execute_model_req.virtual_engine
                 cached_seq_data = self.all_cached_seq_data.get(ve, {})
+                if execute_step_count > 0 and execute_step_count < 30 and get_world_group().rank_in_group == 0:
+                    self.log_cached_seq_data(cached_seq_data, virtual_engine=ve, prefix="CachedSeqData Before Patch")
                 self.all_cached_seq_data[ve] = (
                     self._apply_patch_to_execute_model_req(
                         execute_model_req,
                         cached_seq_data,
                         execute_model_req_patch,
                     ))
+                if execute_step_count > 0 and execute_step_count < 30 and get_world_group().rank_in_group == 0:
+                    self.log_cached_seq_data(cached_seq_data, virtual_engine=ve, prefix="CachedSeqData After Patch")
 
             if execute_step_count > 0 and execute_step_count < 30 and get_world_group().rank_in_group == 0:
                 self.log_execute_model_req(execute_model_req)
