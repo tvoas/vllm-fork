@@ -970,6 +970,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             assert len(execute_model_req) == 4, (
                 "execute_model_req must be a tuple of length 4, got "
                 f"{len(execute_model_req)}")
+            execute_step_count = execute_model_req[-1]
             if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
                 self.log_prepare_execute_model_req_patch_result(execute_model_req)
             (execute_model_req, execute_model_req_patch,
