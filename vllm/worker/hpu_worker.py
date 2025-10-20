@@ -718,7 +718,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     else:
                         parts.append(f"{attr}={val}")
                 parts = ", ".join(parts)
-                patch_lines.append("  seq_id={key}, patch={parts}")
+                patch_lines.append(f"  seq_id={key}, patch={parts}")
 
             # Cache summary (lengths)
             cache_lines = []
