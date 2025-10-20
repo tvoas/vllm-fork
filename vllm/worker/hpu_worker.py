@@ -799,7 +799,8 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             add("base_request", f"Reused cached base; virtual_engine={base_obj}", 1)
         else:
             virtual_engine = getattr(base_obj, "virtual_engine", None)
-            add("base_request", "ExecuteModelReq (full content suppressed)", 1)
+            add("base_request", "New ExecuteModelReq", 1)
+            log += self.log_execute_model_req(base_obj, ret=True, depth=1)
             add("virtual_engine", virtual_engine, 1)
 
         add("use_cached_base_req", reused, 1)
@@ -828,25 +829,25 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
         logger.info("\n".join(log))
 
-    def log_execute_model_req(self, execute_model_req) -> None:
-        log = ["ExecuteModelReq"]
+    def log_execute_model_req(self, execute_model_req, ret=False, depth=0) -> None:
+        log = ["    " * depth + "ExecuteModelReq"]
         def add(label, value, depth=0):
             header = '    ' * depth
             log.append(f"{header}{label}: {value}")
         for gi, group in enumerate(getattr(execute_model_req, "seq_group_metadata_list", [])):
-            add(f"SequenceGroupMetadata[{gi}]", "--------------------------------------------------", 1)
-            add("request_id", getattr(group, "request_id", None), 2)
-            add("is_prompt", getattr(group, "is_prompt", None), 2)
+            add(f"SequenceGroupMetadata[{gi}]", "--------------------------------------------------", depth+1)
+            add("request_id", getattr(group, "request_id", None), depth+2)
+            add("is_prompt", getattr(group, "is_prompt", None), depth+2)
             # seq_data loop
             for seq_id, seq in getattr(group, "seq_data", {}).items():
-                add("seq_id", seq_id, 2)
+                add("seq_id", seq_id, depth+2)
                 prompt_ids = getattr(seq, "prompt_token_ids", [])
                 output_ids = getattr(seq, "output_token_ids", [])
-                add("prompt_token_ids", prompt_ids, 3)
-                add("prompt_token_ids_length", len(prompt_ids), 3)
-                add("output_token_ids", output_ids, 3)
-                add("output_token_ids_length", len(output_ids), 3)
-                add("cumulative_logprob", getattr(seq, "cumulative_logprob", None), 3)
+                add("prompt_token_ids", prompt_ids, depth+3)
+                add("prompt_token_ids_length", len(prompt_ids), depth+3)
+                add("output_token_ids", output_ids, depth+3)
+                add("output_token_ids_length", len(output_ids), depth+3)
+                add("cumulative_logprob", getattr(seq, "cumulative_logprob", None), depth+3)
                 # get_num_computed_tokens could be attr or method
                 computed = getattr(seq, "get_num_computed_tokens", None)
                 if callable(computed):
@@ -854,30 +855,32 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         computed = computed()
                     except Exception:
                         pass
-                add("get_num_computed_tokens", computed, 3)
+                add("get_num_computed_tokens", computed, depth+3)
             # sampling_params.max_tokens
             sampling_params = getattr(group, "sampling_params", None)
             max_tokens = getattr(sampling_params, "max_tokens", None) if sampling_params else None
-            add("sampling_params.max_tokens", max_tokens, 2)
+            add("sampling_params.max_tokens", max_tokens, depth+2)
             # block_tables loop
             for seq_id, blocks in getattr(group, "block_tables", {}).items():
-                add(f"block_tables[seq_id={seq_id}].values", blocks, 2)
+                add(f"block_tables[seq_id={seq_id}].values", blocks, depth+2)
                 try:
                     length = len(blocks)
                 except Exception:
                     length = None
-                add(f"block_tables[seq_id={seq_id}].length", length, 2)
-            add("do_sample", getattr(group, "do_sample", getattr(sampling_params, "do_sample", None)), 2)
-            add("state", getattr(group, "state", None), 2)
-            add("token_chunk_size", getattr(group, "token_chunk_size", None), 2)
+                add(f"block_tables[seq_id={seq_id}].length", length, depth+2)
+            add("do_sample", getattr(group, "do_sample", getattr(sampling_params, "do_sample", None)), depth+2)
+            add("state", getattr(group, "state", None), depth+2)
+            add("token_chunk_size", getattr(group, "token_chunk_size", None), depth+2)
         # Top-level fields
-        add("virtual_engine", getattr(execute_model_req, "virtual_engine", None), 1)
-        add("num_lookahead_slots", getattr(execute_model_req, "num_lookahead_slots", None), 1)
-        add("running_queue_size", getattr(execute_model_req, "running_queue_size", None), 1)
-        add("previous_hidden_states", getattr(execute_model_req, "previous_hidden_states", None), 1)
-        add("num_steps", getattr(execute_model_req, "num_steps", None), 1)
-        add("async_callback", getattr(execute_model_req, "async_callback", None), 1)
-        add("is_dummy_batch", getattr(execute_model_req, "is_dummy_batch", None), 1)
+        add("virtual_engine", getattr(execute_model_req, "virtual_engine", None), depth+1)
+        add("num_lookahead_slots", getattr(execute_model_req, "num_lookahead_slots", None), depth+1)
+        add("running_queue_size", getattr(execute_model_req, "running_queue_size", None), depth+1)
+        add("previous_hidden_states", getattr(execute_model_req, "previous_hidden_states", None), depth+1)
+        add("num_steps", getattr(execute_model_req, "num_steps", None), depth+1)
+        add("async_callback", getattr(execute_model_req, "async_callback", None), depth+1)
+        add("is_dummy_batch", getattr(execute_model_req, "is_dummy_batch", None), depth+1)
+        if ret:
+            return log
         logger.info("\n".join(log))
 
     def log_model_input(self, model_input) -> None:
