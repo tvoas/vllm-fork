@@ -447,7 +447,7 @@ class DistributedExecutorBase(ExecutorBase):
                         prev_val = prev_entry[attr]
                         if isinstance(curr_val, (list, array.array, tuple)):
                             if len(curr_val) > len(prev_val):
-                                if chunk_size > 0 and len(curr_val) > chunk_size and attr in chunkable_attrs:
+                                if chunk_size > 0 and attr in chunkable_attrs and len(curr_val) > chunk_size:
                                     patch[attr] = curr_val[len(prev_val):chunk_size]
                                 else:
                                     patch[attr] = curr_val[len(prev_val):]
@@ -461,7 +461,7 @@ class DistributedExecutorBase(ExecutorBase):
                         for attr in tracked_attrs
                     }
                     for attr in tracked_attrs:
-                        if chunk_size > 0 and len(patch_by_key[seq_key][attr]) > chunk_size and attr in chunkable_attrs:
+                        if chunk_size > 0 and attr in chunkable_attrs and len(patch_by_key[seq_key][attr]) > chunk_size:
                             patch_by_key[seq_key][attr] = patch_by_key[seq_key][attr][:chunk_size]
                     patch_by_key[seq_key]["sampling_params"] = sampling_params
 
