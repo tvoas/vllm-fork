@@ -594,7 +594,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         # Append same log line to per-rank file.
         try:
             #logger.info(header)
-            with open(f"/workspace/world{world_rank}_model_input.txt", "a") as f:
+            with open(f"/workspace/world{world_rank}_input.txt", "a") as f:
                 f.write(header + "\n")
                 for line in details:
                     #logger.info(line)
