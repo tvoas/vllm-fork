@@ -590,6 +590,7 @@ class DistributedExecutorBase(ExecutorBase):
                 prev_execute_model_req_hash, cached_execute_model_req = "", {}
 
             original_prompt_sizes = {}
+            chunk_sizes = self._get_chunked_prefill_limits(execute_model_req)
             for seq_group in execute_model_req.seq_group_metadata_list:
                 for seq_key, seq_data in seq_group.seq_data.items():
                     chunk_size = chunk_sizes[seq_key]
