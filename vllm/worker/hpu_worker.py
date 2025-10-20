@@ -680,6 +680,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         execute_model_req_patch: dict,
         use_cached_base_req: bool,
         cached_seq_data: dict,
+        phase: str,  # "before" or "after"
     ) -> None:
         """Rank-0 debug log for execute_model_req patching."""
         try:
@@ -697,13 +698,14 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             num_seq_groups = len(seq_groups)
             num_seqs = sum(len(sg.seq_data) for sg in seq_groups)
             is_patch = bool(execute_model_req_patch)
+
             header = (
-                f"[EXEC-PATCH] rank={world_rank} ve={ve} step={execute_step_count} "
+                f"[EXEC-PATCH] rank={world_rank} ve={ve} step={execute_step_count} phase={phase} "
                 f"use_cached_base_req={use_cached_base_req} is_patch={is_patch} "
                 f"seq_groups={num_seq_groups} seqs={num_seqs}"
             )
 
-            # Summaries of patch contents
+            # Patch summary
             patch_lines = []
             for key, pdata in execute_model_req_patch.items():
                 parts = []
@@ -714,27 +716,29 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     if isinstance(val, (list, tuple, array.array)):
                         parts.append(f"{attr}+={len(val)}")
                     else:
-                        parts.append(f"{attr}=SCALAR")
-                patch_lines.append(f"  seq_id={key} patch={{" + ",".join(parts) + "}}")
+                        parts.append(f"{attr}={val}")
+                patch_lines.append(f"  seq_id={key} patch={{{" + ",".join(parts) + "}}}")
 
-            # Cache before apply (lengths)
+            # Cache summary (lengths)
             cache_lines = []
             for key, cdata in cached_seq_data.items():
                 def _len_safe(v):
                     if isinstance(v, (list, tuple, array.array)):
                         return len(v)
-                    return 1 if v is not None else 0
+                    return v if isinstance(v, (int, float)) else (1 if v is not None else 0)
                 cache_lines.append(
-                    f"  cache seq_id={key} lens="
+                    f"  cache seq_id={key} lens("
                     f"cached={_len_safe(cdata.get('_cached_all_token_ids'))},"
                     f"new={_len_safe(cdata.get('_new_appended_tokens'))},"
                     f"out={_len_safe(cdata.get('_output_token_ids'))},"
                     f"prompt={_len_safe(cdata.get('_prompt_token_ids'))},"
                     f"prompt_tup={_len_safe(cdata.get('_prompt_token_ids_tuple'))},"
-                    f"num_tokens={cdata.get('_num_computed_tokens', 0)}"
+                    f"num_comp={cdata.get('_num_computed_tokens', 0)})"
                 )
+            if not cache_lines:
+                cache_lines.append("  (cache empty)")
 
-            # Final seq_data after patch (will be filled later; placeholder)
+            # Final seq_data snapshot
             final_lines = []
             for sg in seq_groups:
                 for seq_id, sd in sg.seq_data.items():
@@ -751,22 +755,20 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         f"num_comp={getattr(sd,'_num_computed_tokens',None)} "
                         f"stage={getattr(sd,'_stage',None)}"
                     )
+            if not final_lines:
+                final_lines.append("  (no seq_data)")
 
-            # Emit
             with open(f"/workspace/world{world_rank}_exec_patch.txt", "a") as f:
                 f.write(header + "\n")
-                if patch_lines:
-                    f.write("[EXEC-PATCH] patch:\n")
-                    for line in patch_lines:
-                        f.write(line + "\n")
-                if cache_lines:
-                    f.write("[EXEC-PATCH] cache-before:\n")
-                    for line in cache_lines:
-                        f.write(line + "\n")
-                if final_lines:
-                    f.write("[EXEC-PATCH] final:\n")
-                    for line in final_lines:
-                        f.write(line + "\n")
+                f.write("[          ] patch:\n")
+                for line in patch_lines or ["  (no patch)"]:
+                    f.write(line + "\n")
+                f.write("[          ] cache:\n")
+                for line in cache_lines:
+                    f.write(line + "\n")
+                f.write("[          ] seq_data:\n")
+                for line in final_lines:
+                    f.write(line + "\n")
         except Exception:
             pass
     
@@ -804,6 +806,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     execute_model_req_patch,
                     use_cached_base_req,
                     cached_seq_data,
+                    phase="before",
                 )
                 self.all_cached_seq_data[ve] = (
                     self._apply_patch_to_execute_model_req(
@@ -817,6 +820,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     execute_model_req_patch,
                     use_cached_base_req,
                     self.all_cached_seq_data[ve],
+                    phase="after",
                 )
 
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION     - will log graph compilations per engine step, only when there was any - highly recommended to use alongside PT_HPU_METRICS_GC_DETAILS! # noqa:E501
