@@ -989,7 +989,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     self.log_execute_model_req(execute_model_req, prefix="Cached Base ExecuteModelReq")
             else:
                 if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
-                    logger.log("No Cached Execute Model Req")
+                    logger.info("No Cached Execute Model Req")
             
 
             if execute_model_req is not None:
