@@ -746,6 +746,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             model_input, worker_input, kwargs = inputs
             if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
                 self.log_model_input(model_input)
+            self.is_prompt = model_input.is_prompt
 
             if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
                 if self.on_demand_profiler_mode == "p" and model_input.attn_metadata.is_prompt or \
