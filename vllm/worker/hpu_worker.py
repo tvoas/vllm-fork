@@ -399,214 +399,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     cached_seq_data.pop(key, None)
 
         return cached_seq_data
-
-    def execute_model(
-        self,
-        execute_model_req: Optional[Union[ExecuteModelRequest, Tuple]] = None,
-    ) -> Optional[List[SamplerOutput]]:
-        # Timing: mark start & accumulate idle (global, not per VE)
-        worker_execute_model_start = time.perf_counter()
-        tracker = getattr(self, "_timing_tracker", None)
-        if tracker is None:
-            tracker = {}
-            self._timing_tracker = tracker
-        execute_step_count = 0
-        if isinstance(execute_model_req, tuple):
-            assert len(execute_model_req) == 4, (
-                "execute_model_req must be a tuple of length 4, got "
-                f"{len(execute_model_req)}")
-            (execute_model_req, execute_model_req_patch,
-             use_cached_base_req, execute_step_count) = execute_model_req
-
-            if use_cached_base_req:
-                ve = execute_model_req
-                assert ve in self.cached_execute_model_req, (
-                    f"Virtual engine {ve} not found in "
-                    "cached_execute_model_req")
-                execute_model_req = self.cached_execute_model_req[ve]
-
-            if execute_model_req is not None:
-                ve = execute_model_req.virtual_engine
-                cached_seq_data = self.all_cached_seq_data.get(ve, {})
-                self.all_cached_seq_data[ve] = (
-                    self._apply_patch_to_execute_model_req(
-                        execute_model_req,
-                        cached_seq_data,
-                        execute_model_req_patch,
-                    ))
-
-        # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION     - will log graph compilations per engine step, only when there was any - highly recommended to use alongside PT_HPU_METRICS_GC_DETAILS! # noqa:E501
-        # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL - will log graph compilations per engine step, always, even if there were none # noqa:E501
-        # VLLM_HPU_LOG_STEP_CPU_FALLBACKS         - will log cpu fallbacks per engine step, only when there was any # noqa:E501
-        # VLLM_HPU_LOG_STEP_CPU_FALLBACKS_ALL     - will log cpu fallbacks per engine step, always, even if there were none # noqa:E501
-        log_graph_compilation_all = os.environ.get(
-            'VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL', '0') != '0'
-        log_graph_compilation = os.environ.get(
-            'VLLM_HPU_LOG_STEP_GRAPH_COMPILATION',
-            '0') != '0' or log_graph_compilation_all
-        log_cpu_fallbacks_all = os.environ.get(
-            'VLLM_HPU_LOG_STEP_CPU_FALLBACKS_ALL', '0') != '0'
-        log_cpu_fallbacks = os.environ.get('VLLM_HPU_LOG_STEP_CPU_FALLBACKS',
-                                           '0') != '0' or log_cpu_fallbacks_all
-        if (log_graph_compilation or log_cpu_fallbacks) and \
-            execute_model_req is not None:
-            from habana_frameworks.torch.hpu.metrics import metric_localcontext
-            seq_group_metadata_list = execute_model_req.seq_group_metadata_list
-            is_prompt = any([
-                seq_group_metadata.is_prompt
-                for seq_group_metadata in seq_group_metadata_list
-            ])
-            # for dummy run in DP, we don't have real seq,
-            # so use a dummy context_len here
-            if len(seq_group_metadata_list) == 0:
-                max_context_len = 128
-            else:
-                max_context_len = max([
-                    max([
-                        len(v.prompt_token_ids) + len(v.output_token_ids)
-                        for v in seq_group_metadata.seq_data.values()
-                    ]) for seq_group_metadata in seq_group_metadata_list
-                ])  # whoa, that's some spicy stuff right here
-            max_num_blocks = (
-                (max_context_len - 1) // self.cache_config.block_size) + 1
-            input_stats = (f'is_prompt: {is_prompt}, '
-                           f'num_seqs: {len(seq_group_metadata_list)}, '
-                           f'max_context_len: {max_context_len}, '
-                           f'max_num_blocks {max_num_blocks}')
-            gc_ctx = metric_localcontext(
-                "graph_compilation"
-            ) if log_graph_compilation else contextlib.nullcontext()
-            cpu_fallback_ctx = metric_localcontext(
-                "cpu_fallback"
-            ) if log_cpu_fallbacks else contextlib.nullcontext()
-            with gc_ctx as gc_local_metric, \
-                cpu_fallback_ctx as cpu_fallback_local_metric:
-                output, ve = self._execute_model(execute_model_req, execute_step_count)
-            if (log_graph_compilation and gc_local_metric.stats()[0][1]
-                    > 0) or log_graph_compilation_all:
-                msg = ("VLLM_HPU_STEP_GRAPH_COMPILATION: "
-                       f"{gc_local_metric.stats()}, {input_stats}")
-                logger.warning(msg)
-            if (log_cpu_fallbacks and cpu_fallback_local_metric.stats()[0][1]
-                    > 0) or log_cpu_fallbacks_all:
-                msg = ("VLLM_HPU_STEP_CPU_FALLBACK: "
-                       f"{cpu_fallback_local_metric.stats()}, {input_stats}")
-                logger.warning(msg)
-        else:
-            output, ve = self._execute_model(execute_model_req, execute_step_count)
-        if execute_model_req is not None:
-            self.cached_execute_model_req[
-                execute_model_req.virtual_engine] = execute_model_req
-            
-        all_seq_ids = getattr(self, "_last_seq_ids", {})
-        if ve in all_seq_ids:
-            seq_ids = all_seq_ids[ve]
-            for seq_id in seq_ids:
-                if seq_id not in tracker:
-                    tracker[seq_id] = {}
-                if self.is_prompt not in tracker[seq_id]:
-                    tracker[seq_id][self.is_prompt] = []
-
-                entries = tracker[seq_id][self.is_prompt]
-
-                data = {}
-                step_gap = 0
-                now = time.perf_counter()
-                if len(tracker[seq_id][self.is_prompt]) > 0:
-                    step_gap = worker_execute_model_start - tracker[seq_id][self.is_prompt][-1]['worker_execute_model_end']
-                    data['worker_execute_model_dur'] = now - tracker[seq_id][self.is_prompt][-1]['worker_execute_model_end']
-                else:
-                    data['worker_execute_model_dur'] = now - worker_execute_model_start
-                data['step_gap'] = step_gap
-                data['worker_execute_model_start'] = worker_execute_model_start
-                data['worker_execute_model_end'] = now
-                
-                # Bonus timings (may be missing on early steps; guard with get).
-                bonus = self._bonus_info.get(ve, {})
-                recv_done = bonus.get('recv_done')
-                forward_send_done = bonus.get('forward_send_done')
-                sample_done = bonus.get('sample_done')
-
-                data['recv_done'] = recv_done
-                data['forward_send_done'] = forward_send_done
-                data['sample_done'] = sample_done
-
-                # Derived durations (only compute when timestamps exist).
-                recv_dur = None
-                forward_send_dur = None
-                sample_dur = None
-
-                if recv_done is not None:
-                    recv_dur = max(0.0, recv_done - data['worker_execute_model_start'])
-                if recv_done is not None and forward_send_done is not None:
-                    forward_send_dur = max(0.0, forward_send_done - recv_done)
-                if forward_send_done is not None and sample_done is not None:
-                    sample_dur = max(0.0, sample_done - forward_send_done)
-
-                data['recv_dur'] = recv_dur
-                data['forward_send_dur'] = forward_send_dur
-                data['sample_dur'] = sample_dur
-
-                entries.append(data)
-
-                # Per-seq_id logging (avg + last) for current stage.
-                stage_steps = len(entries)
-                # Total steps across all stages for this seq_id.
-                total_steps_all = sum(len(v) for v in tracker[seq_id].values())
-
-                def avg(key):
-                    vals = [e[key] for e in entries if e.get(key) is not None]
-                    return (sum(vals) / len(vals)) if vals else None
-
-                last = entries[-1]
-                avg_dur = avg('worker_execute_model_dur')
-                avg_gap = avg('step_gap')
-                avg_recv = avg('recv_dur')
-                avg_fwd_send = avg('forward_send_dur')
-                avg_sample = avg('sample_dur')
-
-                # Aggregate percentages (compute from summed raw times).
-                sum_dur = sum(e['worker_execute_model_dur'] for e in entries)
-                sum_gap = sum(e['step_gap'] for e in entries)
-                sum_recv = sum(e['recv_dur'] for e in entries if e['recv_dur'] is not None)
-                sum_fwd_send = sum(e['forward_send_dur'] for e in entries if e['forward_send_dur'] is not None)
-                sum_sample = sum(e['sample_dur'] for e in entries if e['sample_dur'] is not None)
-                pct_gap = (sum_gap / sum_dur * 100.0) if sum_dur > 0 and sum_gap > 0 else 0.0
-                pct_recv = (sum_recv / sum_dur * 100.0) if sum_dur > 0 and sum_recv > 0 else 0.0
-                pct_fwd_send = (sum_fwd_send / sum_dur * 100.0) if sum_dur > 0 and sum_fwd_send > 0 else 0.0
-                pct_sample = (sum_sample / sum_dur * 100.0) if sum_dur > 0 and sum_sample > 0 else 0.0
-                pct_unaccounted = max(0.0, 100.0 - (pct_gap + pct_recv + pct_fwd_send + pct_sample)) if sum_dur > 0 else 0.0
-
-                stage_label = "PROMPT" if self.is_prompt is True else ("DECODE" if self.is_prompt is False else "NONE")
-                world_rank = get_world_group().rank_in_group
-                tp_rank = get_tp_group().rank_in_group
-                pp_rank = get_pp_group().rank_in_group
-
-                log_line = (
-                    f"[SEQ_TIMING {stage_label}] world_rank={world_rank} tp_rank={tp_rank} pp_rank={pp_rank} "
-                    f"ve={ve} seq_id={seq_id} stage_step={stage_steps} total_steps={total_steps_all} "
-                    f"last_dur={last['worker_execute_model_dur']:.6f}s avg_dur={avg_dur:.6f}s "
-                    f"last_gap={last['step_gap'] if last['step_gap'] is not None else 'None'} "
-                    f"avg_gap={(avg_gap if avg_gap is not None else 'None')} "
-                    f"last_recv={last['recv_dur'] if last['recv_dur'] is not None else 'None'} "
-                    f"avg_recv={(avg_recv if avg_recv is not None else 'None')} "
-                    f"last_forward_send={last['forward_send_dur'] if last['forward_send_dur'] is not None else 'None'} "
-                    f"avg_forward_send={(avg_fwd_send if avg_fwd_send is not None else 'None')} "
-                    f"last_sample={last['sample_dur'] if last['sample_dur'] is not None else 'None'} "
-                    f"avg_sample={(avg_sample if avg_sample is not None else 'None')} "
-                    f"pct_gap={pct_gap:.2f}% pct_recv={pct_recv:.2f}% pct_forward_send={pct_fwd_send:.2f}% pct_sample={pct_sample:.2f}% pct_unaccounted={pct_unaccounted:.2f}%"
-                )
-
-                #logger.info(
-                #    log_line
-                #)
-                # Append same log line to per-rank file.
-                try:
-                    with open(f"/workspace/world{world_rank}_seq_timing.txt", "a") as f:
-                        f.write(log_line + "\n")
-                except Exception:
-                    pass
-        return output
     
     def _debug_log_model_input(
         self,
@@ -880,6 +672,325 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             prompt_len = len(seq_data.prompt_token_ids)
             flags.append(seq_lens[i] == prompt_len)
         return flags
+    
+    def _debug_log_execute_model_req_patch(
+        self,
+        execute_step_count: int,
+        execute_model_req: ExecuteModelRequest,
+        execute_model_req_patch: dict,
+        use_cached_base_req: bool,
+        cached_seq_data: dict,
+    ) -> None:
+        """Rank-0 debug log for execute_model_req patching."""
+        try:
+            should_log = True
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                world_rank = get_world_group().rank_in_group
+                should_log = (world_rank == 0)
+            else:
+                world_rank = 0
+            if not should_log or execute_model_req is None:
+                return
+
+            ve = getattr(execute_model_req, "virtual_engine", None)
+            seq_groups = getattr(execute_model_req, "seq_group_metadata_list", [])
+            num_seq_groups = len(seq_groups)
+            num_seqs = sum(len(sg.seq_data) for sg in seq_groups)
+            is_patch = bool(execute_model_req_patch)
+            header = (
+                f"[EXEC-PATCH] rank={world_rank} ve={ve} step={execute_step_count} "
+                f"use_cached_base_req={use_cached_base_req} is_patch={is_patch} "
+                f"seq_groups={num_seq_groups} seqs={num_seqs}"
+            )
+
+            # Summaries of patch contents
+            patch_lines = []
+            for key, pdata in execute_model_req_patch.items():
+                parts = []
+                for attr, val in pdata.items():
+                    if attr == "sampling_params":
+                        parts.append("sampling_params")
+                        continue
+                    if isinstance(val, (list, tuple, array.array)):
+                        parts.append(f"{attr}+={len(val)}")
+                    else:
+                        parts.append(f"{attr}=SCALAR")
+                patch_lines.append(f"  seq_id={key} patch={{" + ",".join(parts) + "}}")
+
+            # Cache before apply (lengths)
+            cache_lines = []
+            for key, cdata in cached_seq_data.items():
+                def _len_safe(v):
+                    if isinstance(v, (list, tuple, array.array)):
+                        return len(v)
+                    return 1 if v is not None else 0
+                cache_lines.append(
+                    f"  cache seq_id={key} lens="
+                    f"cached={_len_safe(cdata.get('_cached_all_token_ids'))},"
+                    f"new={_len_safe(cdata.get('_new_appended_tokens'))},"
+                    f"out={_len_safe(cdata.get('_output_token_ids'))},"
+                    f"prompt={_len_safe(cdata.get('_prompt_token_ids'))},"
+                    f"prompt_tup={_len_safe(cdata.get('_prompt_token_ids_tuple'))},"
+                    f"num_tokens={cdata.get('_num_computed_tokens', 0)}"
+                )
+
+            # Final seq_data after patch (will be filled later; placeholder)
+            final_lines = []
+            for sg in seq_groups:
+                for seq_id, sd in sg.seq_data.items():
+                    def _len_attr(obj, name):
+                        v = getattr(obj, name, None)
+                        if isinstance(v, (list, tuple, array.array)):
+                            return len(v)
+                        return v
+                    final_lines.append(
+                        f"  final seq_id={seq_id} prompt={_len_attr(sd,'prompt_token_ids')} "
+                        f"output={_len_attr(sd,'output_token_ids')} "
+                        f"cached_all={_len_attr(sd,'_cached_all_token_ids')} "
+                        f"new_appended={_len_attr(sd,'_new_appended_tokens')} "
+                        f"num_comp={getattr(sd,'_num_computed_tokens',None)} "
+                        f"stage={getattr(sd,'_stage',None)}"
+                    )
+
+            # Emit
+            with open(f"/workspace/world{world_rank}_exec_patch.txt", "a") as f:
+                f.write(header + "\n")
+                if patch_lines:
+                    f.write("[EXEC-PATCH] patch:\n")
+                    for line in patch_lines:
+                        f.write(line + "\n")
+                if cache_lines:
+                    f.write("[EXEC-PATCH] cache-before:\n")
+                    for line in cache_lines:
+                        f.write(line + "\n")
+                if final_lines:
+                    f.write("[EXEC-PATCH] final:\n")
+                    for line in final_lines:
+                        f.write(line + "\n")
+        except Exception:
+            pass
+    
+    def execute_model(
+        self,
+        execute_model_req: Optional[Union[ExecuteModelRequest, Tuple]] = None,
+    ) -> Optional[List[SamplerOutput]]:
+        # Timing: mark start & accumulate idle (global, not per VE)
+        worker_execute_model_start = time.perf_counter()
+        tracker = getattr(self, "_timing_tracker", None)
+        if tracker is None:
+            tracker = {}
+            self._timing_tracker = tracker
+        execute_step_count = 0
+        if isinstance(execute_model_req, tuple):
+            assert len(execute_model_req) == 4, (
+                "execute_model_req must be a tuple of length 4, got "
+                f"{len(execute_model_req)}")
+            (execute_model_req, execute_model_req_patch,
+             use_cached_base_req, execute_step_count) = execute_model_req
+
+            if use_cached_base_req:
+                ve = execute_model_req
+                assert ve in self.cached_execute_model_req, (
+                    f"Virtual engine {ve} not found in "
+                    "cached_execute_model_req")
+                execute_model_req = self.cached_execute_model_req[ve]
+
+            if execute_model_req is not None:
+                ve = execute_model_req.virtual_engine
+                cached_seq_data = self.all_cached_seq_data.get(ve, {})
+                self._debug_log_execute_model_req_patch(
+                    execute_step_count,
+                    execute_model_req,
+                    execute_model_req_patch,
+                    use_cached_base_req,
+                    cached_seq_data,
+                )
+                self.all_cached_seq_data[ve] = (
+                    self._apply_patch_to_execute_model_req(
+                        execute_model_req,
+                        cached_seq_data,
+                        execute_model_req_patch,
+                    ))
+                self._debug_log_execute_model_req_patch(
+                    execute_step_count,
+                    execute_model_req,
+                    execute_model_req_patch,
+                    use_cached_base_req,
+                    self.all_cached_seq_data[ve],
+                )
+
+        # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION     - will log graph compilations per engine step, only when there was any - highly recommended to use alongside PT_HPU_METRICS_GC_DETAILS! # noqa:E501
+        # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL - will log graph compilations per engine step, always, even if there were none # noqa:E501
+        # VLLM_HPU_LOG_STEP_CPU_FALLBACKS         - will log cpu fallbacks per engine step, only when there was any # noqa:E501
+        # VLLM_HPU_LOG_STEP_CPU_FALLBACKS_ALL     - will log cpu fallbacks per engine step, always, even if there were none # noqa:E501
+        log_graph_compilation_all = os.environ.get(
+            'VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL', '0') != '0'
+        log_graph_compilation = os.environ.get(
+            'VLLM_HPU_LOG_STEP_GRAPH_COMPILATION',
+            '0') != '0' or log_graph_compilation_all
+        log_cpu_fallbacks_all = os.environ.get(
+            'VLLM_HPU_LOG_STEP_CPU_FALLBACKS_ALL', '0') != '0'
+        log_cpu_fallbacks = os.environ.get('VLLM_HPU_LOG_STEP_CPU_FALLBACKS',
+                                           '0') != '0' or log_cpu_fallbacks_all
+        if (log_graph_compilation or log_cpu_fallbacks) and \
+            execute_model_req is not None:
+            from habana_frameworks.torch.hpu.metrics import metric_localcontext
+            seq_group_metadata_list = execute_model_req.seq_group_metadata_list
+            is_prompt = any([
+                seq_group_metadata.is_prompt
+                for seq_group_metadata in seq_group_metadata_list
+            ])
+            # for dummy run in DP, we don't have real seq,
+            # so use a dummy context_len here
+            if len(seq_group_metadata_list) == 0:
+                max_context_len = 128
+            else:
+                max_context_len = max([
+                    max([
+                        len(v.prompt_token_ids) + len(v.output_token_ids)
+                        for v in seq_group_metadata.seq_data.values()
+                    ]) for seq_group_metadata in seq_group_metadata_list
+                ])  # whoa, that's some spicy stuff right here
+            max_num_blocks = (
+                (max_context_len - 1) // self.cache_config.block_size) + 1
+            input_stats = (f'is_prompt: {is_prompt}, '
+                           f'num_seqs: {len(seq_group_metadata_list)}, '
+                           f'max_context_len: {max_context_len}, '
+                           f'max_num_blocks {max_num_blocks}')
+            gc_ctx = metric_localcontext(
+                "graph_compilation"
+            ) if log_graph_compilation else contextlib.nullcontext()
+            cpu_fallback_ctx = metric_localcontext(
+                "cpu_fallback"
+            ) if log_cpu_fallbacks else contextlib.nullcontext()
+            with gc_ctx as gc_local_metric, \
+                cpu_fallback_ctx as cpu_fallback_local_metric:
+                output, ve = self._execute_model(execute_model_req, execute_step_count)
+            if (log_graph_compilation and gc_local_metric.stats()[0][1]
+                    > 0) or log_graph_compilation_all:
+                msg = ("VLLM_HPU_STEP_GRAPH_COMPILATION: "
+                       f"{gc_local_metric.stats()}, {input_stats}")
+                logger.warning(msg)
+            if (log_cpu_fallbacks and cpu_fallback_local_metric.stats()[0][1]
+                    > 0) or log_cpu_fallbacks_all:
+                msg = ("VLLM_HPU_STEP_CPU_FALLBACK: "
+                       f"{cpu_fallback_local_metric.stats()}, {input_stats}")
+                logger.warning(msg)
+        else:
+            output, ve = self._execute_model(execute_model_req, execute_step_count)
+        if execute_model_req is not None:
+            self.cached_execute_model_req[
+                execute_model_req.virtual_engine] = execute_model_req
+            
+        all_seq_ids = getattr(self, "_last_seq_ids", {})
+        if ve in all_seq_ids:
+            seq_ids = all_seq_ids[ve]
+            for seq_id in seq_ids:
+                if seq_id not in tracker:
+                    tracker[seq_id] = {}
+                if self.is_prompt not in tracker[seq_id]:
+                    tracker[seq_id][self.is_prompt] = []
+
+                entries = tracker[seq_id][self.is_prompt]
+
+                data = {}
+                step_gap = 0
+                now = time.perf_counter()
+                if len(tracker[seq_id][self.is_prompt]) > 0:
+                    step_gap = worker_execute_model_start - tracker[seq_id][self.is_prompt][-1]['worker_execute_model_end']
+                    data['worker_execute_model_dur'] = now - tracker[seq_id][self.is_prompt][-1]['worker_execute_model_end']
+                else:
+                    data['worker_execute_model_dur'] = now - worker_execute_model_start
+                data['step_gap'] = step_gap
+                data['worker_execute_model_start'] = worker_execute_model_start
+                data['worker_execute_model_end'] = now
+                
+                # Bonus timings (may be missing on early steps; guard with get).
+                bonus = self._bonus_info.get(ve, {})
+                recv_done = bonus.get('recv_done')
+                forward_send_done = bonus.get('forward_send_done')
+                sample_done = bonus.get('sample_done')
+
+                data['recv_done'] = recv_done
+                data['forward_send_done'] = forward_send_done
+                data['sample_done'] = sample_done
+
+                # Derived durations (only compute when timestamps exist).
+                recv_dur = None
+                forward_send_dur = None
+                sample_dur = None
+
+                if recv_done is not None:
+                    recv_dur = max(0.0, recv_done - data['worker_execute_model_start'])
+                if recv_done is not None and forward_send_done is not None:
+                    forward_send_dur = max(0.0, forward_send_done - recv_done)
+                if forward_send_done is not None and sample_done is not None:
+                    sample_dur = max(0.0, sample_done - forward_send_done)
+
+                data['recv_dur'] = recv_dur
+                data['forward_send_dur'] = forward_send_dur
+                data['sample_dur'] = sample_dur
+
+                entries.append(data)
+
+                # Per-seq_id logging (avg + last) for current stage.
+                stage_steps = len(entries)
+                # Total steps across all stages for this seq_id.
+                total_steps_all = sum(len(v) for v in tracker[seq_id].values())
+
+                def avg(key):
+                    vals = [e[key] for e in entries if e.get(key) is not None]
+                    return (sum(vals) / len(vals)) if vals else None
+
+                last = entries[-1]
+                avg_dur = avg('worker_execute_model_dur')
+                avg_gap = avg('step_gap')
+                avg_recv = avg('recv_dur')
+                avg_fwd_send = avg('forward_send_dur')
+                avg_sample = avg('sample_dur')
+
+                # Aggregate percentages (compute from summed raw times).
+                sum_dur = sum(e['worker_execute_model_dur'] for e in entries)
+                sum_gap = sum(e['step_gap'] for e in entries)
+                sum_recv = sum(e['recv_dur'] for e in entries if e['recv_dur'] is not None)
+                sum_fwd_send = sum(e['forward_send_dur'] for e in entries if e['forward_send_dur'] is not None)
+                sum_sample = sum(e['sample_dur'] for e in entries if e['sample_dur'] is not None)
+                pct_gap = (sum_gap / sum_dur * 100.0) if sum_dur > 0 and sum_gap > 0 else 0.0
+                pct_recv = (sum_recv / sum_dur * 100.0) if sum_dur > 0 and sum_recv > 0 else 0.0
+                pct_fwd_send = (sum_fwd_send / sum_dur * 100.0) if sum_dur > 0 and sum_fwd_send > 0 else 0.0
+                pct_sample = (sum_sample / sum_dur * 100.0) if sum_dur > 0 and sum_sample > 0 else 0.0
+                pct_unaccounted = max(0.0, 100.0 - (pct_gap + pct_recv + pct_fwd_send + pct_sample)) if sum_dur > 0 else 0.0
+
+                stage_label = "PROMPT" if self.is_prompt is True else ("DECODE" if self.is_prompt is False else "NONE")
+                world_rank = get_world_group().rank_in_group
+                tp_rank = get_tp_group().rank_in_group
+                pp_rank = get_pp_group().rank_in_group
+
+                log_line = (
+                    f"[SEQ_TIMING {stage_label}] world_rank={world_rank} tp_rank={tp_rank} pp_rank={pp_rank} "
+                    f"ve={ve} seq_id={seq_id} stage_step={stage_steps} total_steps={total_steps_all} "
+                    f"last_dur={last['worker_execute_model_dur']:.6f}s avg_dur={avg_dur:.6f}s "
+                    f"last_gap={last['step_gap'] if last['step_gap'] is not None else 'None'} "
+                    f"avg_gap={(avg_gap if avg_gap is not None else 'None')} "
+                    f"last_recv={last['recv_dur'] if last['recv_dur'] is not None else 'None'} "
+                    f"avg_recv={(avg_recv if avg_recv is not None else 'None')} "
+                    f"last_forward_send={last['forward_send_dur'] if last['forward_send_dur'] is not None else 'None'} "
+                    f"avg_forward_send={(avg_fwd_send if avg_fwd_send is not None else 'None')} "
+                    f"last_sample={last['sample_dur'] if last['sample_dur'] is not None else 'None'} "
+                    f"avg_sample={(avg_sample if avg_sample is not None else 'None')} "
+                    f"pct_gap={pct_gap:.2f}% pct_recv={pct_recv:.2f}% pct_forward_send={pct_fwd_send:.2f}% pct_sample={pct_sample:.2f}% pct_unaccounted={pct_unaccounted:.2f}%"
+                )
+
+                #logger.info(
+                #    log_line
+                #)
+                # Append same log line to per-rank file.
+                try:
+                    with open(f"/workspace/world{world_rank}_seq_timing.txt", "a") as f:
+                        f.write(log_line + "\n")
+                except Exception:
+                    pass
+        return output
 
     def _execute_model(
         self,
