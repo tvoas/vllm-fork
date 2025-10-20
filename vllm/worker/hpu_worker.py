@@ -829,8 +829,8 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
         logger.info("\n".join(log))
 
-    def log_execute_model_req(self, execute_model_req, ret=False, depth=0) -> None:
-        log = ["    " * depth + "ExecuteModelReq"]
+    def log_execute_model_req(self, execute_model_req, ret=False, depth=0, prefix="ExecuteModelReq") -> None:
+        log = ["    " * depth + prefix]
         def add(label, value, depth=0):
             header = '    ' * depth
             log.append(f"{header}{label}: {value}")
@@ -985,6 +985,12 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     f"Virtual engine {ve} not found in "
                     "cached_execute_model_req")
                 execute_model_req = self.cached_execute_model_req[ve]
+                if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
+                    self.log_execute_model_req(execute_model_req, prefix="Cached Base ExecuteModelReq")
+            else:
+                if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
+                    logger.log("No Cached Execute Model Req")
+            
 
             if execute_model_req is not None:
                 ve = execute_model_req.virtual_engine
