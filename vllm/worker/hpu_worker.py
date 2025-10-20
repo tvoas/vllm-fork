@@ -399,238 +399,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     cached_seq_data.pop(key, None)
 
         return cached_seq_data
-    
-    def _debug_log_model_input(
-        self,
-        model_input,
-        execute_step_count: int,
-        virtual_engine: Optional[int] = None,
-    ) -> None:
-
-        # Gate logs to world rank 0 (group 0)
-        should_log = True
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            world_rank = get_world_group().rank_in_group
-            should_log = (world_rank == 0)
-        if not should_log:
-            return
-
-        # Lazy-init trackers on self
-        if not hasattr(self, "_chunked_prefill_trackers"):
-            # key: seq_id -> {
-            #   'steps': int, 'last_seq_len': int, 'chunks': [int],
-            #   'last_min_pos': int | None, 'last_max_pos': int | None,
-            #   'last_virtual_engine': int | None
-            # }
-            self._chunked_prefill_trackers = {}
-
-        attn = getattr(model_input, "attn_metadata", None)
-        assert attn is not None, "attn_metadata missing"
-        input_tokens = model_input.input_tokens
-        input_positions = model_input.input_positions
-        assert input_tokens.shape == input_positions.shape, "tokens/positions shape mismatch"
-
-        bsz = getattr(model_input, "real_batch_size", input_tokens.size(0))
-        if bsz is None:
-            logger.info(f"[Rank={get_world_group().rank_in_group}] real_batch_size missing: model_input = {model_input}")
-            return
-        bsz = int(bsz)
-        padded_len = int(input_tokens.size(1))
-        is_prompt = bool(getattr(model_input, "is_prompt", False))
-        if not is_prompt:
-            return
-        seq_lens = list(getattr(model_input, "seq_lens", []))
-        query_lens = list(getattr(model_input, "query_lens", []))
-        block_size = int(getattr(attn, "block_size", 0) or 0)
-
-        # Slot mapping: non-zero means active token in this step
-        slot_mapping = getattr(attn, "slot_mapping", None)
-        assert slot_mapping is not None, "slot_mapping missing in attn_metadata"
-        assert slot_mapping.shape == input_tokens.shape, "slot_mapping vs tokens shape mismatch"
-
-        # Per-sample active token counts (no padding)
-        non_pad_counts = (slot_mapping != 0).sum(dim=1).tolist()
-
-        assert len(seq_lens) == bsz, f"seq_lens length {len(seq_lens)} != batch {bsz}"
-        assert len(query_lens) == bsz or len(query_lens) == 0, "query_lens length invalid"
-
-        # Pull seq ids and seq_data to cross-check lengths
-        seq_groups = getattr(model_input, "sampling_metadata", None)
-        assert seq_groups is not None, "sampling_metadata missing"
-        seq_groups = getattr(seq_groups, "seq_groups", [])
-        # Flatten seq_ids across groups preserving order
-        flat_seq_ids = []
-        flat_seq_datas = []
-        for g in seq_groups:
-            ids = list(getattr(g, "seq_ids", []))
-            flat_seq_ids.extend(ids)
-            data_map = dict(getattr(g, "seq_data", {}))
-            for sid in ids:
-                flat_seq_datas.append(data_map.get(sid))
-
-        # Basic invariants per sample (assume one seq per sample for default vLLM batching)
-        assert bsz == len(flat_seq_ids) or len(flat_seq_ids) == 0, "seq_ids vs batch size mismatch (multi-n seq_groups not supported here)"
-
-        # Validate and track per-sample
-        per_sample_logs = []
-        for i in range(bsz):
-            seq_len_i = int(seq_lens[i])
-            q_len_i = int(query_lens[i]) if len(query_lens) == bsz else None
-            active_i = int(non_pad_counts[i])
-
-            # Positions range over active tokens for this step
-            mask_i = slot_mapping[i] != 0
-            if mask_i.any():
-                pos_active = input_positions[i][mask_i]
-                pos_min = int(pos_active.min().item())
-                pos_max = int(pos_active.max().item())
-            else:
-                pos_min = None
-                pos_max = None
-
-            # Cross-check against seq_data (if available)
-            seq_id = flat_seq_ids[i] if i < len(flat_seq_ids) else None
-            seq_data = flat_seq_datas[i] if i < len(flat_seq_datas) else None
-            if seq_data is not None and hasattr(seq_data, "prompt_token_ids"):
-                try:
-                    prompt_len = int(len(seq_data.prompt_token_ids))
-                    # For prompts, seq_lens should equal total prompt length so far.
-                    assert seq_len_i == prompt_len, f"seq_len ({seq_len_i}) != prompt_len ({prompt_len}) for seq_id={seq_id}"
-                except Exception:
-                    pass
-
-            # Prefill-vs-decode checks
-            num_prefills = int(getattr(attn, "num_prefills", 0))
-            num_prefill_tokens = int(getattr(attn, "num_prefill_tokens", 0))
-            num_decode_tokens = int(getattr(attn, "num_decode_tokens", 0))
-
-            ## Active tokens this step should equal (prefill + decode) tokens reported
-            #assert active_i == (num_prefill_tokens + num_decode_tokens), \
-            #    f"active tokens {active_i} != prefill+decode {num_prefill_tokens + num_decode_tokens}"
-
-            if is_prompt:
-                # Chunked prefill step: expect q_len equals active tokens
-                if q_len_i is not None:
-                    assert q_len_i == active_i, f"query_len {q_len_i} != active tokens {active_i}"
-                # Continuity: first chunk should start at 0; subsequent chunks continue
-                tracker = self._chunked_prefill_trackers.get(seq_id, {
-                    'steps': 0, 'last_seq_len': 0, 'chunks': [],
-                    'last_min_pos': None, 'last_max_pos': None,
-                    'last_virtual_engine': None,
-                })
-                if tracker['steps'] == 0:
-                    if pos_min is not None:
-                        assert pos_min == 0, f"first prefill pos_min {pos_min} != 0"
-                else:
-                    if pos_min is not None and tracker['last_max_pos'] is not None:
-                        # Expect new chunk to start right after previous max
-                        assert pos_min == (tracker['last_max_pos'] + 1), \
-                            f"discontinuous prefill: pos_min {pos_min} vs last_max+1 {tracker['last_max_pos'] + 1}"
-
-                # Monotonic growth of seq_len across steps
-                assert seq_len_i >= tracker['last_seq_len'], \
-                    f"seq_len decreased: {seq_len_i} < {tracker['last_seq_len']}"
-
-                # Update tracker
-                tracker['steps'] += 1
-                tracker['last_seq_len'] = seq_len_i
-                tracker['chunks'].append(active_i)
-                tracker['last_min_pos'] = pos_min
-                tracker['last_max_pos'] = pos_max
-                tracker['last_virtual_engine'] = virtual_engine
-                self._chunked_prefill_trackers[seq_id] = tracker
-
-            # Extra sanity: padded length and block alignment (if applicable)
-            assert padded_len >= active_i, "padded length smaller than active tokens"
-            if block_size > 0:
-                # Note: not all inputs are block aligned; log a warning if not aligned
-                pass
-
-            per_sample_logs.append({
-                'seq_id': seq_id,
-                'seq_len': seq_len_i,
-                'query_len': q_len_i,
-                'active_tokens': active_i,
-                'pos_min': pos_min,
-                'pos_max': pos_max,
-                'num_prefills': num_prefills,
-                'num_prefill_tokens': num_prefill_tokens,
-                'num_decode_tokens': num_decode_tokens,
-            })
-
-        # Summary
-        total_active = int((slot_mapping != 0).sum().item())
-        total_token_slots = bsz * padded_len
-        # Prefer attn counters for clarity
-        total_prefill_tokens = int(getattr(attn, "num_prefill_tokens", 0))
-        total_decode_tokens = int(getattr(attn, "num_decode_tokens", 0))
-
-        # Build compact log lines
-        header = (
-            f"[MI] rank={world_rank} ve={virtual_engine} step={execute_step_count} "
-            f"bsz={bsz} padded_len={padded_len} "
-            f"active={total_active} prefill={total_prefill_tokens} decode={total_decode_tokens} "
-            f"is_prompt={is_prompt} first_step={getattr(model_input, 'is_first_multi_step', False)} "
-            f"last_step={getattr(model_input, 'is_last_step', False)}"
-        )
-        # Per-sample details
-        details = []
-        for i, d in enumerate(per_sample_logs):
-            details.append(
-                f"[rank={world_rank} ve={virtual_engine} step={execute_step_count} i={i} seq_id={d['seq_id']} seq_len={d['seq_len']} "
-                f"q_len={d['query_len']} active={d['active_tokens']} "
-                f"pos=[{d['pos_min']},{d['pos_max']}] "
-                f"prefills={d['num_prefills']} pf_tokens={d['num_prefill_tokens']} "
-                f"dec_tokens={d['num_decode_tokens']}]"
-            )
-
-        ## Optional: final assertion to ensure accounting matches
-        #assert total_active == (total_prefill_tokens + total_decode_tokens), \
-        #    "Total active tokens != prefill+decode tokens"
-
-        # Emit logs
-        if not should_log:
-            return
-        # Append same log line to per-rank file.
-        try:
-            #logger.info(header)
-            with open(f"/workspace/world{world_rank}_input.txt", "a") as f:
-                f.write(header + "\n")
-                for line in details:
-                    #logger.info(line)
-                    f.write(line + "\n")
-        except Exception:
-            pass
-
-        # Global aggregated stats across tracked sequence ids (per virtual engine)
-        trackers = getattr(self, "_chunked_prefill_trackers", {})
-        if trackers:
-            prompt_lengths = [t['last_seq_len'] for t in trackers.values() if t.get('last_seq_len') is not None]
-            chunk_counts = [len(t.get('chunks', [])) for t in trackers.values()]
-            seq_count = len(prompt_lengths)
-            if seq_count > 0:
-                pl_min = min(prompt_lengths)
-                pl_max = max(prompt_lengths)
-                pl_mean = sum(prompt_lengths) / seq_count
-                cc_min = min(chunk_counts)
-                cc_max = max(chunk_counts)
-                cc_mean = sum(chunk_counts) / seq_count
-                global_line = (
-                    f"[MI-GLOBAL] rank={world_rank} ve={virtual_engine} step={execute_step_count} "
-                    f"seqs={seq_count} prompt_len_mean={pl_mean:.2f} prompt_len_min={pl_min} prompt_len_max={pl_max} "
-                    f"chunks_mean={cc_mean:.2f} chunks_min={cc_min} chunks_max={cc_max}"
-                )
-            else:
-                global_line = (
-                    f"[MI-GLOBAL] rank={world_rank} ve={virtual_engine} step={execute_step_count} seqs=0"
-                )
-            # Append same log line to per-rank file.
-            try:
-                #logger.info(global_line)
-                with open(f"/workspace/world{world_rank}_input.txt", "a") as f:
-                    f.write(global_line + "\n")
-            except Exception:
-                pass
 
     def _last_prefill_or_decode(
         self,
@@ -673,106 +441,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             flags.append(seq_lens[i] == prompt_len)
         return flags
     
-    def _debug_log_execute_model_req_patch(
-        self,
-        execute_step_count: int,
-        execute_model_req: ExecuteModelRequest,
-        execute_model_req_patch: dict,
-        use_cached_base_req: bool,
-        cached_seq_data: dict,
-        phase: str,  # "before" or "after"
-    ) -> None:
-        """Rank-0 debug log for execute_model_req patching."""
-        try:
-            should_log = True
-            if torch.distributed.is_available() and torch.distributed.is_initialized():
-                world_rank = get_world_group().rank_in_group
-                should_log = (world_rank == 0)
-            else:
-                world_rank = 0
-            if not should_log or execute_model_req is None:
-                return
-
-            ve = getattr(execute_model_req, "virtual_engine", None)
-            seq_groups = getattr(execute_model_req, "seq_group_metadata_list", [])
-            num_seq_groups = len(seq_groups)
-            num_seqs = sum(len(sg.seq_data) for sg in seq_groups)
-            is_patch = bool(execute_model_req_patch)
-
-            header = (
-                f"[EXEC-PATCH] rank={world_rank}, ve={ve}, step={execute_step_count}, phase={phase}, "
-                f"use_cached_base_req={use_cached_base_req}, is_patch={is_patch}, "
-                f"seq_groups={num_seq_groups}, seqs={num_seqs}"
-            )
-
-            # Patch summary
-            patch_lines = []
-            for key, pdata in execute_model_req_patch.items():
-                parts = []
-                for attr, val in pdata.items():
-                    if attr == "sampling_params":
-                        parts.append("sampling_params")
-                        continue
-                    if isinstance(val, (list, tuple, array.array)):
-                        parts.append(f"{attr}+={len(val)}")
-                    else:
-                        parts.append(f"{attr}={val}")
-                parts = ", ".join(parts)
-                patch_lines.append(f"  seq_id={key}, patch={parts}")
-
-            # Cache summary (lengths)
-            cache_lines = []
-            for key, cdata in cached_seq_data.items():
-                def _len_safe(v):
-                    if isinstance(v, (list, tuple, array.array)):
-                        return len(v)
-                    return v if isinstance(v, (int, float)) else (1 if v is not None else 0)
-                cache_lines.append(
-                    f"  cache seq_id={key}, lens("
-                    f"cached={_len_safe(cdata.get('_cached_all_token_ids'))}, "
-                    f"new={_len_safe(cdata.get('_new_appended_tokens'))}, "
-                    f"out={_len_safe(cdata.get('_output_token_ids'))}, "
-                    f"prompt={_len_safe(cdata.get('_prompt_token_ids'))}, "
-                    f"prompt_tup={_len_safe(cdata.get('_prompt_token_ids_tuple'))}, "
-                    f"num_comp={cdata.get('_num_computed_tokens', 0)})"
-                )
-            if not cache_lines:
-                cache_lines.append("  (cache empty)")
-
-            # Final seq_data snapshot
-            final_lines = []
-            for sg in seq_groups:
-                for seq_id, sd in sg.seq_data.items():
-                    def _len_attr(obj, name):
-                        v = getattr(obj, name, None)
-                        if isinstance(v, (list, tuple, array.array)):
-                            return len(v)
-                        return v
-                    final_lines.append(
-                        f"  final seq_id={seq_id}, prompt={_len_attr(sd,'prompt_token_ids')}, "
-                        f"output={_len_attr(sd,'output_token_ids')}, "
-                        f"cached_all={_len_attr(sd,'_cached_all_token_ids')}, "
-                        f"new_appended={_len_attr(sd,'_new_appended_tokens')}, "
-                        f"num_comp={getattr(sd,'_num_computed_tokens',None)}, "
-                        f"stage={getattr(sd,'_stage',None)}"
-                    )
-            if not final_lines:
-                final_lines.append("  (no seq_data)")
-
-            with open(f"/workspace/world{world_rank}_input.txt", "a") as f:
-                f.write(header + "\n")
-                f.write("[          ] patch:\n")
-                for line in patch_lines or ["  (no patch)"]:
-                    f.write(line + "\n")
-                f.write("[          ] cache:\n")
-                for line in cache_lines:
-                    f.write(line + "\n")
-                f.write("[          ] seq_data:\n")
-                for line in final_lines:
-                    f.write(line + "\n")
-        except Exception:
-            pass
-
     def log_prepare_execute_model_req_patch_result(
         self,
         prepare_result,
@@ -962,12 +630,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         self,
         execute_model_req: Optional[Union[ExecuteModelRequest, Tuple]] = None,
     ) -> Optional[List[SamplerOutput]]:
-        # Timing: mark start & accumulate idle (global, not per VE)
-        worker_execute_model_start = time.perf_counter()
-        tracker = getattr(self, "_timing_tracker", None)
-        if tracker is None:
-            tracker = {}
-            self._timing_tracker = tracker
         execute_step_count = 0
         if isinstance(execute_model_req, tuple):
             assert len(execute_model_req) == 4, (
@@ -995,28 +657,12 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             if execute_model_req is not None:
                 ve = execute_model_req.virtual_engine
                 cached_seq_data = self.all_cached_seq_data.get(ve, {})
-                self._debug_log_execute_model_req_patch(
-                    execute_step_count,
-                    execute_model_req,
-                    execute_model_req_patch,
-                    use_cached_base_req,
-                    cached_seq_data,
-                    phase="before",
-                )
                 self.all_cached_seq_data[ve] = (
                     self._apply_patch_to_execute_model_req(
                         execute_model_req,
                         cached_seq_data,
                         execute_model_req_patch,
                     ))
-                self._debug_log_execute_model_req_patch(
-                    execute_step_count,
-                    execute_model_req,
-                    execute_model_req_patch,
-                    use_cached_base_req,
-                    self.all_cached_seq_data[ve],
-                    phase="after",
-                )
 
             if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
                 self.log_execute_model_req(execute_model_req)
@@ -1067,7 +713,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             ) if log_cpu_fallbacks else contextlib.nullcontext()
             with gc_ctx as gc_local_metric, \
                 cpu_fallback_ctx as cpu_fallback_local_metric:
-                output, ve = self._execute_model(execute_model_req, execute_step_count)
+                output = self._execute_model(execute_model_req, execute_step_count)
             if (log_graph_compilation and gc_local_metric.stats()[0][1]
                     > 0) or log_graph_compilation_all:
                 msg = ("VLLM_HPU_STEP_GRAPH_COMPILATION: "
@@ -1079,119 +725,10 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                        f"{cpu_fallback_local_metric.stats()}, {input_stats}")
                 logger.warning(msg)
         else:
-            output, ve = self._execute_model(execute_model_req, execute_step_count)
+            output = self._execute_model(execute_model_req, execute_step_count)
         if execute_model_req is not None:
             self.cached_execute_model_req[
                 execute_model_req.virtual_engine] = execute_model_req
-            
-        all_seq_ids = getattr(self, "_last_seq_ids", {})
-        if ve in all_seq_ids:
-            seq_ids = all_seq_ids[ve]
-            for seq_id in seq_ids:
-                if seq_id not in tracker:
-                    tracker[seq_id] = {}
-                if self.is_prompt not in tracker[seq_id]:
-                    tracker[seq_id][self.is_prompt] = []
-
-                entries = tracker[seq_id][self.is_prompt]
-
-                data = {}
-                step_gap = 0
-                now = time.perf_counter()
-                if len(tracker[seq_id][self.is_prompt]) > 0:
-                    step_gap = worker_execute_model_start - tracker[seq_id][self.is_prompt][-1]['worker_execute_model_end']
-                    data['worker_execute_model_dur'] = now - tracker[seq_id][self.is_prompt][-1]['worker_execute_model_end']
-                else:
-                    data['worker_execute_model_dur'] = now - worker_execute_model_start
-                data['step_gap'] = step_gap
-                data['worker_execute_model_start'] = worker_execute_model_start
-                data['worker_execute_model_end'] = now
-                
-                # Bonus timings (may be missing on early steps; guard with get).
-                bonus = self._bonus_info.get(ve, {})
-                recv_done = bonus.get('recv_done')
-                forward_send_done = bonus.get('forward_send_done')
-                sample_done = bonus.get('sample_done')
-
-                data['recv_done'] = recv_done
-                data['forward_send_done'] = forward_send_done
-                data['sample_done'] = sample_done
-
-                # Derived durations (only compute when timestamps exist).
-                recv_dur = None
-                forward_send_dur = None
-                sample_dur = None
-
-                if recv_done is not None:
-                    recv_dur = max(0.0, recv_done - data['worker_execute_model_start'])
-                if recv_done is not None and forward_send_done is not None:
-                    forward_send_dur = max(0.0, forward_send_done - recv_done)
-                if forward_send_done is not None and sample_done is not None:
-                    sample_dur = max(0.0, sample_done - forward_send_done)
-
-                data['recv_dur'] = recv_dur
-                data['forward_send_dur'] = forward_send_dur
-                data['sample_dur'] = sample_dur
-
-                entries.append(data)
-
-                # Per-seq_id logging (avg + last) for current stage.
-                stage_steps = len(entries)
-                # Total steps across all stages for this seq_id.
-                total_steps_all = sum(len(v) for v in tracker[seq_id].values())
-
-                def avg(key):
-                    vals = [e[key] for e in entries if e.get(key) is not None]
-                    return (sum(vals) / len(vals)) if vals else None
-
-                last = entries[-1]
-                avg_dur = avg('worker_execute_model_dur')
-                avg_gap = avg('step_gap')
-                avg_recv = avg('recv_dur')
-                avg_fwd_send = avg('forward_send_dur')
-                avg_sample = avg('sample_dur')
-
-                # Aggregate percentages (compute from summed raw times).
-                sum_dur = sum(e['worker_execute_model_dur'] for e in entries)
-                sum_gap = sum(e['step_gap'] for e in entries)
-                sum_recv = sum(e['recv_dur'] for e in entries if e['recv_dur'] is not None)
-                sum_fwd_send = sum(e['forward_send_dur'] for e in entries if e['forward_send_dur'] is not None)
-                sum_sample = sum(e['sample_dur'] for e in entries if e['sample_dur'] is not None)
-                pct_gap = (sum_gap / sum_dur * 100.0) if sum_dur > 0 and sum_gap > 0 else 0.0
-                pct_recv = (sum_recv / sum_dur * 100.0) if sum_dur > 0 and sum_recv > 0 else 0.0
-                pct_fwd_send = (sum_fwd_send / sum_dur * 100.0) if sum_dur > 0 and sum_fwd_send > 0 else 0.0
-                pct_sample = (sum_sample / sum_dur * 100.0) if sum_dur > 0 and sum_sample > 0 else 0.0
-                pct_unaccounted = max(0.0, 100.0 - (pct_gap + pct_recv + pct_fwd_send + pct_sample)) if sum_dur > 0 else 0.0
-
-                stage_label = "PROMPT" if self.is_prompt is True else ("DECODE" if self.is_prompt is False else "NONE")
-                world_rank = get_world_group().rank_in_group
-                tp_rank = get_tp_group().rank_in_group
-                pp_rank = get_pp_group().rank_in_group
-
-                log_line = (
-                    f"[SEQ_TIMING {stage_label}] world_rank={world_rank} tp_rank={tp_rank} pp_rank={pp_rank} "
-                    f"ve={ve} seq_id={seq_id} stage_step={stage_steps} total_steps={total_steps_all} "
-                    f"last_dur={last['worker_execute_model_dur']:.6f}s avg_dur={avg_dur:.6f}s "
-                    f"last_gap={last['step_gap'] if last['step_gap'] is not None else 'None'} "
-                    f"avg_gap={(avg_gap if avg_gap is not None else 'None')} "
-                    f"last_recv={last['recv_dur'] if last['recv_dur'] is not None else 'None'} "
-                    f"avg_recv={(avg_recv if avg_recv is not None else 'None')} "
-                    f"last_forward_send={last['forward_send_dur'] if last['forward_send_dur'] is not None else 'None'} "
-                    f"avg_forward_send={(avg_fwd_send if avg_fwd_send is not None else 'None')} "
-                    f"last_sample={last['sample_dur'] if last['sample_dur'] is not None else 'None'} "
-                    f"avg_sample={(avg_sample if avg_sample is not None else 'None')} "
-                    f"pct_gap={pct_gap:.2f}% pct_recv={pct_recv:.2f}% pct_forward_send={pct_fwd_send:.2f}% pct_sample={pct_sample:.2f}% pct_unaccounted={pct_unaccounted:.2f}%"
-                )
-
-                #logger.info(
-                #    log_line
-                #)
-                # Append same log line to per-rank file.
-                try:
-                    with open(f"/workspace/world{world_rank}_seq_timing.txt", "a") as f:
-                        f.write(log_line + "\n")
-                except Exception:
-                    pass
         return output
 
     def _execute_model(
@@ -1201,38 +738,14 @@ class HPUWorker(LocalOrDistributedWorkerBase):
     ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
-
-        # SAFE extraction of seq_ids (sampling_metadata may be None during idle / warmup loops).
-        def _extract_seq_ids(mi):
-            sm = getattr(mi, "sampling_metadata", None)
-            if sm is None:
-                return []
-            seq_groups = getattr(sm, "seq_groups", None)
-            if not seq_groups:
-                return []
-            flat = []
-            for g in seq_groups:
-                flat.extend(getattr(g, "seq_ids", []) or [])
-            return flat
-
         with self.lock:
-            if getattr(self, "_bonus_info", None) is None:
-                self._bonus_info = {}
-            if getattr(self, "_last_seq_ids", None) is None:
-                self._last_seq_ids = {}
             inputs = self.prepare_input(execute_model_req)
             if inputs is None:
-                return None, None
+                return None
 
             model_input, worker_input, kwargs = inputs
             if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
                 self.log_model_input(model_input)
-            self.is_prompt = model_input.is_prompt
-            self._debug_log_model_input(
-                model_input,
-                execute_step_count,
-                getattr(model_input, "virtual_engine", None),
-            )
 
             if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
                 if self.on_demand_profiler_mode == "p" and model_input.attn_metadata.is_prompt or \
@@ -1252,27 +765,19 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
             # If there is no input, we don't need to execute the model.
             if worker_input.num_seq_groups == 0:
-                self.is_prompt = None
-                return [], model_input.virtual_engine
-            self._last_seq_ids[model_input.virtual_engine] = _extract_seq_ids(model_input)
-            self._bonus_info[model_input.virtual_engine] = {}
-            if not self._last_seq_ids[model_input.virtual_engine]:
-                # Ensure no stale ids from previous step linger.
-                self._last_seq_ids[model_input.virtual_engine] = []
+                return []
+
             intermediate_tensors = None
             if not get_pp_group().is_first_rank:
                 intermediate_tensors = get_pp_group().recv_tensor_dict(
                     all_gather_group=get_tp_group(), deferred=True)
-            self._bonus_info[model_input.virtual_engine]['recv_done'] = time.perf_counter()
-            
+
             output = self.model_runner.execute_model(
                 model_input=model_input,
                 kv_caches=self.kv_cache[worker_input.virtual_engine]
                 if self.kv_cache is not None else None,
                 intermediate_tensors=intermediate_tensors,
                 num_steps=num_steps,
-                info=self._bonus_info[model_input.virtual_engine],
-                execute_step_count=execute_step_count,
                 **kwargs,
             )
 
@@ -1287,13 +792,10 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     if self.on_demand_profiler_step_counter == self.on_demand_profiler_step_stop:
                         self.do_stop_profile()
 
-                self._bonus_info[model_input.virtual_engine]['forward_send_done'] = time.perf_counter()
-
-                return [None], model_input.virtual_engine
-        self._bonus_info[model_input.virtual_engine]['forward_send_done'] = time.perf_counter()
+                return [None]
 
         if get_pp_group().is_last_rank and get_pp_group().world_size > 1:
-            if model_input.needs_sampling:
+            if model_input.needs_sampling or self.is_prompt:
                 output = self.model_runner.execute_sample(
                     hidden_states=output,
                     model_input=model_input,
@@ -1313,8 +815,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 ]
             else:
                 output = [None]
-
-        self._bonus_info[model_input.virtual_engine]['sample_done'] = time.perf_counter()
 
         if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
             if self.on_demand_profiler_step_counter == self.on_demand_profiler_step_stop:

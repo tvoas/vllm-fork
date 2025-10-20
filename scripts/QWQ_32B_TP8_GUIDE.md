@@ -1,3 +1,9 @@
+Is worker applying patch again, causing our model request to grow but chunked code in runner appends more, which means we grow more and more and more? Need to verify
+
+Stream in N>1 chunks while N=0 runs. Eliminate gap.
+
+Multistep?
+
 # Qwen3 with PP=2 Guide
 
 This guide provides instructions to build, run, and configure a Docker container for vLLM, as well as perform accuracy and throughput benchmarking on this. Uses best known configs.
@@ -7,6 +13,8 @@ This guide provides instructions to build, run, and configure a Docker container
 ### Step 1: Set Environment Variables
 
 Set the following environment variables for the Docker setup:
+
+sudo hl-smi --format csv -Q bus_id,module_id,index | awk -F',' 'NR>1 {gsub(/ /,""); print $1}' | while read id; do sudo hl-smi -r -i "$id" & done
 
 ```bash
 export BUILT_IMAGE="vllm-hpu-env"
@@ -66,6 +74,8 @@ sudo docker run -td \
   -v ${MAPPED_MODEL_PATHS}:/root/.cache/huggingface \
   ${BUILT_IMAGE} \
   -c "tail -f /dev/null"
+rm ../vllm_hpu_node.tar
+sudo docker save ${BUILT_IMAGE} > ../vllm_hpu_node.tar
 ```
 
 ### Step 4: Access the Docker Container
@@ -355,77 +365,14 @@ Run the following command to evaluate accuracy using lm-eval. This runs full hum
 
 ```bash
 clear
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 160 --request-rate inf --seed 0 --ignore_eos --max-concurrency 16 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 80 --request-rate inf --seed 0 --ignore_eos --max-concurrency 8 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 40 --request-rate inf --seed 0 --ignore_eos --max-concurrency 4 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 20 --request-rate inf --seed 0 --ignore_eos --max-concurrency 2 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 10 --request-rate inf --seed 0 --ignore_eos --max-concurrency 1 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 160 --request-rate inf --seed 0 --ignore_eos --max-concurrency 16 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 80 --request-rate inf --seed 0 --ignore_eos --max-concurrency 8 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 40 --request-rate inf --seed 0 --ignore_eos --max-concurrency 4 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 20 --request-rate inf --seed 0 --ignore_eos --max-concurrency 2 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 10 --request-rate inf --seed 0 --ignore_eos --max-concurrency 1 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-
-
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 30 --request-rate inf --seed 0 --ignore_eos --max-concurrency 2 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 30 --request-rate inf --seed 0 --ignore_eos --max-concurrency 2 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 15 --request-rate inf --seed 0 --ignore_eos --max-concurrency 1 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 15 --request-rate inf --seed 0 --ignore_eos --max-concurrency 1 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-
-
-clear
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 150 --request-rate inf --seed 0 --ignore_eos --max-concurrency 15 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 120 --request-rate inf --seed 0 --ignore_eos --max-concurrency 12 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 60 --request-rate inf --seed 0 --ignore_eos --max-concurrency 6 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 30 --request-rate inf --seed 0 --ignore_eos --max-concurrency 3 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 20 --request-rate inf --seed 0 --ignore_eos --max-concurrency 2 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 10 --request-rate inf --seed 0 --ignore_eos --max-concurrency 1 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-
-
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 40 --request-rate inf --seed 0 --ignore_eos --max-concurrency 4 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 20 --request-rate inf --seed 0 --ignore_eos --max-concurrency 2 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 10 --request-rate inf --seed 0 --ignore_eos --max-concurrency 1 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-
-
-
-
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 90 --request-rate inf --seed 0 --ignore_eos --max-concurrency 9 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 60 --request-rate inf --seed 0 --ignore_eos --max-concurrency 6 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 30 --request-rate inf --seed 0 --ignore_eos --max-concurrency 3 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 20 --request-rate inf --seed 0 --ignore_eos --max-concurrency 2 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model /root/.cache/huggingface/GLM-4.5-FP8/ --trust-remote-code --host 127.0.0.1 --port 8688 --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 10 --request-rate inf --seed 0 --ignore_eos --max-concurrency 1 --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 25,50,75,90,95,99
-
-
-
-
-
-clear
-python3 vllm/benchmarks/benchmark_serving.py \
-  --backend vllm \
-  --model /root/.cache/huggingface/GLM-4.5-FP8/ \
-  --trust-remote-code \
-  --host 127.0.0.1 \
-  --port 8688 \
-  --dataset-name random \
-  --random-input-len 30151 \
-  --random-output-len 230 \
-  --random-range-ratio 0.8 \
-  --max-concurrency 4 \
-  --num-prompts 20 \
-  --request-rate inf \
-  --seed 0 \
-  --ignore-eos \
-  --save-result \
-  --percentile-metrics ttft,tpot,itl,e2el \
-  --metric-percentiles 25,50,75,90,95,99 \
-  --result-filename online_enchmark_results.json
 export HF_ALLOW_CODE_EVAL=1
 export LM_ADDR=127.0.0.1
 export LM_PORT=8688
-export LM_MODEL=/root/.cache/huggingface/GLM-4.5-Air-FP8-G2/
+export LM_MODEL=/root/.cache/huggingface/GLM-4.5-FP8/
 export LM_BATCH_SIZE=1
-export LM_CONCURRENCY=4
-export LM_LIMIT=32
+export LM_LIMIT=8
+export LM_CONCURRENCY=2
+python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 32 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,99
 lm_eval --model local-completions \
   --tasks gsm8k,humaneval \
   --model_args model=$LM_MODEL,base_url=http://$LM_ADDR:$LM_PORT/v1/completions,num_concurrent=$LM_CONCURRENCY,trust_remote_code=True \
@@ -434,6 +381,27 @@ lm_eval --model local-completions \
   --log_samples \
   --limit $LM_LIMIT \
   --output_path lm_eval_results.json
+export LM_CONCURRENCY=4
+python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts ${LM_CONCURRENCY}0 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,99
+lm_eval --model local-completions \
+  --tasks gsm8k,humaneval \
+  --model_args model=$LM_MODEL,base_url=http://$LM_ADDR:$LM_PORT/v1/completions,num_concurrent=$LM_CONCURRENCY,trust_remote_code=True \
+  --batch_size $LM_BATCH_SIZE \
+  --confirm_run_unsafe_code \
+  --log_samples \
+  --limit $LM_LIMIT \
+  --output_path lm_eval_results.json
+
+
+
+
+
+
+
+
+
+
+
 lm_eval --model local-chat-completions \
   --tasks ifeval \
   --model_args model=$LM_MODEL,base_url=http://$LM_ADDR:$LM_PORT/v1/chat/completions,num_concurrent=$LM_CONCURRENCY,trust_remote_code=True \
