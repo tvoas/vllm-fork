@@ -773,6 +773,61 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         except Exception:
             pass
 
+        def log_prepare_execute_model_req_patch_result(
+            self,
+            prepare_result,
+        ) -> None:
+            """Log the tuple returned by prepare_execute_model_req_patch.
+
+            Tuple layout:
+            0: virtual_engine (if reused) OR full ExecuteModelReq object (suppressed)
+            1: execute_model_req_patch (dict of incremental per-sequence changes)
+            2: use_cached_base_req (bool)
+            3: execute_step_count (int)
+            """
+            try:
+                base_obj, patch, reused, step_count = prepare_result
+            except Exception:
+                logger.info("prepare_execute_model_req_patch result malformed: %r", prepare_result)
+                return
+
+            log: List[str] = ["PrepareExecuteModelReqPatchResult"]
+            def add(label: str, value, depth: int = 0):
+                log.append(f"{'    '*depth}{label}: {value}")
+
+            if reused:
+                add("base_request", f"Reused cached base; virtual_engine={base_obj}", 1)
+            else:
+                virtual_engine = getattr(base_obj, "virtual_engine", None)
+                add("base_request", "ExecuteModelReq (full content suppressed)", 1)
+                add("virtual_engine", virtual_engine, 1)
+
+            add("use_cached_base_req", reused, 1)
+            add("execute_step_count", step_count, 1)
+
+            # Patch details
+            add("execute_model_req_patch", "--------------------------------------------------", 1)
+            add("num_sequence_keys", len(patch), 2)
+
+            for seq_key, changes in patch.items():
+                add(f"SequenceKey[{seq_key}]", "--------------------------------------------------", 2)
+                if not changes:
+                    add("no_changes", True, 3)
+                    continue
+                for attr, value in changes.items():
+                    # Normalize arrays/tuples/lists for logging
+                    if isinstance(value, array.array):
+                        norm = list(value)
+                    else:
+                        norm = value
+                    if isinstance(norm, (list, tuple)):
+                        add(attr, norm, 3)
+                        add(f"{attr}.length", len(norm), 3)
+                    else:
+                        add(attr, norm, 3)
+
+            logger.info("\n".join(log))
+
     def log_execute_model_req(self, execute_model_req) -> None:
         log = ["ExecuteModelReq"]
         def add(label, value, depth=0):
@@ -915,6 +970,8 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             assert len(execute_model_req) == 4, (
                 "execute_model_req must be a tuple of length 4, got "
                 f"{len(execute_model_req)}")
+            if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
+                self.log_prepare_execute_model_req_patch_result(execute_model_req)
             (execute_model_req, execute_model_req_patch,
              use_cached_base_req, execute_step_count) = execute_model_req
 
