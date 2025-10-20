@@ -701,14 +701,14 @@ class HPUWorker(LocalOrDistributedWorkerBase):
     ) -> Optional[List[SamplerOutput]]:
         execute_step_count = 0
         if isinstance(execute_model_req, tuple):
-            assert len(execute_model_req) == 4, (
-                "execute_model_req must be a tuple of length 4, got "
+            assert len(execute_model_req) == 5, (
+                "execute_model_req must be a tuple of length 5, got "
                 f"{len(execute_model_req)}")
             execute_step_count = execute_model_req[-1]
             if execute_step_count > 0 and execute_step_count < 30 and get_world_group().rank_in_group == 0:
                 self.log_prepare_execute_model_req_patch_result(execute_model_req)
             (execute_model_req, execute_model_req_patch,
-             use_cached_base_req, execute_step_count) = execute_model_req
+             use_cached_base_req, original_prompt_sizes, execute_step_count) = execute_model_req
 
             if use_cached_base_req:
                 ve = execute_model_req
