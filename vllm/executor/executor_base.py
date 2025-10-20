@@ -290,7 +290,6 @@ class DistributedExecutorBase(ExecutorBase):
         self.step_count_lock = threading.Lock()
         # Per-sequence number of prefill chunks already sent (1-based steps).
         self._prefill_chunk_steps: Dict[Hashable, int] = {}
-         super().__init__(*args, **kwargs)
         super().__init__(*args, **kwargs)
 
     def execute_model(
