@@ -547,6 +547,38 @@ class DistributedExecutorBase(ExecutorBase):
                 seq_data._num_computed_tokens = 0
                 seq_data._stage = seq_data._stage.value
 
+    def _get_chunked_prefill_limits(
+        self, execute_model_req: Any
+    ) -> Dict[Hashable, int]:
+        """
+        Return per-sequence allowed prompt length window for chunked prefill.
+
+        For each sequence:
+        - If global chunked prefill disabled: {} (callers treat as no limits).
+        - If sequence is in decode phase (_num_computed_tokens > 0): 0.
+        - If in prompt/prefill phase: step * token_chunk_size, where step is
+          read from self._prefill_chunk_steps (default 1). This function DOES
+          NOT increment the step counter; callers handle advancement.
+        """
+        if execute_model_req is None:
+            return {}
+        cfg = getattr(self, "scheduler_config", None)
+        if cfg is None or not getattr(cfg, "chunked_prefill_enabled", False):
+            return {}
+
+        limits: Dict[Hashable, int] = {}
+        for seq_group in execute_model_req.seq_group_metadata_list:
+            is_prompt = seq_group.is_prompt
+            chunk_size = getattr(seq_group, "token_chunk_size", 0) or 0
+            for seq_key, seq_data in seq_group.seq_data.items():
+                if is_prompt and chunk_size > 0:
+                    step = self._prefill_chunk_steps.get(seq_key, 0)
+                    assert step > 0, "Prefill chunk step should be greater than zero."
+                    limits[seq_key] = step * chunk_size
+                else:
+                    limits[seq_key] = 0
+        return limits
+
     def prepare_execute_model_req_patch(
         self,
         execute_model_req: Optional[Any],
