@@ -456,10 +456,11 @@ class DistributedExecutorBase(ExecutorBase):
                         for attr in tracked_attrs
                     }
                     for attr in tracked_attrs:
-                        curr_val = getattr(patch_by_key[seq_key], attr)
+                        curr_val = patch_by_key[seq_key][attr]
                         if isinstance(curr_val, (list, array.array, tuple)):
-                            if chunk_size > 0 and len(curr_val > chunk_size):
-                                patch_by_key[seq_key] = curr_val[:chunk_size]
+                            if len(curr_val) > chunk_size and chunk_size > 0:
+                                # Truncate only this attribute's value
+                                patch_by_key[seq_key][attr] = curr_val[:chunk_size]
                     patch_by_key[seq_key]["sampling_params"] = sampling_params
 
         return patch_by_key
