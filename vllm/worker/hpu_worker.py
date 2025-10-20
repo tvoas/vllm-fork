@@ -454,7 +454,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         3: execute_step_count (int)
         """
         try:
-            base_obj, patch, reused, step_count = prepare_result
+            base_obj, patch, reused, orig_count, step_count = prepare_result
         except Exception:
             try:
                 with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
@@ -498,6 +498,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     add(f"{attr}.length", len(norm), 3)
                 else:
                     add(attr, norm, 3)
+        add("orig_count", orig_count, 1)
 
         try:
             with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
