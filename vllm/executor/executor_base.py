@@ -574,7 +574,7 @@ class DistributedExecutorBase(ExecutorBase):
                 if is_prompt and chunk_size > 0:
                     step = self._prefill_chunk_steps.get(seq_key, 0)
                     assert step > 0, "Prefill chunk step should be greater than zero."
-                    limits[seq_key] = step * chunk_size
+                    limits[seq_key] = step * chunk_size + 1
                 else:
                     limits[seq_key] = 0
         return limits
