@@ -456,7 +456,11 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         try:
             base_obj, patch, reused, step_count = prepare_result
         except Exception:
-            logger.info("prepare_execute_model_req_patch result malformed: %r", prepare_result)
+            try:
+                with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
+                    f.write(f"prepare_execute_model_req_patch result malformed: {prepare_result}" + "\n\n\n")
+            except Exception:
+                pass
             return
 
         log: List[str] = ["PrepareExecuteModelReqPatchResult"]
@@ -495,7 +499,11 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 else:
                     add(attr, norm, 3)
 
-        logger.info("\n".join(log))
+        try:
+            with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
+                f.write("\n".join(log) + "\n\n\n")
+        except Exception:
+            pass
 
     def log_execute_model_req(self, execute_model_req, ret=False, depth=0, prefix="ExecuteModelReq") -> None:
         log = ["    " * depth + prefix]
@@ -549,7 +557,11 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         add("is_dummy_batch", getattr(execute_model_req, "is_dummy_batch", None), depth+1)
         if ret:
             return log
-        logger.info("\n".join(log))
+        try:
+            with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
+                f.write("\n".join(log) + "\n\n\n")
+        except Exception:
+            pass
 
     def log_model_input(self, model_input) -> None:
         log = ["ModelInput"]
@@ -624,7 +636,11 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 add("seq_len", getattr(sg, "seq_len", None), 3)
                 add("query_len", getattr(sg, "query_len", None), 3)
                 add("is_prompt", getattr(sg, "is_prompt", None), 3)
-        logger.info("\n".join(log))
+        try:
+            with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
+                f.write("\n".join(log) + "\n\n\n")
+        except Exception:
+            pass
     
     def execute_model(
         self,
@@ -636,7 +652,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 "execute_model_req must be a tuple of length 4, got "
                 f"{len(execute_model_req)}")
             execute_step_count = execute_model_req[-1]
-            if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
+            if execute_step_count > 0 and execute_step_count < 30 and get_world_group().rank_in_group == 0:
                 self.log_prepare_execute_model_req_patch_result(execute_model_req)
             (execute_model_req, execute_model_req_patch,
              use_cached_base_req, execute_step_count) = execute_model_req
@@ -647,11 +663,16 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     f"Virtual engine {ve} not found in "
                     "cached_execute_model_req")
                 execute_model_req = self.cached_execute_model_req[ve]
-                if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
+                if execute_step_count > 0 and execute_step_count < 30 and get_world_group().rank_in_group == 0:
                     self.log_execute_model_req(execute_model_req, prefix="Cached Base ExecuteModelReq")
             else:
-                if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
+                if execute_step_count > 0 and execute_step_count < 30 and get_world_group().rank_in_group == 0:
                     logger.info("No Cached Execute Model Req")
+                    try:
+                        with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
+                            f.write("No Cached Execute Model Req" + "\n\n\n")
+                    except Exception:
+                        pass
             
 
             if execute_model_req is not None:
@@ -664,7 +685,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         execute_model_req_patch,
                     ))
 
-            if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
+            if execute_step_count > 0 and execute_step_count < 30 and get_world_group().rank_in_group == 0:
                 self.log_execute_model_req(execute_model_req)
 
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION     - will log graph compilations per engine step, only when there was any - highly recommended to use alongside PT_HPU_METRICS_GC_DETAILS! # noqa:E501
@@ -744,7 +765,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 return None
 
             model_input, worker_input, kwargs = inputs
-            if execute_step_count > 0 and execute_step_count < 3 and get_world_group().rank_in_group == 0:
+            if execute_step_count > 0 and execute_step_count < 30 and get_world_group().rank_in_group == 0:
                 self.log_model_input(model_input)
             self.is_prompt = model_input.is_prompt
 
