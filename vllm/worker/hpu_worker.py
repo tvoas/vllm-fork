@@ -377,19 +377,30 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         if patch_val is not None:
                             cur.extend(_as_array_l(patch_val))
                         cached_data[attr_key] = cur
-                        setattr(seq_data, attr_key,
-                                array.array("l", cur))  # avoid aliasing
+                        if try_truncate:
+                            setattr(seq_data, attr_key,
+                                    array.array("l", cur[:original_prompt_sizes[key][-1]]))  # avoid aliasing
+                        else:
+                            setattr(seq_data, attr_key,
+                                    array.array("l", cur))  # avoid aliasing
                     elif isinstance(cur, list):
                         if patch_val:
                             cur.extend(patch_val)
                         cached_data[attr_key] = cur
-                        setattr(seq_data, attr_key,
-                                list(cur))  # avoid aliasing
+                        if try_truncate:
+                            setattr(seq_data, attr_key,
+                                    list(cur[:original_prompt_sizes[key][-1]]))  # avoid aliasing
+                        else:
+                            setattr(seq_data, attr_key,
+                                    list(cur))  # avoid aliasing
                     elif isinstance(cur, tuple):
                         if patch_val:
                             cur = cur + tuple(patch_val)
                         cached_data[attr_key] = cur
-                        setattr(seq_data, attr_key, cur)
+                        if try_truncate:
+                            setattr(seq_data, attr_key, cur[:original_prompt_sizes[key][-1]])
+                        else:
+                            setattr(seq_data, attr_key, cur)
                     else:
                         # Scalars
                         if attr_key in patch_data:
