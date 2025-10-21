@@ -238,14 +238,14 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                 for _ in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
             ]
 
+        original_execute_model_req = execute_model_req
         if current_platform.is_hpu():
-            original_execute_model_req = execute_model_req
             execute_model_req = self.prepare_execute_model_req_patch(
                 execute_model_req,
                 execute_step_count,
             )
 
-        logger.info(f"[EX] Launching for VE {execute_model_req.virtual_engine}")
+        logger.info(f"[EX] Launching for VE {original_execute_model_req.virtual_engine}")
 
         tasks = [
             asyncio.create_task(
@@ -267,7 +267,7 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
         #    )
 
         # Only the last PP stage has the final results.
-        logger.info(f"[EX] Closing for VE {execute_model_req.virtual_engine}")
+        logger.info(f"[EX] Closing for VE {original_execute_model_req.virtual_engine}")
         return results[-1]
 
     async def _start_worker_execution_loop(self):
