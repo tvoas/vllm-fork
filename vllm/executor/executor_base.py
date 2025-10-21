@@ -459,7 +459,7 @@ class DistributedExecutorBase(ExecutorBase):
                     continue
                 remainder = self._chunk_remainders[seq_key]
                 for attr in chunkable_attrs:
-                    cur = seq_data.get(attr)
+                    cur = getattr(seq_data, attr)
                     patch_val = remainder.get(attr, None)
 
                     if isinstance(cur, array.array):
