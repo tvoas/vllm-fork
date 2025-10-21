@@ -716,7 +716,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             elif model_input.is_prompt:
                 #logger.info(f"[{get_world_group().rank_in_group}] Full execute_model wait for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
                 # Only apply patch directly when no pending background steps.
-                q = self._bg_step_queues.get(model_input.virtual_engine)
+                q = self._bg_step_queues.get(-1)
                 if q and not q.empty():
                     # Wait for previously enqueued background prefill steps to finish.
                     q.join()
