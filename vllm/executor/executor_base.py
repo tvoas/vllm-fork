@@ -642,10 +642,13 @@ class DistributedExecutorBase(ExecutorBase):
             is_prompt = seq_group.is_prompt
             chunk_size = getattr(seq_group, "token_chunk_size", 0) or 0
             for seq_key, seq_data in seq_group.seq_data.items():
+                computed = seq_data.get_num_computed_tokens
                 if is_prompt and chunk_size > 0:
                     step = self._prefill_chunk_steps.get(seq_key, 0)
                     assert step > 0, "Prefill chunk step should be greater than zero."
-                    limits[seq_key] = (0 if step == 1 else (step - 1) * chunk_size + 1, step * chunk_size + 1)
+                    next_target = computed + chunk_size + 1
+                    max_target = len(seq_data.prompt_token_ids)
+                    limits[seq_key] = (0 if step == 1 else computed + 1, min(next_target, max_target))
                 else:
                     limits[seq_key] = (0, 0)
         return limits
