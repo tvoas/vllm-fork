@@ -153,33 +153,29 @@ class HPUWorker(LocalOrDistributedWorkerBase):
     def _ensure_bg_thread(self, ve: int):
         if ve in self._bg_step_threads:
             return
-        q = self._bg_step_queues.setdefault(ve, queue.Queue())
+        bgq = self._bg_step_queues.setdefault(ve, queue.Queue())
         lock = self._ve_patch_lock.setdefault(ve, threading.Lock())
 
         def _worker():
             while not self._shutdown:
                 try:
-                    step = q.get(timeout=0.1)
+                    step = bgq.get(timeout=0.1)
                 except queue.Empty:
                     continue
                 if step is None:
                     break
-                execute_model_req, patch, original_prompt_sizes = step
+                model_input, num_steps, kwargs = step
                 with lock:
-                    cached_seq_data = self.all_cached_seq_data.get(ve, {})
-                    self.all_cached_seq_data[ve] = self._apply_patch_to_execute_model_req(
-                        execute_model_req, cached_seq_data, patch, original_prompt_sizes)
-                    # Run model forward (ignore output except for cache effects).
-                    self._execute_model(execute_model_req, execute_model_req.num_steps)
-                q.task_done()
+                    self._abbr_execute_model(model_input, num_steps, kwargs)
+                bgq.task_done()
 
         t = threading.Thread(target=_worker, name=f"bg-ve-{ve}", daemon=True)
         t.start()
         self._bg_step_threads[ve] = t
 
-    def _enqueue_background_prefill(self, ve: int, execute_model_req, patch, original_prompt_sizes):
-        self._ensure_bg_thread(ve)
-        self._bg_step_queues[ve].put((execute_model_req, patch, original_prompt_sizes))
+    def _enqueue_background_prefill(self, model_input, num_steps, kwargs):
+        self._ensure_bg_thread(model_input.virtual_engine)
+        self._bg_step_queues[model_input.virtual_engine].put((model_input, num_steps, kwargs))
 
     def _early_return_allowed(self, execute_model_req) -> bool:
         if execute_model_req is None:
@@ -580,22 +576,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
             if execute_model_req is not None:
                 ve = execute_model_req.virtual_engine
-                # Early return path.
-                if self._early_return_allowed(execute_model_req):
-                    # Queue background execution; DO NOT apply patch inline.
-                    self._enqueue_background_prefill(
-                        ve, execute_model_req, execute_model_req_patch, original_prompt_sizes)
-                    # Return dummy sampler outputs immediately.
-                    dummy_count = len(execute_model_req.seq_group_metadata_list)
-                    return [
-                        SamplerOutput(
-                            outputs=[CompletionSequenceGroupOutput(samples=[], prompt_logprobs=None)],
-                            sampled_token_probs=None,
-                            sampled_token_ids=None,
-                            spec_decode_worker_metrics=None,
-                        )
-                        for _ in range(dummy_count)
-                    ]
                 # Normal synchronous path.
                 cached_seq_data = self.all_cached_seq_data.get(ve, {})
                 # Only apply patch directly when no pending background steps.
@@ -710,6 +690,21 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             # If there is no input, we don't need to execute the model.
             if worker_input.num_seq_groups == 0:
                 return []
+            
+            if self._early_return_allowed(execute_model_req):
+                # Queue background execution; DO NOT apply patch inline.
+                self._enqueue_background_prefill(model_input, num_steps, kwargs)
+                # Return dummy sampler outputs immediately.
+                dummy_count = len(execute_model_req.seq_group_metadata_list)
+                return [
+                    SamplerOutput(
+                        outputs=[CompletionSequenceGroupOutput(samples=[], prompt_logprobs=None)],
+                        sampled_token_probs=None,
+                        sampled_token_ids=None,
+                        spec_decode_worker_metrics=None,
+                    )
+                    for _ in range(dummy_count)
+                ]
 
             intermediate_tensors = None
             if not get_pp_group().is_first_rank:
@@ -718,7 +713,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
             output = self.model_runner.execute_model(
                 model_input=model_input,
-                kv_caches=self.kv_cache[worker_input.virtual_engine]
+                kv_caches=self.kv_cache[model_input.virtual_engine]
                 if self.kv_cache is not None else None,
                 intermediate_tensors=intermediate_tensors,
                 num_steps=num_steps,
@@ -759,6 +754,47 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 ]
             else:
                 output = [None]
+
+        if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
+            if self.on_demand_profiler_step_counter == self.on_demand_profiler_step_stop:
+                self.do_stop_profile()
+
+        # output is List[SamplerOutput]
+        return output
+    
+    def _abbr_execute_model(
+        self,
+        model_input,
+        num_steps,
+        kwargs,
+    ):
+        with self.lock:
+            intermediate_tensors = None
+            if not get_pp_group().is_first_rank:
+                intermediate_tensors = get_pp_group().recv_tensor_dict(
+                    all_gather_group=get_tp_group(), deferred=True)
+
+            output = self.model_runner.execute_model(
+                model_input=model_input,
+                kv_caches=self.kv_cache[model_input.virtual_engine]
+                if self.kv_cache is not None else None,
+                intermediate_tensors=intermediate_tensors,
+                num_steps=num_steps,
+                **kwargs,
+            )
+
+            if not get_pp_group().is_last_rank:
+                # output is IntermediateTensors
+                assert isinstance(output, IntermediateTensors)
+                get_pp_group().send_tensor_dict(
+                    output.tensors, all_gather_group=get_tp_group())
+
+                if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
+                    #self.do_step_profile()
+                    if self.on_demand_profiler_step_counter == self.on_demand_profiler_step_stop:
+                        self.do_stop_profile()
+
+                return [None]
 
         if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
             if self.on_demand_profiler_step_counter == self.on_demand_profiler_step_stop:
