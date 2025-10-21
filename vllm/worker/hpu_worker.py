@@ -418,14 +418,14 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     # Padding step (after setting seq_data, do NOT alter cached_data)
                     if (
                         attr_key in chunkable_attrs
-                        and seq_key in original_prompt_sizes
+                        and key in original_prompt_sizes
                     ):
-                        target_len = original_prompt_sizes[seq_key][0]
+                        target_len = original_prompt_sizes[key][0]
                         val_now = getattr(seq_data, attr_key)
                         cur_len = len(val_now)
                         if cur_len < target_len:
                             # Record original length
-                            self._unpadded_lengths.setdefault(seq_key, {})[attr_key] = cur_len
+                            self._unpadded_lengths.setdefault(key, {})[attr_key] = cur_len
                             pad_len = target_len - cur_len
                             if isinstance(val_now, array.array):
                                 padded = array.array(val_now.typecode, val_now)
