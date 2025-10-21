@@ -459,10 +459,18 @@ class DistributedExecutorBase(ExecutorBase):
                                 patch[attr] = curr_val
                     patch_by_key[seq_key] = patch
                 else:
-                    patch_by_key[seq_key] = {
-                        attr: getattr(seq_data, attr)
-                        for attr in tracked_attrs
-                    }
+                    copied_attrs: Dict[str, Any] = {}
+                    for attr in tracked_attrs:
+                        orig_val = getattr(seq_data, attr)
+                        if isinstance(orig_val, array.array):
+                            copied_attrs[attr] = array.array(orig_val.typecode, orig_val)
+                        elif isinstance(orig_val, list):
+                            copied_attrs[attr] = list(orig_val)
+                        elif isinstance(orig_val, tuple):
+                            copied_attrs[attr] = tuple(orig_val)
+                        else:
+                            copied_attrs[attr] = orig_val
+                    patch_by_key[seq_key] = copied_attrs
                     for attr in tracked_attrs:
                         if chunk_size[1] > 0 and attr in chunkable_attrs and len(patch_by_key[seq_key][attr]) > chunk_size[1]:
                             patch_by_key[seq_key][attr] = patch_by_key[seq_key][attr][:chunk_size[1]]
