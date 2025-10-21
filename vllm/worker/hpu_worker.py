@@ -352,7 +352,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
                 # Get patch data
                 patch_data = execute_model_req_patch.get(key, {})
-                def truncater(attr, value, size)
+                def truncater(attr, value, size):
                     chunkable_attrs = [
                         "_cached_all_token_ids",
                         "_prompt_token_ids",
