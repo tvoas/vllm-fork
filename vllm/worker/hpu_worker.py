@@ -154,7 +154,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         if ve in self._bg_step_threads:
             return
         bgq = self._bg_step_queues.setdefault(ve, queue.Queue())
-        lock = self._ve_patch_lock.setdefault(ve, threading.Lock())
 
         def _worker():
             while not self._shutdown:
@@ -165,7 +164,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 if step is None:
                     break
                 model_input, num_steps, kwargs = step
-                with lock:
+                with self.lock:
                     self._abbr_execute_model(model_input, num_steps, kwargs)
                 bgq.task_done()
 
@@ -768,38 +767,44 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         num_steps,
         kwargs,
     ):
-        with self.lock:
-            intermediate_tensors = None
-            if not get_pp_group().is_first_rank:
-                intermediate_tensors = get_pp_group().recv_tensor_dict(
-                    all_gather_group=get_tp_group(), deferred=True)
+        logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model called for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
+        intermediate_tensors = None
+        if not get_pp_group().is_first_rank:
+            intermediate_tensors = get_pp_group().recv_tensor_dict(
+                all_gather_group=get_tp_group(), deferred=True)
+        logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model recv for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
 
-            output = self.model_runner.execute_model(
-                model_input=model_input,
-                kv_caches=self.kv_cache[model_input.virtual_engine]
-                if self.kv_cache is not None else None,
-                intermediate_tensors=intermediate_tensors,
-                num_steps=num_steps,
-                **kwargs,
-            )
+        output = self.model_runner.execute_model(
+            model_input=model_input,
+            kv_caches=self.kv_cache[model_input.virtual_engine]
+            if self.kv_cache is not None else None,
+            intermediate_tensors=intermediate_tensors,
+            num_steps=num_steps,
+            **kwargs,
+        )
 
-            if not get_pp_group().is_last_rank:
-                # output is IntermediateTensors
-                assert isinstance(output, IntermediateTensors)
-                get_pp_group().send_tensor_dict(
-                    output.tensors, all_gather_group=get_tp_group())
+        logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model forward for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
 
-                if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
-                    #self.do_step_profile()
-                    if self.on_demand_profiler_step_counter == self.on_demand_profiler_step_stop:
-                        self.do_stop_profile()
+        if not get_pp_group().is_last_rank:
+            # output is IntermediateTensors
+            assert isinstance(output, IntermediateTensors)
+            get_pp_group().send_tensor_dict(
+                output.tensors, all_gather_group=get_tp_group())
+            logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model send for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
 
-                return [None]
+            if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
+                #self.do_step_profile()
+                if self.on_demand_profiler_step_counter == self.on_demand_profiler_step_stop:
+                    self.do_stop_profile()
+
+            logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model done 1 for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
+
+            return [None]
 
         if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
             if self.on_demand_profiler_step_counter == self.on_demand_profiler_step_stop:
                 self.do_stop_profile()
-
+        logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model done 2 for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
         # output is List[SamplerOutput]
         return output
 
