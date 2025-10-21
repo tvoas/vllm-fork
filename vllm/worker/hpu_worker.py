@@ -417,28 +417,28 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                             cached_data[attr_key] = patch_val
                         setattr(seq_data, attr_key, cached_data.get(attr_key))
 
-                    # Padding step (after setting seq_data, do NOT alter cached_data)
-                    if (
-                        attr_key in chunkable_attrs
-                        and key in original_prompt_sizes
-                    ):
-                        target_len = original_prompt_sizes[key][0]
-                        val_now = getattr(seq_data, attr_key)
-                        cur_len = len(val_now)
-                        if cur_len < target_len:
-                            # Record original length
-                            self._unpadded_lengths.setdefault(key, {})[attr_key] = cur_len
-                            pad_len = target_len - cur_len
-                            if isinstance(val_now, array.array):
-                                padded = array.array(val_now.typecode, val_now)
-                                padded.extend([0] * pad_len)
-                                setattr(seq_data, attr_key, padded)
-                            elif isinstance(val_now, list):
-                                padded = list(val_now)
-                                padded.extend([0] * pad_len)
-                                setattr(seq_data, attr_key, padded)
-                            elif isinstance(val_now, tuple):
-                                setattr(seq_data, attr_key, val_now + (0,) * pad_len)
+                    ## Padding step (after setting seq_data, do NOT alter cached_data)
+                    #if (
+                    #    attr_key in chunkable_attrs
+                    #    and key in original_prompt_sizes
+                    #):
+                    #    target_len = original_prompt_sizes[key][0]
+                    #    val_now = getattr(seq_data, attr_key)
+                    #    cur_len = len(val_now)
+                    #    if cur_len < target_len:
+                    #        # Record original length
+                    #        self._unpadded_lengths.setdefault(key, {})[attr_key] = cur_len
+                    #        pad_len = target_len - cur_len
+                    #        if isinstance(val_now, array.array):
+                    #            padded = array.array(val_now.typecode, val_now)
+                    #            padded.extend([0] * pad_len)
+                    #            setattr(seq_data, attr_key, padded)
+                    #        elif isinstance(val_now, list):
+                    #            padded = list(val_now)
+                    #            padded.extend([0] * pad_len)
+                    #            setattr(seq_data, attr_key, padded)
+                    #        elif isinstance(val_now, tuple):
+                    #            setattr(seq_data, attr_key, val_now + (0,) * pad_len)
 
                 # sampling_params lives on seq_group; cache it for continuity
                 sp = patch_data.get('sampling_params')
@@ -590,7 +590,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         else:
             output = self._execute_model(execute_model_req, execute_step_count)
         if execute_model_req is not None:
-            self._remove_chunk_padding(execute_model_req)
+            #self._remove_chunk_padding(execute_model_req)
             self.cached_execute_model_req[
                 execute_model_req.virtual_engine] = execute_model_req
         return output
