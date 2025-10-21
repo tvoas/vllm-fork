@@ -429,16 +429,9 @@ class DistributedExecutorBase(ExecutorBase):
             A dict keyed by sequence key with only the incremental changes.
         """
         patch_by_key: Dict[Hashable, Dict[str, Any]] = {}
-        chunk_sizes = self._get_chunked_prefill_limits(execute_model_req)
-        chunkable_attrs = [
-            "_cached_all_token_ids",
-            "_prompt_token_ids",
-            "_prompt_token_ids_tuple",
-        ]
         for seq_group in execute_model_req.seq_group_metadata_list:
             sampling_params = seq_group.sampling_params
             for seq_key, seq_data in seq_group.seq_data.items():
-                chunk_size = chunk_sizes[seq_key]
                 if seq_key in prev_cache:
                     prev_entry = prev_cache[seq_key]
                     patch: Dict[str, Any] = {}
@@ -446,34 +439,17 @@ class DistributedExecutorBase(ExecutorBase):
                         curr_val = getattr(seq_data, attr)
                         prev_val = prev_entry[attr]
                         if isinstance(curr_val, (list, array.array, tuple)):
-                            prev_len = len(prev_val)
-                            if attr in chunkable_attrs and chunk_size[0] > 0:
-                                prev_len = min(prev_len, chunk_size[0])
-                            if len(curr_val) > prev_len:
-                                if chunk_size[1] > 0 and attr in chunkable_attrs and len(curr_val) > chunk_size[1]:
-                                    patch[attr] = curr_val[prev_len:chunk_size[1]]
-                                else:
-                                    patch[attr] = curr_val[prev_len:]
+                            if len(curr_val) > len(prev_val):
+                                patch[attr] = curr_val[len(prev_val):]
                         else:
                             if curr_val != prev_val:
                                 patch[attr] = curr_val
                     patch_by_key[seq_key] = patch
                 else:
-                    copied_attrs: Dict[str, Any] = {}
-                    for attr in tracked_attrs:
-                        orig_val = getattr(seq_data, attr)
-                        if isinstance(orig_val, array.array):
-                            copied_attrs[attr] = array.array(orig_val.typecode, orig_val)
-                        elif isinstance(orig_val, list):
-                            copied_attrs[attr] = list(orig_val)
-                        elif isinstance(orig_val, tuple):
-                            copied_attrs[attr] = tuple(orig_val)
-                        else:
-                            copied_attrs[attr] = orig_val
-                    patch_by_key[seq_key] = copied_attrs
-                    for attr in tracked_attrs:
-                        if chunk_size[1] > 0 and attr in chunkable_attrs and len(patch_by_key[seq_key][attr]) > chunk_size[1]:
-                            patch_by_key[seq_key][attr] = patch_by_key[seq_key][attr][:chunk_size[1]]
+                    patch_by_key[seq_key] = {
+                        attr: getattr(seq_data, attr)
+                        for attr in tracked_attrs
+                    }
                     patch_by_key[seq_key]["sampling_params"] = sampling_params
 
         return patch_by_key
@@ -502,12 +478,6 @@ class DistributedExecutorBase(ExecutorBase):
         """
         if cache is None:
             cache = {}
-
-        chunkable_attrs = [
-            "_cached_all_token_ids",
-            "_prompt_token_ids",
-            "_prompt_token_ids_tuple",
-        ]
 
         for seq_group in execute_model_req.seq_group_metadata_list:
             for seq_key, seq_data in seq_group.seq_data.items():
@@ -636,6 +606,12 @@ class DistributedExecutorBase(ExecutorBase):
                     step = self._prefill_chunk_steps.get(seq_key, 0)
                     self._prefill_chunk_steps[seq_key] = step + 1
                     original_prompt_sizes[seq_key] = len(seq_data._prompt_token_ids)
+
+            chunk_sizes = self._get_chunked_prefill_limits(execute_model_req)
+            for seq_group in execute_model_req.seq_group_metadata_list:
+                for seq_key, seq_data in seq_group.seq_data.items():
+                    chunk_size = chunk_sizes.get(seq_key, (0, 0))
+                    original_prompt_sizes[seq_key] = (original_prompt_sizes.get(seq_key, 0), chunk_size[0], chunk_size[1])
 
             execute_model_req_patch = self._compute_execute_model_req_patch(
                 cached_execute_model_req, execute_model_req, tracked_attrs)
