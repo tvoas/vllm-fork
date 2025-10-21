@@ -690,11 +690,12 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             if worker_input.num_seq_groups == 0:
                 return []
             
-            if self._early_return_allowed(execute_model_req):
+            if model_input.is_prompt and not self._last_prefill_or_decode(execute_model_req):
                 # Queue background execution; DO NOT apply patch inline.
                 self._enqueue_background_prefill(model_input, num_steps, kwargs)
                 # Return dummy sampler outputs immediately.
                 dummy_count = len(execute_model_req.seq_group_metadata_list)
+                logger.info(f"[{get_world_group().rank_in_group}] Full execute_model return for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
                 return [
                     SamplerOutput(
                         outputs=[CompletionSequenceGroupOutput(samples=[], prompt_logprobs=None)],
@@ -703,7 +704,16 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         spec_decode_worker_metrics=None,
                     )
                     for _ in range(dummy_count)
-                ]
+                ]            
+            elif model_input.is_prompt:
+                logger.info(f"[{get_world_group().rank_in_group}] Full execute_model wait for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
+                # Only apply patch directly when no pending background steps.
+                q = self._bg_step_queues.get(model_input.virtual_engine)
+                if q and not q.empty():
+                    # Wait for previously enqueued background prefill steps to finish.
+                    q.join()
+
+            logger.info(f"[{get_world_group().rank_in_group}] Full execute_model run for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
 
             intermediate_tensors = None
             if not get_pp_group().is_first_rank:
