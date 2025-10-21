@@ -482,6 +482,8 @@ class DistributedExecutorBase(ExecutorBase):
 
                 del self._chunk_remainders[seq_key]
 
+        self.log_execute_model_req(execute_model_req, prefix="Restored Executor Model Req")
+
     def _compute_execute_model_req_patch(
         self,
         prev_cache: Dict[Hashable, Dict[str, Any]],
