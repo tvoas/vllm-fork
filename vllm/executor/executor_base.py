@@ -659,6 +659,7 @@ class DistributedExecutorBase(ExecutorBase):
         return limits
     
     def log_execute_model_req(self, execute_model_req, ret=False, depth=0, prefix="ExecuteModelReq") -> None:
+        return
         log = ["    " * depth + prefix]
         def add(label, value, depth=0):
             header = '    ' * depth
