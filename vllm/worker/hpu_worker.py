@@ -302,6 +302,40 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             self.model_runner.mem_margin = hpu_memory_margin
             self._warm_up_model()
 
+    def _restore_full_prompt_tokens(self, execute_model_req: ExecuteModelRequest) -> None:
+        """
+        Re-expand any truncated prompt/cached token fields on the in-flight
+        ExecuteModelRequest using the full data stored in self.all_cached_seq_data.
+        """
+        if execute_model_req is None:
+            return
+        ve = getattr(execute_model_req, "virtual_engine", None)
+        full_cache = self.all_cached_seq_data.get(ve)
+        if not full_cache:
+            return
+        for sg in execute_model_req.seq_group_metadata_list:
+            for seq_id, seq_data in sg.seq_data.items():
+                cached = full_cache.get(seq_id)
+                if not cached:
+                    continue
+                # Restore full prompt/cached arrays (avoid aliasing).
+                for attr in [
+                    "_prompt_token_ids",
+                    "_prompt_token_ids_tuple",
+                    "_cached_all_token_ids",
+                ]:
+                    if attr in cached:
+                        val = cached[attr]
+                        if isinstance(val, array.array):
+                            restored = array.array(val.typecode, val)
+                        elif isinstance(val, list):
+                            restored = list(val)
+                        elif isinstance(val, tuple):
+                            restored = tuple(val)
+                        else:
+                            restored = val
+                        setattr(seq_data, attr, restored)
+
     def _apply_patch_to_execute_model_req(
         self,
         new_execute_model_req: ExecuteModelRequest,
@@ -749,7 +783,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                             f.write("No Cached Execute Model Req" + "\n\n\n")
                     except Exception:
                         pass
-            
 
             if execute_model_req is not None:
                 ve = execute_model_req.virtual_engine
@@ -829,6 +862,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         else:
             output = self._execute_model(execute_model_req, execute_step_count)
         if execute_model_req is not None:
+            self._restore_full_prompt_tokens(execute_model_req)
             self.cached_execute_model_req[
                 execute_model_req.virtual_engine] = execute_model_req
         return output
