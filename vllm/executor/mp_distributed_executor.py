@@ -245,7 +245,7 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                 execute_step_count,
             )
 
-        logger.info(f"[EX] Launching for VE {None if original_execute_model_req is None else original_execute_model_req.virtual_engine}")
+        #logger.info(f"[EX] Launching for VE {None if original_execute_model_req is None else original_execute_model_req.virtual_engine}")
 
         tasks = [
             asyncio.create_task(
@@ -267,7 +267,7 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
         #    )
 
         # Only the last PP stage has the final results.
-        logger.info(f"[EX] Closing for VE {None if original_execute_model_req is None else original_execute_model_req.virtual_engine}")
+        #logger.info(f"[EX] Closing for VE {None if original_execute_model_req is None else original_execute_model_req.virtual_engine}")
         return results[-1]
 
     async def _start_worker_execution_loop(self):

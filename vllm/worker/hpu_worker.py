@@ -697,7 +697,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 self._enqueue_background_prefill(model_input, num_steps, kwargs)
                 # Return dummy sampler outputs immediately.
                 dummy_count = len(execute_model_req.seq_group_metadata_list)
-                logger.info(f"[{get_world_group().rank_in_group}] Full execute_model return for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
+                #logger.info(f"[{get_world_group().rank_in_group}] Full execute_model return for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
                 return [
                     SamplerOutput(
                         outputs=[CompletionSequenceGroupOutput(samples=[], prompt_logprobs=None)],
@@ -708,14 +708,14 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     for _ in range(dummy_count)
                 ]            
             elif model_input.is_prompt:
-                logger.info(f"[{get_world_group().rank_in_group}] Full execute_model wait for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
+                #logger.info(f"[{get_world_group().rank_in_group}] Full execute_model wait for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
                 # Only apply patch directly when no pending background steps.
                 q = self._bg_step_queues.get(model_input.virtual_engine)
                 if q and not q.empty():
                     # Wait for previously enqueued background prefill steps to finish.
                     q.join()
 
-            logger.info(f"[{get_world_group().rank_in_group}] Full execute_model run for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
+            #logger.info(f"[{get_world_group().rank_in_group}] Full execute_model run for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
 
             intermediate_tensors = None
             if not get_pp_group().is_first_rank:
@@ -779,12 +779,12 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         num_steps,
         kwargs,
     ):
-        logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model called for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
+        #logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model called for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
         intermediate_tensors = None
         if not get_pp_group().is_first_rank:
             intermediate_tensors = get_pp_group().recv_tensor_dict(
                 all_gather_group=get_tp_group(), deferred=True)
-        logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model recv for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
+        #logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model recv for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
 
         output = self.model_runner.execute_model(
             model_input=model_input,
@@ -795,28 +795,28 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             **kwargs,
         )
 
-        logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model forward for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
+        #logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model forward for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
 
         if not get_pp_group().is_last_rank:
             # output is IntermediateTensors
             assert isinstance(output, IntermediateTensors)
             get_pp_group().send_tensor_dict(
                 output.tensors, all_gather_group=get_tp_group())
-            logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model send for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
+            #logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model send for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
 
             if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
                 #self.do_step_profile()
                 if self.on_demand_profiler_step_counter == self.on_demand_profiler_step_stop:
                     self.do_stop_profile()
 
-            logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model done 1 for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
+            #logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model done 1 for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
 
             return [None]
 
         if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
             if self.on_demand_profiler_step_counter == self.on_demand_profiler_step_stop:
                 self.do_stop_profile()
-        logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model done 2 for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
+        #logger.info(f"[{get_world_group().rank_in_group}] Abbreviated execute_model done 2 for VE {model_input.virtual_engine} with sequences={model_input.seq_lens} and query={model_input.query_lens}")
         # output is List[SamplerOutput]
         return output
 
