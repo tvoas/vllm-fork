@@ -352,55 +352,49 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
                 # Get patch data
                 patch_data = execute_model_req_patch.get(key, {})
-
-                for attr_key in initial_data:
-                    cur = cached_data.get(attr_key)
-                    patch_val = patch_data.get(attr_key, None)
+                def truncater(attr, value, size)
                     chunkable_attrs = [
                         "_cached_all_token_ids",
                         "_prompt_token_ids",
                         "_prompt_token_ids_tuple",
                     ]
                     try_truncate = True
-                    if try_truncate and attr_key not in chunkable_attrs:
+                    if try_truncate and attr not in chunkable_attrs:
                         try_truncate = False
-                    if try_truncate and not isinstance(cur, (array.array, list, tuple)):
+                    if try_truncate and value is None:
+                        try_truncate = False
+                    if try_truncate and not isinstance(value, (array.array, list, tuple)):
                         try_truncate = False
                     if try_truncate and original_prompt_sizes[key][-1] == 0:
                         try_truncate = False
-                    if try_truncate and len(patch_val) <= original_prompt_sizes[key][-1]:
+                    if try_truncate and len(value) <= original_prompt_sizes[key][-1]:
                         try_truncate = False
                     if try_truncate:
-                        patch_val = patch_val[:original_prompt_sizes[key][-1]]
+                        value = value[:size]
+                    return value
+
+                for attr_key in initial_data:
+                    cur = cached_data.get(attr_key)
+                    patch_val = patch_data.get(attr_key, None)
+
 
                     if isinstance(cur, array.array):
                         if patch_val is not None:
                             cur.extend(_as_array_l(patch_val))
                         cached_data[attr_key] = cur
-                        if try_truncate:
-                            setattr(seq_data, attr_key,
-                                    array.array("l", cur[:original_prompt_sizes[key][-1]]))  # avoid aliasing
-                        else:
-                            setattr(seq_data, attr_key,
-                                    array.array("l", cur))  # avoid aliasing
+                        setattr(seq_data, attr_key,
+                            array.array("l", truncater(attr_key, cur, original_prompt_sizes[key][-1])))  # avoid aliasing
                     elif isinstance(cur, list):
                         if patch_val:
                             cur.extend(patch_val)
                         cached_data[attr_key] = cur
-                        if try_truncate:
-                            setattr(seq_data, attr_key,
-                                    list(cur[:original_prompt_sizes[key][-1]]))  # avoid aliasing
-                        else:
-                            setattr(seq_data, attr_key,
-                                    list(cur))  # avoid aliasing
+                        setattr(seq_data, attr_key,
+                            list(truncater(attr_key, cur, original_prompt_sizes[key][-1])))  # avoid aliasing
                     elif isinstance(cur, tuple):
                         if patch_val:
                             cur = cur + tuple(patch_val)
                         cached_data[attr_key] = cur
-                        if try_truncate:
-                            setattr(seq_data, attr_key, cur[:original_prompt_sizes[key][-1]])
-                        else:
-                            setattr(seq_data, attr_key, cur)
+                        setattr(seq_data, attr_key, truncater(attr_key, cur, original_prompt_sizes[key][-1]))
                     else:
                         # Scalars
                         if attr_key in patch_data:
