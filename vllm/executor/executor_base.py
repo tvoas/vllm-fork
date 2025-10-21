@@ -569,6 +569,64 @@ class DistributedExecutorBase(ExecutorBase):
                 else:
                     limits[seq_key] = (0, 0)
         return limits
+    
+    def log_execute_model_req(self, execute_model_req, ret=False, depth=0, prefix="ExecuteModelReq") -> None:
+        log = ["    " * depth + prefix]
+        def add(label, value, depth=0):
+            header = '    ' * depth
+            log.append(f"{header}{label}: {value}")
+        for gi, group in enumerate(getattr(execute_model_req, "seq_group_metadata_list", [])):
+            add(f"SequenceGroupMetadata[{gi}]", "--------------------------------------------------", depth+1)
+            add("request_id", getattr(group, "request_id", None), depth+2)
+            add("is_prompt", getattr(group, "is_prompt", None), depth+2)
+            # seq_data loop
+            for seq_id, seq in getattr(group, "seq_data", {}).items():
+                add("seq_id", seq_id, depth+2)
+                prompt_ids = getattr(seq, "prompt_token_ids", [])
+                output_ids = getattr(seq, "output_token_ids", [])
+                add("prompt_token_ids", prompt_ids, depth+3)
+                add("prompt_token_ids_length", len(prompt_ids), depth+3)
+                add("output_token_ids", output_ids, depth+3)
+                add("output_token_ids_length", len(output_ids), depth+3)
+                add("cumulative_logprob", getattr(seq, "cumulative_logprob", None), depth+3)
+                # get_num_computed_tokens could be attr or method
+                computed = getattr(seq, "get_num_computed_tokens", None)
+                if callable(computed):
+                    try:
+                        computed = computed()
+                    except Exception:
+                        pass
+                add("get_num_computed_tokens", computed, depth+3)
+            # sampling_params.max_tokens
+            sampling_params = getattr(group, "sampling_params", None)
+            max_tokens = getattr(sampling_params, "max_tokens", None) if sampling_params else None
+            add("sampling_params.max_tokens", max_tokens, depth+2)
+            # block_tables loop
+            for seq_id, blocks in getattr(group, "block_tables", {}).items():
+                add(f"block_tables[seq_id={seq_id}].values", blocks, depth+2)
+                try:
+                    length = len(blocks)
+                except Exception:
+                    length = None
+                add(f"block_tables[seq_id={seq_id}].length", length, depth+2)
+            add("do_sample", getattr(group, "do_sample", getattr(sampling_params, "do_sample", None)), depth+2)
+            add("state", getattr(group, "state", None), depth+2)
+            add("token_chunk_size", getattr(group, "token_chunk_size", None), depth+2)
+        # Top-level fields
+        add("virtual_engine", getattr(execute_model_req, "virtual_engine", None), depth+1)
+        add("num_lookahead_slots", getattr(execute_model_req, "num_lookahead_slots", None), depth+1)
+        add("running_queue_size", getattr(execute_model_req, "running_queue_size", None), depth+1)
+        add("previous_hidden_states", getattr(execute_model_req, "previous_hidden_states", None), depth+1)
+        add("num_steps", getattr(execute_model_req, "num_steps", None), depth+1)
+        add("async_callback", getattr(execute_model_req, "async_callback", None), depth+1)
+        add("is_dummy_batch", getattr(execute_model_req, "is_dummy_batch", None), depth+1)
+        if ret:
+            return log
+        try:
+            with open(f"/workspace/world0_inputs.txt", "a") as f:
+                f.write("\n".join(log) + "\n\n\n")
+        except Exception:
+            pass
 
     def prepare_execute_model_req_patch(
         self,
@@ -606,6 +664,7 @@ class DistributedExecutorBase(ExecutorBase):
         execute_model_req_patch: Dict[Hashable, Dict[str, Any]] = {}
         use_cached_base_req = False
         if execute_model_req is not None:
+            self.log_execute_model_req(execute_model_req, prefix="Executor Model Req 1")
             virtual_engine = execute_model_req.virtual_engine
             if virtual_engine in self.cached_execute_model_reqs:
                 prev_execute_model_req_hash, cached_execute_model_req = (
@@ -644,6 +703,7 @@ class DistributedExecutorBase(ExecutorBase):
             )
             if prev_execute_model_req_hash == new_execute_model_req_hash:
                 use_cached_base_req = True
+            self.log_execute_model_req(execute_model_req, prefix="Executor Model Req 2")
         return (
             virtual_engine if use_cached_base_req else execute_model_req,
             execute_model_req_patch,
