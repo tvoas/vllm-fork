@@ -642,7 +642,12 @@ class DistributedExecutorBase(ExecutorBase):
             is_prompt = seq_group.is_prompt
             chunk_size = getattr(seq_group, "token_chunk_size", 0) or 0
             for seq_key, seq_data in seq_group.seq_data.items():
-                computed = seq_data.get_num_computed_tokens
+                computed = getattr(seq_data, "get_num_computed_tokens", None)
+                if callable(computed):
+                    try:
+                        computed = computed()
+                    except Exception:
+                        pass
                 if is_prompt and chunk_size > 0:
                     step = self._prefill_chunk_steps.get(seq_key, 0)
                     assert step > 0, "Prefill chunk step should be greater than zero."
