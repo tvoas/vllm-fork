@@ -323,8 +323,8 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     val = getattr(seq_data, attr, None)
                     if val is None:
                         continue
-                    if isinstance(val, array):
-                        trimmed = array(val.typecode, val[:orig_len])
+                    if isinstance(val, array.array):
+                        trimmed = array.array(val.typecode, val[:orig_len])
                         setattr(seq_data, attr, trimmed)
                     elif isinstance(val, list):
                         # In-place shrink
@@ -395,11 +395,11 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     cur = cached_data.get(attr_key)
                     patch_val = patch_data.get(attr_key, None)
 
-                    if isinstance(cur, array):
+                    if isinstance(cur, array.array):
                         if patch_val is not None:
                             cur.extend(_as_array_l(patch_val))
                         cached_data[attr_key] = cur
-                        setattr(seq_data, attr_key, array("l", cur))  # avoid aliasing
+                        setattr(seq_data, attr_key, array.array("l", cur))  # avoid aliasing
                     elif isinstance(cur, list):
                         if patch_val:
                             cur.extend(patch_val)
@@ -427,8 +427,8 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                             # Record original length
                             self._unpadded_lengths.setdefault(seq_key, {})[attr_key] = cur_len
                             pad_len = target_len - cur_len
-                            if isinstance(val_now, array):
-                                padded = array(val_now.typecode, val_now)
+                            if isinstance(val_now, array.array):
+                                padded = array.array(val_now.typecode, val_now)
                                 padded.extend([0] * pad_len)
                                 setattr(seq_data, attr_key, padded)
                             elif isinstance(val_now, list):
