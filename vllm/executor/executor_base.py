@@ -585,6 +585,7 @@ class DistributedExecutorBase(ExecutorBase):
             "_prompt_token_ids_tuple",
             "_cumulative_logprob",
         ]
+        original_prompt_sizes = {}
         execute_model_req_patch: Dict[Hashable, Dict[str, Any]] = {}
         use_cached_base_req = False
         if execute_model_req is not None:
@@ -595,7 +596,6 @@ class DistributedExecutorBase(ExecutorBase):
             else:
                 prev_execute_model_req_hash, cached_execute_model_req = "", {}
 
-            original_prompt_sizes = {}
             for seq_group in execute_model_req.seq_group_metadata_list:
                 for seq_key, seq_data in seq_group.seq_data.items():
                     # If sequence already decoding, clear any stale counter.
