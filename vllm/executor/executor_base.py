@@ -446,11 +446,14 @@ class DistributedExecutorBase(ExecutorBase):
                         curr_val = getattr(seq_data, attr)
                         prev_val = prev_entry[attr]
                         if isinstance(curr_val, (list, array.array, tuple)):
-                            if len(curr_val) > len(prev_val):
-                                if chunk_size > 0 and attr in chunkable_attrs and len(curr_val) > chunk_size:
-                                    patch[attr] = curr_val[len(prev_val):chunk_size]
+                            prev_len = len(prev_val)
+                            if attr in chunkable_attrs and chunk_size[0] > 0:
+                                prev_len = min(prev_len, chunk_size[0])
+                            if len(curr_val) > prev_len:
+                                if chunk_size[1] > 0 and attr in chunkable_attrs and len(curr_val) > chunk_size[1]:
+                                    patch[attr] = curr_val[prev_len:chunk_size[1]]
                                 else:
-                                    patch[attr] = curr_val[len(prev_val):]
+                                    patch[attr] = curr_val[prev_len:]
                         else:
                             if curr_val != prev_val:
                                 patch[attr] = curr_val
@@ -461,8 +464,8 @@ class DistributedExecutorBase(ExecutorBase):
                         for attr in tracked_attrs
                     }
                     for attr in tracked_attrs:
-                        if chunk_size > 0 and attr in chunkable_attrs and len(patch_by_key[seq_key][attr]) > chunk_size:
-                            patch_by_key[seq_key][attr] = patch_by_key[seq_key][attr][:chunk_size]
+                        if chunk_size[1] > 0 and attr in chunkable_attrs and len(patch_by_key[seq_key][attr]) > chunk_size[1]:
+                            patch_by_key[seq_key][attr] = patch_by_key[seq_key][attr][:chunk_size[1]]
                     patch_by_key[seq_key]["sampling_params"] = sampling_params
 
         return patch_by_key
@@ -498,10 +501,8 @@ class DistributedExecutorBase(ExecutorBase):
             "_prompt_token_ids_tuple",
         ]
 
-        chunk_sizes = self._get_chunked_prefill_limits(execute_model_req)
         for seq_group in execute_model_req.seq_group_metadata_list:
             for seq_key, seq_data in seq_group.seq_data.items():
-                chunk_size = chunk_sizes[seq_key]
                 if seq_key not in cache:
                     cache[seq_key] = {
                         attr: (list(getattr(seq_data, attr)) if isinstance(
@@ -521,11 +522,6 @@ class DistributedExecutorBase(ExecutorBase):
                                 curr_val[len(cached_entry[attr]):])
                         else:
                             cached_entry[attr] = curr_val
-
-                cached_entry = cache[seq_key]
-                for attr in chunkable_attrs:
-                    if chunk_size > 0 and len(cached_entry[attr]) > chunk_size:
-                        cached_entry[attr] = cached_entry[attr][:chunk_size]
 
         return cache
 
@@ -574,9 +570,9 @@ class DistributedExecutorBase(ExecutorBase):
                 if is_prompt and chunk_size > 0:
                     step = self._prefill_chunk_steps.get(seq_key, 0)
                     assert step > 0, "Prefill chunk step should be greater than zero."
-                    limits[seq_key] = step * chunk_size + 1
+                    limits[seq_key] = ((step - 1) * chunk_size + 1, step * chunk_size + 1)
                 else:
-                    limits[seq_key] = 0
+                    limits[seq_key] = (0, 0)
         return limits
 
     def prepare_execute_model_req_patch(
