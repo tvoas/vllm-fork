@@ -239,7 +239,6 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
             ]
 
         if current_platform.is_hpu():
-            original_execute_model_req = execute_model_req
             execute_model_req = self.prepare_execute_model_req_patch(
                 execute_model_req,
                 execute_step_count,
@@ -258,11 +257,6 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                                         self.pp_locks[pp_rank],
                                         "execute_model", execute_model_req)))
         results = await asyncio.gather(*tasks)
-
-        if current_platform.is_hpu():
-            self.restore_chunked_execute_model_req(
-                original_execute_model_req,
-            )
 
         # Only the last PP stage has the final results.
         return results[-1]

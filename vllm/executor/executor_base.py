@@ -288,11 +288,6 @@ class DistributedExecutorBase(ExecutorBase):
         self.execute_step_count = 0
         import threading
         self.step_count_lock = threading.Lock()
-        # Tracks per-seq prefill chunk step (1-based).
-        self._prefill_chunk_steps: Dict[Hashable, int] = {}
-        # Remainders beyond current transmitted truncation:
-        # {virtual_engine: {seq_key: {attr: list/array/tuple remainder}}}
-        self._chunk_remainders: Dict[int, Dict[Hashable, Dict[str, Any]]] = {}
         super().__init__(*args, **kwargs)
 
     def execute_model(
@@ -407,82 +402,6 @@ class DistributedExecutorBase(ExecutorBase):
         `stop_remote_worker_execution_loop`.
         The API is idempotent (guarantee only 1 loop run at any moment)."""
         raise NotImplementedError
-    
-    def _chunk_execute_model_req(
-        self,
-        execute_model_req: Any,
-        original_prompt_sizes: Dict[int, Tuple[int, int, int]],
-        chunkable_attrs: List[str],
-    ):
-        for seq_group in execute_model_req.seq_group_metadata_list:
-            for seq_key, seq_data in seq_group.seq_data.items():
-                self._chunk_remainders[seq_key] = {}
-                chunk_info = original_prompt_sizes[seq_key]
-                cutoff_len = chunk_info[2]
-                if cutoff_len == 0:
-                    continue
-
-                for attr in chunkable_attrs:
-                    val = getattr(seq_data, attr)
-                    total_len = len(val)
-
-                    if cutoff_len >= total_len:
-                        continue  # Nothing to truncate.
-
-                    # Slice off remainder.
-                    remainder = val[cutoff_len:total_len]
-                    truncated = val[:cutoff_len]
-
-                    # Store/append remainder.
-                    self._chunk_remainders[seq_key][attr] = remainder
-
-                    # Truncate seq_data
-                    setattr(seq_data, attr, truncated)
-
-    def restore_chunked_execute_model_req(
-        self,
-        execute_model_req: Any
-    ):
-        if execute_model_req is None:
-            return
-
-        def _as_array_l(val):
-            if isinstance(val, array.array):
-                return val
-            return array.array("l", val)
-
-        chunkable_attrs = [
-            "_cached_all_token_ids",
-            "_prompt_token_ids",
-            "_prompt_token_ids_tuple",
-        ]
-        for seq_group in execute_model_req.seq_group_metadata_list:
-            for seq_key, seq_data in seq_group.seq_data.items():
-                if seq_key not in self._chunk_remainders:
-                    continue
-                remainder = self._chunk_remainders[seq_key]
-                for attr in chunkable_attrs:
-                    cur = getattr(seq_data, attr)
-                    patch_val = remainder.get(attr, None)
-
-                    if isinstance(cur, array.array):
-                        if patch_val is not None:
-                            cur.extend(_as_array_l(patch_val))
-                        setattr(seq_data, attr,
-                            array.array("l", cur))  # avoid aliasing
-                    elif isinstance(cur, list):
-                        if patch_val:
-                            cur.extend(patch_val)
-                        setattr(seq_data, attr,
-                            list(cur))  # avoid aliasing
-                    elif isinstance(cur, tuple):
-                        if patch_val:
-                            cur = cur + tuple(patch_val)
-                        setattr(seq_data, attr, cur)
-
-                del self._chunk_remainders[seq_key]
-
-        self.log_execute_model_req(execute_model_req, prefix="Restored Executor Model Req")
 
     def _compute_execute_model_req_patch(
         self,
@@ -508,11 +427,6 @@ class DistributedExecutorBase(ExecutorBase):
         Returns:
             A dict keyed by sequence key with only the incremental changes.
         """
-        chunkable_attrs = [
-            "_cached_all_token_ids",
-            "_prompt_token_ids",
-            "_prompt_token_ids_tuple",
-        ]
         patch_by_key: Dict[Hashable, Dict[str, Any]] = {}
         for seq_group in execute_model_req.seq_group_metadata_list:
             sampling_params = seq_group.sampling_params
@@ -531,22 +445,10 @@ class DistributedExecutorBase(ExecutorBase):
                                 patch[attr] = curr_val
                     patch_by_key[seq_key] = patch
                 else:
-                    copied = {}
-                    for attr in tracked_attrs:
-                        v = getattr(seq_data, attr)
-                        if isinstance(v, array.array):
-                            copied[attr] = array.array(v.typecode, v)
-                        elif isinstance(v, list):
-                            copied[attr] = list(v)
-                        elif isinstance(v, tuple):
-                            copied[attr] = tuple(v)
-                        elif isinstance(v, dict):
-                            copied[attr] = dict(v)
-                        elif isinstance(v, set):
-                            copied[attr] = set(v)
-                        else:
-                            copied[attr] = v  # or try v.copy() if available
-                    patch_by_key[seq_key] = copied
+                    patch_by_key[seq_key] = {
+                        attr: getattr(seq_data, attr)
+                        for attr in tracked_attrs
+                    }
                     patch_by_key[seq_key]["sampling_params"] = sampling_params
 
         return patch_by_key
@@ -618,107 +520,6 @@ class DistributedExecutorBase(ExecutorBase):
                 seq_data._num_computed_tokens = 0
                 seq_data._stage = seq_data._stage.value
 
-    def _get_chunked_prefill_limits(
-        self, execute_model_req: Any
-    ) -> Dict[Hashable, int]:
-        """
-        Return per-sequence allowed prompt length window for chunked prefill.
-
-        For each sequence:
-        - If global chunked prefill disabled: {} (callers treat as no limits).
-        - If sequence is in decode phase (_num_computed_tokens > 0): 0.
-        - If in prompt/prefill phase: step * token_chunk_size, where step is
-          read from self._prefill_chunk_steps (default 1). This function DOES
-          NOT increment the step counter; callers handle advancement.
-        """
-        if execute_model_req is None:
-            return {}
-        cfg = getattr(self, "scheduler_config", None)
-        if cfg is None or not getattr(cfg, "chunked_prefill_enabled", False):
-            return {}
-
-        limits: Dict[Hashable, int] = {}
-        for seq_group in execute_model_req.seq_group_metadata_list:
-            is_prompt = seq_group.is_prompt
-            chunk_size = getattr(seq_group, "token_chunk_size", 0) or 0
-            for seq_key, seq_data in seq_group.seq_data.items():
-                computed = getattr(seq_data, "get_num_computed_tokens", None)
-                if callable(computed):
-                    try:
-                        computed = computed()
-                    except Exception:
-                        pass
-                if is_prompt and chunk_size > 0:
-                    step = self._prefill_chunk_steps.get(seq_key, 0)
-                    assert step > 0, "Prefill chunk step should be greater than zero."
-                    next_target = computed + chunk_size + 1
-                    max_target = len(seq_data.prompt_token_ids)
-                    limits[seq_key] = (0 if step == 1 else computed + 1, min(next_target, max_target))
-                else:
-                    limits[seq_key] = (0, 0)
-        return limits
-    
-    def log_execute_model_req(self, execute_model_req, ret=False, depth=0, prefix="ExecuteModelReq") -> None:
-        return
-        log = ["    " * depth + prefix]
-        def add(label, value, depth=0):
-            header = '    ' * depth
-            log.append(f"{header}{label}: {value}")
-        for gi, group in enumerate(getattr(execute_model_req, "seq_group_metadata_list", [])):
-            add(f"SequenceGroupMetadata[{gi}]", "--------------------------------------------------", depth+1)
-            add("request_id", getattr(group, "request_id", None), depth+2)
-            add("is_prompt", getattr(group, "is_prompt", None), depth+2)
-            # seq_data loop
-            for seq_id, seq in getattr(group, "seq_data", {}).items():
-                add("seq_id", seq_id, depth+2)
-                prompt_ids = getattr(seq, "prompt_token_ids", [])
-                output_ids = getattr(seq, "output_token_ids", [])
-                add("prompt_token_ids", prompt_ids, depth+3)
-                add("prompt_token_ids_length", len(prompt_ids), depth+3)
-                add("output_token_ids", output_ids, depth+3)
-                add("output_token_ids_length", len(output_ids), depth+3)
-                add("cumulative_logprob", getattr(seq, "cumulative_logprob", None), depth+3)
-                # get_num_computed_tokens could be attr or method
-                computed = getattr(seq, "get_num_computed_tokens", None)
-                if callable(computed):
-                    try:
-                        computed = computed()
-                    except Exception:
-                        pass
-                add("get_num_computed_tokens", computed, depth+3)
-            # sampling_params.max_tokens
-            sampling_params = getattr(group, "sampling_params", None)
-            max_tokens = getattr(sampling_params, "max_tokens", None) if sampling_params else None
-            add("sampling_params.max_tokens", max_tokens, depth+2)
-            # block_tables loop
-            for seq_id, blocks in getattr(group, "block_tables", {}).items():
-                add(f"block_tables[seq_id={seq_id}].values", blocks, depth+2)
-                try:
-                    length = len(blocks)
-                except Exception:
-                    length = None
-                add(f"block_tables[seq_id={seq_id}].length", length, depth+2)
-            add("do_sample", getattr(group, "do_sample", getattr(sampling_params, "do_sample", None)), depth+2)
-            add("state", getattr(group, "state", None), depth+2)
-            add("token_chunk_size", getattr(group, "token_chunk_size", None), depth+2)
-        # Top-level fields
-        add("virtual_engine", getattr(execute_model_req, "virtual_engine", None), depth+1)
-        add("num_lookahead_slots", getattr(execute_model_req, "num_lookahead_slots", None), depth+1)
-        add("running_queue_size", getattr(execute_model_req, "running_queue_size", None), depth+1)
-        add("previous_hidden_states", getattr(execute_model_req, "previous_hidden_states", None), depth+1)
-        add("num_steps", getattr(execute_model_req, "num_steps", None), depth+1)
-        add("async_callback", getattr(execute_model_req, "async_callback", None), depth+1)
-        add("is_dummy_batch", getattr(execute_model_req, "is_dummy_batch", None), depth+1)
-        if ret:
-            return log
-        try:
-            with open(f"/workspace/world0_inputs.txt", "a") as f:
-                f.write("\n".join(log) + "\n\n\n")
-
-                f.write(f"full_execute_model_req = {execute_model_req}" + "\n\n\n")
-        except Exception:
-            pass
-
     def prepare_execute_model_req_patch(
         self,
         execute_model_req: Optional[Any],
@@ -751,48 +552,21 @@ class DistributedExecutorBase(ExecutorBase):
             "_prompt_token_ids_tuple",
             "_cumulative_logprob",
         ]
-        chunkable_attrs: List[str] = [
-            "_cached_all_token_ids",
-            "_prompt_token_ids",
-            "_prompt_token_ids_tuple",
-        ]
-        original_prompt_sizes = {}
         execute_model_req_patch: Dict[Hashable, Dict[str, Any]] = {}
         use_cached_base_req = False
         if execute_model_req is not None:
-            self.log_execute_model_req(execute_model_req, prefix="Executor Model Req 1")
             virtual_engine = execute_model_req.virtual_engine
             if virtual_engine in self.cached_execute_model_reqs:
                 prev_execute_model_req_hash, cached_execute_model_req = (
                     self.cached_execute_model_reqs[virtual_engine])
             else:
                 prev_execute_model_req_hash, cached_execute_model_req = "", {}
-
-            for seq_group in execute_model_req.seq_group_metadata_list:
-                for seq_key, seq_data in seq_group.seq_data.items():
-                    # If sequence already decoding, clear any stale counter.
-                    if not seq_group.is_prompt:
-                        self._prefill_chunk_steps.pop(seq_key, None)
-                        continue
-                    # Initialize step if new.
-                    step = self._prefill_chunk_steps.get(seq_key, 0)
-                    self._prefill_chunk_steps[seq_key] = step + 1
-                    original_prompt_sizes[seq_key] = len(seq_data._prompt_token_ids)
-
-            chunk_sizes = self._get_chunked_prefill_limits(execute_model_req)
-            for seq_group in execute_model_req.seq_group_metadata_list:
-                for seq_key, seq_data in seq_group.seq_data.items():
-                    chunk_size = chunk_sizes.get(seq_key, (0, 0))
-                    original_prompt_sizes[seq_key] = (original_prompt_sizes.get(seq_key, 0), chunk_size[0], chunk_size[1])
-
-            self._chunk_execute_model_req(execute_model_req, original_prompt_sizes, chunkable_attrs)
             execute_model_req_patch = self._compute_execute_model_req_patch(
                 cached_execute_model_req, execute_model_req, tracked_attrs)
             self.cached_execute_model_reqs[
                 virtual_engine] = self._update_cache_with_new_tokens(
                     cached_execute_model_req, execute_model_req, tracked_attrs)
             self._strip_patch_data_from_execute_model_req(execute_model_req)
-
 
             new_execute_model_req_hash = sha256(execute_model_req)
             self.cached_execute_model_reqs[virtual_engine] = (
@@ -801,11 +575,9 @@ class DistributedExecutorBase(ExecutorBase):
             )
             if prev_execute_model_req_hash == new_execute_model_req_hash:
                 use_cached_base_req = True
-            self.log_execute_model_req(execute_model_req, prefix="Executor Model Req 2")
         return (
             virtual_engine if use_cached_base_req else execute_model_req,
             execute_model_req_patch,
             use_cached_base_req,
-            original_prompt_sizes,
             execute_step_count,
         )

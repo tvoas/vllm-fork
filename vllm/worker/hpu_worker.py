@@ -441,281 +441,17 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             flags.append(seq_lens[i] == prompt_len)
         return flags
     
-    def log_prepare_execute_model_req_patch_result(
-        self,
-        prepare_result,
-    ) -> None:
-        """Log the tuple returned by prepare_execute_model_req_patch.
-
-        Tuple layout:
-        0: virtual_engine (if reused) OR full ExecuteModelReq object (suppressed)
-        1: execute_model_req_patch (dict of incremental per-sequence changes)
-        2: use_cached_base_req (bool)
-        3: execute_step_count (int)
-        """
-        return
-        try:
-            base_obj, patch, reused, orig_count, step_count = prepare_result
-        except Exception:
-            try:
-                with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
-                    f.write(f"prepare_execute_model_req_patch result malformed: {prepare_result}" + "\n\n\n")
-            except Exception:
-                pass
-            return
-
-        log: List[str] = ["PrepareExecuteModelReqPatchResult"]
-        def add(label: str, value, depth: int = 0):
-            log.append(f"{'    '*depth}{label}: {value}")
-
-        if reused:
-            add("base_request", f"Reused cached base; virtual_engine={base_obj}", 1)
-        else:
-            virtual_engine = getattr(base_obj, "virtual_engine", None)
-            add("base_request", "New ExecuteModelReq", 1)
-            log += self.log_execute_model_req(base_obj, ret=True, depth=1)
-            add("virtual_engine", virtual_engine, 1)
-
-        add("use_cached_base_req", reused, 1)
-        add("execute_step_count", step_count, 1)
-
-        # Patch details
-        add("execute_model_req_patch", "--------------------------------------------------", 1)
-        add("num_sequence_keys", len(patch), 2)
-
-        for seq_key, changes in patch.items():
-            add(f"SequenceKey[{seq_key}]", "--------------------------------------------------", 2)
-            if not changes:
-                add("no_changes", True, 3)
-                continue
-            for attr, value in changes.items():
-                # Normalize arrays/tuples/lists for logging
-                if isinstance(value, array.array):
-                    norm = list(value)
-                else:
-                    norm = value
-                if isinstance(norm, (list, tuple)):
-                    add(attr, norm, 3)
-                    add(f"{attr}.length", len(norm), 3)
-                else:
-                    add(attr, norm, 3)
-        add("orig_count", orig_count, 1)
-
-        try:
-            with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
-                f.write("\n".join(log) + "\n\n\n")
-        except Exception:
-            pass
-
-    def log_execute_model_req(self, execute_model_req, ret=False, depth=0, prefix="ExecuteModelReq") -> None:
-        return
-        log = ["    " * depth + prefix]
-        def add(label, value, depth=0):
-            header = '    ' * depth
-            log.append(f"{header}{label}: {value}")
-        for gi, group in enumerate(getattr(execute_model_req, "seq_group_metadata_list", [])):
-            add(f"SequenceGroupMetadata[{gi}]", "--------------------------------------------------", depth+1)
-            add("request_id", getattr(group, "request_id", None), depth+2)
-            add("is_prompt", getattr(group, "is_prompt", None), depth+2)
-            # seq_data loop
-            for seq_id, seq in getattr(group, "seq_data", {}).items():
-                add("seq_id", seq_id, depth+2)
-                prompt_ids = getattr(seq, "prompt_token_ids", [])
-                output_ids = getattr(seq, "output_token_ids", [])
-                add("prompt_token_ids", prompt_ids, depth+3)
-                add("prompt_token_ids_length", len(prompt_ids), depth+3)
-                add("output_token_ids", output_ids, depth+3)
-                add("output_token_ids_length", len(output_ids), depth+3)
-                add("cumulative_logprob", getattr(seq, "cumulative_logprob", None), depth+3)
-                # get_num_computed_tokens could be attr or method
-                computed = getattr(seq, "get_num_computed_tokens", None)
-                if callable(computed):
-                    try:
-                        computed = computed()
-                    except Exception:
-                        pass
-                add("get_num_computed_tokens", computed, depth+3)
-            # sampling_params.max_tokens
-            sampling_params = getattr(group, "sampling_params", None)
-            max_tokens = getattr(sampling_params, "max_tokens", None) if sampling_params else None
-            add("sampling_params.max_tokens", max_tokens, depth+2)
-            # block_tables loop
-            for seq_id, blocks in getattr(group, "block_tables", {}).items():
-                add(f"block_tables[seq_id={seq_id}].values", blocks, depth+2)
-                try:
-                    length = len(blocks)
-                except Exception:
-                    length = None
-                add(f"block_tables[seq_id={seq_id}].length", length, depth+2)
-            add("do_sample", getattr(group, "do_sample", getattr(sampling_params, "do_sample", None)), depth+2)
-            add("state", getattr(group, "state", None), depth+2)
-            add("token_chunk_size", getattr(group, "token_chunk_size", None), depth+2)
-        # Top-level fields
-        add("virtual_engine", getattr(execute_model_req, "virtual_engine", None), depth+1)
-        add("num_lookahead_slots", getattr(execute_model_req, "num_lookahead_slots", None), depth+1)
-        add("running_queue_size", getattr(execute_model_req, "running_queue_size", None), depth+1)
-        add("previous_hidden_states", getattr(execute_model_req, "previous_hidden_states", None), depth+1)
-        add("num_steps", getattr(execute_model_req, "num_steps", None), depth+1)
-        add("async_callback", getattr(execute_model_req, "async_callback", None), depth+1)
-        add("is_dummy_batch", getattr(execute_model_req, "is_dummy_batch", None), depth+1)
-        if ret:
-            return log
-        try:
-            with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
-                f.write("\n".join(log) + "\n\n\n")
-
-                f.write(f"full_execute_model_req = {execute_model_req}" + "\n\n\n")
-        except Exception:
-            pass
-
-    def log_model_input(self, model_input) -> None:
-        return
-        log = ["ModelInput"]
-        def add(label, value, depth=0):
-            log.append(f"{'    '*depth}{label}: {value}")
-        # Top-level simple fields
-        input_tokens = getattr(model_input, "input_tokens", None)
-        add("input_tokens", input_tokens, 1)
-        try:
-            add("input_tokens.shape", getattr(input_tokens, "shape", None), 1)
-        except Exception:
-            add("input_tokens.shape", None, 1)
-        add("seq_lens", getattr(model_input, "seq_lens", None), 1)
-        add("query_lens", getattr(model_input, "query_lens", None), 1)
-        # attn_metadata
-        attn = getattr(model_input, "attn_metadata", None)
-        add("attn_metadata", "--------------------------------------------------", 1)
-        if attn:
-            add("num_prefills", getattr(attn, "num_prefills", None), 2)
-            add("num_prefill_tokens", getattr(attn, "num_prefill_tokens", None), 2)
-            add("num_decode_tokens", getattr(attn, "num_decode_tokens", None), 2)
-            slot_mapping = getattr(attn, "slot_mapping", getattr(attn, "slot_mapping_tensor", None))
-            add("slot_mapping_tensor", slot_mapping, 2)
-            add("slot_mapping_tensor.shape", getattr(slot_mapping, "shape", None), 2)
-            # block related (log if present)
-            for name in ["block_list", "block_mapping", "block_usage", "block_groups", "alibi_blocks", "block_size"]:
-                add(name, getattr(attn, name, None), 2)
-            add("is_prompt", getattr(attn, "is_prompt", None), 2)
-            add("attn_bias", getattr(attn, "attn_bias", None), 2)
-            seq_lens_tensor = getattr(attn, "seq_lens_tensor", None)
-            add("seq_lens_tensor", seq_lens_tensor, 2)
-            add("seq_lens_tensor.shape", getattr(seq_lens_tensor, "shape", None), 2)
-            context_lens_tensor = getattr(attn, "context_lens_tensor", None)
-            add("context_lens_tensor", context_lens_tensor, 2)
-            add("context_lens_tensor.shape", getattr(context_lens_tensor, "shape", None), 2)
-            add("seq_lens", getattr(attn, "seq_lens", None), 2)
-        # More top-level fields
-        add("real_batch_size", getattr(model_input, "real_batch_size", None), 1)
-        add("batch_size_padded", getattr(model_input, "batch_size_padded", None), 1)
-        add("virtual_engine", getattr(model_input, "virtual_engine", None), 1)
-        add("lora_ids", getattr(model_input, "lora_ids", None), 1)
-        add("async_callback", getattr(model_input, "async_callback", None), 1)
-        add("is_first_multi_step", getattr(model_input, "is_first_multi_step", None), 1)
-        add("is_last_step", getattr(model_input, "is_last_step", None), 1)
-        add("previous_hidden_states", getattr(model_input, "previous_hidden_states", None), 1)
-        # sampling_metadata
-        sm = getattr(model_input, "sampling_metadata", None)
-        add("sampling_metadata", "--------------------------------------------------", 1)
-        if sm:
-            for gi, sg in enumerate(getattr(sm, "seq_groups", [])):
-                add(f"SeqGroup[{gi}]", "--------------------------------------------------", 2)
-                add("seq_ids", getattr(sg, "seq_ids", None), 3)
-                sp = getattr(sg, "sampling_params", None)
-                add("sampling_params.max_tokens", getattr(sp, "max_tokens", None), 3)
-                add("sampling_params.min_tokens", getattr(sp, "min_tokens", None), 3)
-                # seq_data loop
-                for seq_id, seq in getattr(sg, "seq_data", {}).items():
-                    add(f"seq_id", seq_id, 3)
-                    prompt_ids = getattr(seq, "prompt_token_ids", [])
-                    output_ids = getattr(seq, "output_token_ids", [])
-                    add("prompt_token_ids", prompt_ids, 4)
-                    add("prompt_token_ids_length", len(prompt_ids), 4)
-                    add("output_token_ids", output_ids, 4)
-                    add("output_token_ids_length", len(output_ids), 4)
-                    computed = getattr(seq, "get_num_computed_tokens", None)
-                    if callable(computed):
-                        try:
-                            computed = computed()
-                        except Exception:
-                            pass
-                    add("get_num_computed_tokens", computed, 4)
-                add("seq_len", getattr(sg, "seq_len", None), 3)
-                add("query_len", getattr(sg, "query_len", None), 3)
-                add("is_prompt", getattr(sg, "is_prompt", None), 3)
-        try:
-            with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
-                f.write("\n".join(log) + "\n\n\n")
-        except Exception:
-            pass
-
-    def log_cached_seq_data(
-        self,
-        cached_seq_data,
-        virtual_engine=None,
-        depth=0,
-        prefix="CachedSeqData",
-        ret=False,
-    ):
-        return
-        log = ["    " * depth + prefix]
-        def add(label, value, d=0):
-            log.append(f"{'    ' * (depth + d)}{label}: {value}")
-        add("virtual_engine", virtual_engine, 1)
-        if not cached_seq_data:
-            add("empty", True, 1)
-            if ret:
-                return log
-            try:
-                with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
-                    f.write("\n".join(log) + "\n\n\n")
-            except Exception:
-                pass
-            return
-        add("num_sequence_keys", len(cached_seq_data), 1)
-        tracked_attrs = [
-            "_cached_all_token_ids",
-            "_new_appended_tokens",
-            "_num_computed_tokens",
-            "_output_token_ids",
-            "_prompt_token_ids",
-            "_prompt_token_ids_tuple",
-            "_cumulative_logprob",
-        ]
-        for seq_key, data in cached_seq_data.items():
-            add(f"SequenceKey[{seq_key}]", "--------------------------------------------------", 1)
-            for attr in tracked_attrs:
-                if attr not in data:
-                    continue
-                val = data[attr]
-                if isinstance(val, array.array):
-                    norm = list(val)
-                else:
-                    norm = val
-                add(attr, norm, 2)
-                if isinstance(norm, (list, tuple)):
-                    add(f"{attr}.length", len(norm), 2)
-        if ret:
-            return log
-        try:
-            with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
-                f.write("\n".join(log) + "\n\n\n")
-        except Exception:
-            pass
-    
     def execute_model(
         self,
         execute_model_req: Optional[Union[ExecuteModelRequest, Tuple]] = None,
     ) -> Optional[List[SamplerOutput]]:
         execute_step_count = 0
         if isinstance(execute_model_req, tuple):
-            assert len(execute_model_req) == 5, (
-                "execute_model_req must be a tuple of length 5, got "
+            assert len(execute_model_req) == 4, (
+                "execute_model_req must be a tuple of length 4, got "
                 f"{len(execute_model_req)}")
-            execute_step_count = execute_model_req[-1]
-            if execute_step_count > 0 and get_world_group().rank_in_group == 0:
-                self.log_prepare_execute_model_req_patch_result(execute_model_req)
             (execute_model_req, execute_model_req_patch,
-             use_cached_base_req, original_prompt_sizes, execute_step_count) = execute_model_req
+             use_cached_base_req, execute_step_count) = execute_model_req
 
             if use_cached_base_req:
                 ve = execute_model_req
@@ -723,32 +459,16 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     f"Virtual engine {ve} not found in "
                     "cached_execute_model_req")
                 execute_model_req = self.cached_execute_model_req[ve]
-                if execute_step_count > 0 and get_world_group().rank_in_group == 0:
-                    self.log_execute_model_req(execute_model_req, prefix="Cached Base ExecuteModelReq")
-            else:
-                if execute_step_count > 0 and get_world_group().rank_in_group == 0:
-                    try:
-                        with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
-                            f.write("No Cached Execute Model Req" + "\n\n\n")
-                    except Exception:
-                        pass
 
             if execute_model_req is not None:
                 ve = execute_model_req.virtual_engine
                 cached_seq_data = self.all_cached_seq_data.get(ve, {})
-                if execute_step_count > 0 and get_world_group().rank_in_group == 0:
-                    self.log_cached_seq_data(cached_seq_data, virtual_engine=ve, prefix="CachedSeqData Before Patch")
                 self.all_cached_seq_data[ve] = (
                     self._apply_patch_to_execute_model_req(
                         execute_model_req,
                         cached_seq_data,
                         execute_model_req_patch,
                     ))
-                if execute_step_count > 0 and get_world_group().rank_in_group == 0:
-                    self.log_cached_seq_data(cached_seq_data, virtual_engine=ve, prefix="CachedSeqData After Patch")
-
-            if execute_step_count > 0 and get_world_group().rank_in_group == 0:
-                self.log_execute_model_req(execute_model_req)
 
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION     - will log graph compilations per engine step, only when there was any - highly recommended to use alongside PT_HPU_METRICS_GC_DETAILS! # noqa:E501
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL - will log graph compilations per engine step, always, even if there were none # noqa:E501
@@ -827,8 +547,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 return None
 
             model_input, worker_input, kwargs = inputs
-            if execute_step_count > 0 and get_world_group().rank_in_group == 0:
-                self.log_model_input(model_input)
             self.is_prompt = model_input.is_prompt
 
             if envs.VLLM_ON_DEMAND_TORCH_PROFILER:
