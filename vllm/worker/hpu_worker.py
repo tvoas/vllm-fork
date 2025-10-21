@@ -361,17 +361,17 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         "_prompt_token_ids",
                         "_prompt_token_ids_tuple",
                     ]
-                    try_truncate = True
-                    if try_truncate and attr_key not in chunkable_attrs:
-                        try_truncate = False
-                    if try_truncate and not isinstance(cur, (array.array, list, tuple)):
-                        try_truncate = False
-                    if try_truncate and original_prompt_sizes[key][-1] == 0:
-                        try_truncate = False
-                    if try_truncate and len(patch_val) <= original_prompt_sizes[key][-1]:
-                        try_truncate = False
-                    if try_truncate:
-                        patch_val = patch_val[:original_prompt_sizes[key][-1]]
+                    #try_truncate = True
+                    #if try_truncate and attr_key not in chunkable_attrs:
+                    #    try_truncate = False
+                    #if try_truncate and not isinstance(cur, (array.array, list, tuple)):
+                    #    try_truncate = False
+                    #if try_truncate and original_prompt_sizes[key][-1] == 0:
+                    #    try_truncate = False
+                    #if try_truncate and len(patch_val) <= original_prompt_sizes[key][-1]:
+                    #    try_truncate = False
+                    #if try_truncate:
+                    #    patch_val = patch_val[:original_prompt_sizes[key][-1]]
 
                     if isinstance(cur, array.array):
                         if patch_val is not None:
@@ -723,7 +723,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 "execute_model_req must be a tuple of length 5, got "
                 f"{len(execute_model_req)}")
             execute_step_count = execute_model_req[-1]
-            if execute_step_count > 0 and execute_step_count < 12 and get_world_group().rank_in_group == 0:
+            if execute_step_count > 0 and execute_step_count < 6 and get_world_group().rank_in_group == 0:
                 self.log_prepare_execute_model_req_patch_result(execute_model_req)
             (execute_model_req, execute_model_req_patch,
              use_cached_base_req, original_prompt_sizes, execute_step_count) = execute_model_req
@@ -734,10 +734,10 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     f"Virtual engine {ve} not found in "
                     "cached_execute_model_req")
                 execute_model_req = self.cached_execute_model_req[ve]
-                if execute_step_count > 0 and execute_step_count < 12 and get_world_group().rank_in_group == 0:
+                if execute_step_count > 0 and execute_step_count < 6 and get_world_group().rank_in_group == 0:
                     self.log_execute_model_req(execute_model_req, prefix="Cached Base ExecuteModelReq")
             else:
-                if execute_step_count > 0 and execute_step_count < 12 and get_world_group().rank_in_group == 0:
+                if execute_step_count > 0 and execute_step_count < 6 and get_world_group().rank_in_group == 0:
                     logger.info("No Cached Execute Model Req")
                     try:
                         with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
@@ -749,7 +749,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             if execute_model_req is not None:
                 ve = execute_model_req.virtual_engine
                 cached_seq_data = self.all_cached_seq_data.get(ve, {})
-                if execute_step_count > 0 and execute_step_count < 12 and get_world_group().rank_in_group == 0:
+                if execute_step_count > 0 and execute_step_count < 6 and get_world_group().rank_in_group == 0:
                     self.log_cached_seq_data(cached_seq_data, virtual_engine=ve, prefix="CachedSeqData Before Patch")
                 self.all_cached_seq_data[ve] = (
                     self._apply_patch_to_execute_model_req(
@@ -758,10 +758,10 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         execute_model_req_patch,
                         original_prompt_sizes
                     ))
-                if execute_step_count > 0 and execute_step_count < 12 and get_world_group().rank_in_group == 0:
+                if execute_step_count > 0 and execute_step_count < 6 and get_world_group().rank_in_group == 0:
                     self.log_cached_seq_data(cached_seq_data, virtual_engine=ve, prefix="CachedSeqData After Patch")
 
-            if execute_step_count > 0 and execute_step_count < 12 and get_world_group().rank_in_group == 0:
+            if execute_step_count > 0 and execute_step_count < 6 and get_world_group().rank_in_group == 0:
                 self.log_execute_model_req(execute_model_req)
 
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION     - will log graph compilations per engine step, only when there was any - highly recommended to use alongside PT_HPU_METRICS_GC_DETAILS! # noqa:E501
@@ -841,7 +841,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 return None
 
             model_input, worker_input, kwargs = inputs
-            if execute_step_count > 0 and execute_step_count < 12 and get_world_group().rank_in_group == 0:
+            if execute_step_count > 0 and execute_step_count < 6 and get_world_group().rank_in_group == 0:
                 self.log_model_input(model_input)
             self.is_prompt = model_input.is_prompt
 
