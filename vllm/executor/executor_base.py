@@ -443,6 +443,9 @@ class DistributedExecutorBase(ExecutorBase):
         self,
         execute_model_req: Any
     ):
+        if execute_model_req is None:
+            return
+
         def _as_array_l(val):
             if isinstance(val, array.array):
                 return val
