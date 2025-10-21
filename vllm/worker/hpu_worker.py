@@ -307,6 +307,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         new_execute_model_req: ExecuteModelRequest,
         cached_seq_data: dict,
         execute_model_req_patch: dict,
+        original_prompt_sizes: tuple,
     ) -> dict:
         """
         Merge an incremental patch into the per-VE sequence cache and reflect
@@ -355,6 +356,22 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 for attr_key in initial_data:
                     cur = cached_data.get(attr_key)
                     patch_val = patch_data.get(attr_key, None)
+                    chunkable_attrs = [
+                        "_cached_all_token_ids",
+                        "_prompt_token_ids",
+                        "_prompt_token_ids_tuple",
+                    ]
+                    try_truncate = True
+                    if try_truncate and attr_key not in chunkable_attrs:
+                        try_truncate = False
+                    if try_truncate and not isinstance(cur, (array.array, list, tuple)):
+                        try_truncate = False
+                    if try_truncate and original_prompt_sizes[key][-1] == 0:
+                        try_truncate = False
+                    if try_truncate and len(patch_val) <= original_prompt_sizes[key][-1]:
+                        try_truncate = False
+                    if try_truncate:
+                        patch_val = patch_val[:original_prompt_sizes[key][-1]]
 
                     if isinstance(cur, array.array):
                         if patch_val is not None:
@@ -739,6 +756,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         execute_model_req,
                         cached_seq_data,
                         execute_model_req_patch,
+                        original_prompt_sizes
                     ))
                 if execute_step_count > 0 and execute_step_count < 12 and get_world_group().rank_in_group == 0:
                     self.log_cached_seq_data(cached_seq_data, virtual_engine=ve, prefix="CachedSeqData After Patch")
