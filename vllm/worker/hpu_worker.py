@@ -361,17 +361,17 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         "_prompt_token_ids",
                         "_prompt_token_ids_tuple",
                     ]
-                    #try_truncate = True
-                    #if try_truncate and attr_key not in chunkable_attrs:
-                    #    try_truncate = False
-                    #if try_truncate and not isinstance(cur, (array.array, list, tuple)):
-                    #    try_truncate = False
-                    #if try_truncate and original_prompt_sizes[key][-1] == 0:
-                    #    try_truncate = False
-                    #if try_truncate and len(patch_val) <= original_prompt_sizes[key][-1]:
-                    #    try_truncate = False
-                    #if try_truncate:
-                    #    patch_val = patch_val[:original_prompt_sizes[key][-1]]
+                    try_truncate = True
+                    if try_truncate and attr_key not in chunkable_attrs:
+                        try_truncate = False
+                    if try_truncate and not isinstance(cur, (array.array, list, tuple)):
+                        try_truncate = False
+                    if try_truncate and original_prompt_sizes[key][-1] == 0:
+                        try_truncate = False
+                    if try_truncate and len(patch_val) <= original_prompt_sizes[key][-1]:
+                        try_truncate = False
+                    if try_truncate:
+                        patch_val = patch_val[:original_prompt_sizes[key][-1]]
 
                     if isinstance(cur, array.array):
                         if patch_val is not None:
