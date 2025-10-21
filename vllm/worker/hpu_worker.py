@@ -302,46 +302,11 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             self.model_runner.mem_margin = hpu_memory_margin
             self._warm_up_model()
 
-    def _restore_full_prompt_tokens(self, execute_model_req: ExecuteModelRequest) -> None:
-        """
-        Re-expand any truncated prompt/cached token fields on the in-flight
-        ExecuteModelRequest using the full data stored in self.all_cached_seq_data.
-        """
-        if execute_model_req is None:
-            return
-        ve = getattr(execute_model_req, "virtual_engine", None)
-        full_cache = self.all_cached_seq_data.get(ve)
-        if not full_cache:
-            return
-        for sg in execute_model_req.seq_group_metadata_list:
-            for seq_id, seq_data in sg.seq_data.items():
-                cached = full_cache.get(seq_id)
-                if not cached:
-                    continue
-                # Restore full prompt/cached arrays (avoid aliasing).
-                for attr in [
-                    "_prompt_token_ids",
-                    "_prompt_token_ids_tuple",
-                    "_cached_all_token_ids",
-                ]:
-                    if attr in cached:
-                        val = cached[attr]
-                        if isinstance(val, array.array):
-                            restored = array.array(val.typecode, val)
-                        elif isinstance(val, list):
-                            restored = list(val)
-                        elif isinstance(val, tuple):
-                            restored = tuple(val)
-                        else:
-                            restored = val
-                        setattr(seq_data, attr, restored)
-
     def _apply_patch_to_execute_model_req(
         self,
         new_execute_model_req: ExecuteModelRequest,
         cached_seq_data: dict,
         execute_model_req_patch: dict,
-        original_prompt_sizes: tuple,
     ) -> dict:
         """
         Merge an incremental patch into the per-VE sequence cache and reflect
@@ -386,49 +351,28 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
                 # Get patch data
                 patch_data = execute_model_req_patch.get(key, {})
-                def truncater(attr, value, size):
-                    chunkable_attrs = [
-                        "_cached_all_token_ids",
-                        "_prompt_token_ids",
-                        "_prompt_token_ids_tuple",
-                    ]
-                    try_truncate = True
-                    if try_truncate and attr not in chunkable_attrs:
-                        try_truncate = False
-                    if try_truncate and value is None:
-                        try_truncate = False
-                    if try_truncate and not isinstance(value, (array.array, list, tuple)):
-                        try_truncate = False
-                    if try_truncate and original_prompt_sizes[key][-1] == 0:
-                        try_truncate = False
-                    if try_truncate and len(value) <= original_prompt_sizes[key][-1]:
-                        try_truncate = False
-                    if try_truncate:
-                        value = value[:size]
-                    return value
 
                 for attr_key in initial_data:
                     cur = cached_data.get(attr_key)
                     patch_val = patch_data.get(attr_key, None)
-
 
                     if isinstance(cur, array.array):
                         if patch_val is not None:
                             cur.extend(_as_array_l(patch_val))
                         cached_data[attr_key] = cur
                         setattr(seq_data, attr_key,
-                            array.array("l", truncater(attr_key, cur, original_prompt_sizes[key][-1])))  # avoid aliasing
+                                array.array("l", cur))  # avoid aliasing
                     elif isinstance(cur, list):
                         if patch_val:
                             cur.extend(patch_val)
                         cached_data[attr_key] = cur
                         setattr(seq_data, attr_key,
-                            list(truncater(attr_key, cur, original_prompt_sizes[key][-1])))  # avoid aliasing
+                                list(cur))  # avoid aliasing
                     elif isinstance(cur, tuple):
                         if patch_val:
                             cur = cur + tuple(patch_val)
                         cached_data[attr_key] = cur
-                        setattr(seq_data, attr_key, truncater(attr_key, cur, original_prompt_sizes[key][-1]))
+                        setattr(seq_data, attr_key, cur)
                     else:
                         # Scalars
                         if attr_key in patch_data:
@@ -617,6 +561,8 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         try:
             with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
                 f.write("\n".join(log) + "\n\n\n")
+
+                f.write("full_execute_model_req = {execute_model_req}" + "\n\n\n")
         except Exception:
             pass
 
@@ -777,7 +723,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     self.log_execute_model_req(execute_model_req, prefix="Cached Base ExecuteModelReq")
             else:
                 if execute_step_count > 0 and execute_step_count < 6 and get_world_group().rank_in_group == 0:
-                    logger.info("No Cached Execute Model Req")
                     try:
                         with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
                             f.write("No Cached Execute Model Req" + "\n\n\n")
@@ -794,7 +739,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         execute_model_req,
                         cached_seq_data,
                         execute_model_req_patch,
-                        original_prompt_sizes
                     ))
                 if execute_step_count > 0 and execute_step_count < 6 and get_world_group().rank_in_group == 0:
                     self.log_cached_seq_data(cached_seq_data, virtual_engine=ve, prefix="CachedSeqData After Patch")
@@ -862,7 +806,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         else:
             output = self._execute_model(execute_model_req, execute_step_count)
         if execute_model_req is not None:
-            self._restore_full_prompt_tokens(execute_model_req)
             self.cached_execute_model_req[
                 execute_model_req.virtual_engine] = execute_model_req
         return output

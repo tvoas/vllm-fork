@@ -705,6 +705,8 @@ class DistributedExecutorBase(ExecutorBase):
         try:
             with open(f"/workspace/world0_inputs.txt", "a") as f:
                 f.write("\n".join(log) + "\n\n\n")
+
+                f.write("full_execute_model_req = {execute_model_req}" + "\n\n\n")
         except Exception:
             pass
 
