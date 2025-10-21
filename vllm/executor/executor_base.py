@@ -428,6 +428,11 @@ class DistributedExecutorBase(ExecutorBase):
         Returns:
             A dict keyed by sequence key with only the incremental changes.
         """
+        chunkable_attrs = [
+            "_cached_all_token_ids",
+            "_prompt_token_ids",
+            "_prompt_token_ids_tuple",
+        ]
         patch_by_key: Dict[Hashable, Dict[str, Any]] = {}
         for seq_group in execute_model_req.seq_group_metadata_list:
             sampling_params = seq_group.sampling_params
@@ -446,10 +451,22 @@ class DistributedExecutorBase(ExecutorBase):
                                 patch[attr] = curr_val
                     patch_by_key[seq_key] = patch
                 else:
-                    patch_by_key[seq_key] = {
-                        attr: getattr(seq_data, attr)
-                        for attr in tracked_attrs
-                    }
+                    copied = {}
+                    for attr in tracked_attrs:
+                        v = getattr(seq_data, attr)
+                        if isinstance(v, array.array):
+                            copied[attr] = array.array(v.typecode, v)
+                        elif isinstance(v, list):
+                            copied[attr] = list(v)
+                        elif isinstance(v, tuple):
+                            copied[attr] = tuple(v)
+                        elif isinstance(v, dict):
+                            copied[attr] = dict(v)
+                        elif isinstance(v, set):
+                            copied[attr] = set(v)
+                        else:
+                            copied[attr] = v  # or try v.copy() if available
+                    patch_by_key[seq_key] = copied
                     patch_by_key[seq_key]["sampling_params"] = sampling_params
 
         return patch_by_key
