@@ -690,7 +690,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             if worker_input.num_seq_groups == 0:
                 return []
             
-            if model_input.is_prompt and not self._last_prefill_or_decode(execute_model_req):
+            if model_input.is_prompt and not any(self._last_prefill_or_decode(execute_model_req)):
                 # Queue background execution; DO NOT apply patch inline.
                 self._enqueue_background_prefill(model_input, num_steps, kwargs)
                 # Return dummy sampler outputs immediately.
