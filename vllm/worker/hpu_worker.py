@@ -517,41 +517,43 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
     def _last_prefill_or_decode(
         self,
+        model_input,
         execute_model_req: ExecuteModelRequest,
     ) -> list[bool]:
         """
-        Return per-sequence flags indicating whether current chunk completes
-        the prompt (last prefill chunk) or we are already in decode.
+        Return per-sequence bool flags indicating whether current chunk
+        completes the prompt (last prefill chunk).
 
-        Decode stage (all seq_groups have is_prompt == False): always True.
-        Prompt stage: last chunk if current transmitted prompt length equals
-        the full original prompt length (prompt_token_ids_length).
+        Criterion:
+            curr_total_len (seq_lens_tensor[i]) == full prompt length.
 
-        Ordering matches iteration order of seq_group_metadata_list and each
-        seq_group.seq_data (dict preserves insertion order).
+        Assumes seq_lens_tensor order matches the flattened ordering of
+        seq_ids across seq_group_metadata_list (same ordering used when
+        building model_input tensors).
         """
-        if execute_model_req is None:
-            return []
+        if not model_input.attn_metadata.is_prompt:
+            # Decode step: sampling required for all sequences.
+            num_seqs = 0
+            if execute_model_req is not None:
+                for sg in execute_model_req.seq_group_metadata_list:
+                    num_seqs += len(sg.seq_data)
+            return [True] * max(1, num_seqs)
 
-        # Determine if we are in decode: all seq_groups not prompt.
-        in_decode = all(not sg.is_prompt
-                        for sg in execute_model_req.seq_group_metadata_list)
+        seq_lens = model_input.attn_metadata.seq_lens_tensor.tolist()
 
-        flags: list[bool] = []
-        for sg in execute_model_req.seq_group_metadata_list:
-            for seq_id, seq_data in sg.seq_data.items():
-                if in_decode or not sg.is_prompt:
-                    flags.append(True)
-                    continue
-                # Full original prompt length (expected final length).
-                full_len = getattr(seq_data, "prompt_token_ids_length", None)
-                # Current transmitted (possibly chunked) prompt length.
-                curr_len = len(getattr(seq_data, "prompt_token_ids", ()))
-                if full_len is None:
-                    # Fallback: treat current length as final (cannot compare).
-                    flags.append(True)
-                else:
-                    flags.append(curr_len == full_len)
+        # Reconstruct ordering
+        ordered_seq_datas = []
+        for sg_meta in execute_model_req.seq_group_metadata_list:
+            for seq_id in sg_meta.seq_data:  # dict preserves insertion order
+                ordered_seq_datas.append(sg_meta.seq_data[seq_id])
+
+        assert len(ordered_seq_datas) == len(seq_lens), (
+            "Sequence count mismatch vs seq_lens_tensor")
+
+        flags = []
+        for i, seq_data in enumerate(ordered_seq_datas):
+            prompt_len = len(seq_data.prompt_token_ids)
+            flags.append(seq_lens[i] == prompt_len)
         return flags
     
     def execute_model(
@@ -690,7 +692,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             if worker_input.num_seq_groups == 0:
                 return []
             
-            if model_input.is_prompt and not any(self._last_prefill_or_decode(execute_model_req)):
+            if model_input.is_prompt and not model_input.needs_sampling:
                 # Queue background execution; DO NOT apply patch inline.
                 self._enqueue_background_prefill(model_input, num_steps, kwargs)
                 # Return dummy sampler outputs immediately.
