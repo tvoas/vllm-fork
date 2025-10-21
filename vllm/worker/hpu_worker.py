@@ -143,6 +143,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
         self.all_cached_seq_data: Dict[int, dict] = {}
         self.cached_execute_model_req: Dict[int, ExecuteModelRequest] = {}
+        self._unpadded_lengths = {}
         self.lock = threading.Lock()
 
     def update_on_demand_profiler_cfg(self):
@@ -302,11 +303,42 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             self.model_runner.mem_margin = hpu_memory_margin
             self._warm_up_model()
 
+    def _remove_chunk_padding(
+        self,
+        execute_model_req
+    ):
+        chunkable_attrs: List[str] = [
+            "_cached_all_token_ids",
+            "_prompt_token_ids",
+            "_prompt_token_ids_tuple",
+        ]
+        for seq_group in execute_model_req.seq_group_metadata_list:
+            for seq_key, seq_data in seq_group.seq_data.items():
+                if seq_key not in self._unpadded_lengths:
+                    continue
+                for attr in chunkable_attrs:
+                    orig_len = self._unpadded_lengths[seq_key].get(attr)
+                    if orig_len is None:
+                        continue
+                    val = getattr(seq_data, attr, None)
+                    if val is None:
+                        continue
+                    if isinstance(val, array.array):
+                        trimmed = array.array(val.typecode, val[:orig_len])
+                        setattr(seq_data, attr, trimmed)
+                    elif isinstance(val, list):
+                        # In-place shrink
+                        del val[orig_len:]
+                    elif isinstance(val, tuple):
+                        setattr(seq_data, attr, val[:orig_len])
+                del self._unpadded_lengths[seq_key]
+
     def _apply_patch_to_execute_model_req(
         self,
         new_execute_model_req: ExecuteModelRequest,
         cached_seq_data: dict,
         execute_model_req_patch: dict,
+        original_prompt_sizes: dict,
     ) -> dict:
         """
         Merge an incremental patch into the per-VE sequence cache and reflect
@@ -326,6 +358,12 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         should_prune = any(
             getattr(seq_group, "is_prompt", None) is False
             for seq_group in new_execute_model_req.seq_group_metadata_list)
+        
+        chunkable_attrs: List[str] = [
+            "_cached_all_token_ids",
+            "_prompt_token_ids",
+            "_prompt_token_ids_tuple",
+        ]
 
         def _as_array_l(val):
             if isinstance(val, array.array):
@@ -378,6 +416,29 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         if attr_key in patch_data:
                             cached_data[attr_key] = patch_val
                         setattr(seq_data, attr_key, cached_data.get(attr_key))
+
+                    # Padding step (after setting seq_data, do NOT alter cached_data)
+                    if (
+                        attr_key in chunkable_attrs
+                        and key in original_prompt_sizes
+                    ):
+                        target_len = original_prompt_sizes[key][0]
+                        val_now = getattr(seq_data, attr_key)
+                        cur_len = len(val_now)
+                        if cur_len < target_len:
+                            # Record original length
+                            self._unpadded_lengths.setdefault(key, {})[attr_key] = cur_len
+                            pad_len = target_len - cur_len
+                            if isinstance(val_now, array.array):
+                                padded = array.array(val_now.typecode, val_now)
+                                padded.extend([0] * pad_len)
+                                setattr(seq_data, attr_key, padded)
+                            elif isinstance(val_now, list):
+                                padded = list(val_now)
+                                padded.extend([0] * pad_len)
+                                setattr(seq_data, attr_key, padded)
+                            elif isinstance(val_now, tuple):
+                                setattr(seq_data, attr_key, val_now + (0,) * pad_len)
 
                 # sampling_params lives on seq_group; cache it for continuity
                 sp = patch_data.get('sampling_params')
@@ -447,11 +508,11 @@ class HPUWorker(LocalOrDistributedWorkerBase):
     ) -> Optional[List[SamplerOutput]]:
         execute_step_count = 0
         if isinstance(execute_model_req, tuple):
-            assert len(execute_model_req) == 4, (
-                "execute_model_req must be a tuple of length 4, got "
+            assert len(execute_model_req) == 5, (
+                "execute_model_req must be a tuple of length 5, got "
                 f"{len(execute_model_req)}")
             (execute_model_req, execute_model_req_patch,
-             use_cached_base_req, execute_step_count) = execute_model_req
+             use_cached_base_req, original_prompt_sizes, execute_step_count) = execute_model_req
 
             if use_cached_base_req:
                 ve = execute_model_req
@@ -468,6 +529,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         execute_model_req,
                         cached_seq_data,
                         execute_model_req_patch,
+                        original_prompt_sizes,
                     ))
 
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION     - will log graph compilations per engine step, only when there was any - highly recommended to use alongside PT_HPU_METRICS_GC_DETAILS! # noqa:E501
@@ -530,6 +592,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         else:
             output = self._execute_model(execute_model_req, execute_step_count)
         if execute_model_req is not None:
+            self._remove_chunk_padding(execute_model_req)
             self.cached_execute_model_req[
                 execute_model_req.virtual_engine] = execute_model_req
         return output
