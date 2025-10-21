@@ -173,8 +173,10 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         self._bg_step_threads[ve] = t
 
     def _enqueue_background_prefill(self, model_input, num_steps, kwargs):
-        self._ensure_bg_thread(model_input.virtual_engine)
-        q = self._bg_step_queues[model_input.virtual_engine]
+        ve = model_input.virtual_engine
+        ve = -1
+        self._ensure_bg_thread(ve)
+        q = self._bg_step_queues[ve]
         # Enforce per-VE max queue length of 1.
         while q.qsize() >= 1:
             time.sleep(0.005)  # 5 ms backoff
