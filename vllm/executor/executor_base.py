@@ -506,11 +506,6 @@ class DistributedExecutorBase(ExecutorBase):
         Returns:
             A dict keyed by sequence key with only the incremental changes.
         """
-        chunkable_attrs = [
-            "_cached_all_token_ids",
-            "_prompt_token_ids",
-            "_prompt_token_ids_tuple",
-        ]
         patch_by_key: Dict[Hashable, Dict[str, Any]] = {}
         for seq_group in execute_model_req.seq_group_metadata_list:
             sampling_params = seq_group.sampling_params
@@ -721,7 +716,7 @@ class DistributedExecutorBase(ExecutorBase):
                     chunk_size = chunk_sizes.get(seq_key, (0, 0))
                     original_prompt_sizes[seq_key] = (original_prompt_sizes.get(seq_key, 0), chunk_size[0], chunk_size[1])
 
-            self._chunk_execute_model_req(execute_model_req, original_prompt_sizes, chunkable_attrs)
+            #self._chunk_execute_model_req(execute_model_req, original_prompt_sizes, chunkable_attrs)
             execute_model_req_patch = self._compute_execute_model_req_patch(
                 cached_execute_model_req, execute_model_req, tracked_attrs)
             self.cached_execute_model_reqs[

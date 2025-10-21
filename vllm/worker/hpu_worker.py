@@ -145,6 +145,65 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         self.cached_execute_model_req: Dict[int, ExecuteModelRequest] = {}
         self._unpadded_lengths = {}
         self.lock = threading.Lock()
+        self._bg_step_queues: Dict[int, "queue.Queue"] = {}
+        self._bg_step_threads: Dict[int, threading.Thread] = {}
+        self._ve_patch_lock: Dict[int, threading.Lock] = {}
+        self._shutdown = False
+
+    def _ensure_bg_thread(self, ve: int):
+        if ve in self._bg_step_threads:
+            return
+        q = self._bg_step_queues.setdefault(ve, queue.Queue())
+        lock = self._ve_patch_lock.setdefault(ve, threading.Lock())
+
+        def _worker():
+            while not self._shutdown:
+                try:
+                    step = q.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if step is None:
+                    break
+                execute_model_req, patch, original_prompt_sizes = step
+                with lock:
+                    cached_seq_data = self.all_cached_seq_data.get(ve, {})
+                    self.all_cached_seq_data[ve] = self._apply_patch_to_execute_model_req(
+                        execute_model_req, cached_seq_data, patch, original_prompt_sizes)
+                    # Run model forward (ignore output except for cache effects).
+                    self._execute_model(execute_model_req, execute_model_req.num_steps)
+                q.task_done()
+
+        t = threading.Thread(target=_worker, name=f"bg-ve-{ve}", daemon=True)
+        t.start()
+        self._bg_step_threads[ve] = t
+
+    def _enqueue_background_prefill(self, ve: int, execute_model_req, patch, original_prompt_sizes):
+        self._ensure_bg_thread(ve)
+        self._bg_step_queues[ve].put((execute_model_req, patch, original_prompt_sizes))
+
+    def _early_return_allowed(self, execute_model_req) -> bool:
+        if execute_model_req is None:
+            return False
+        # All seq_groups still prompt.
+        if not all(sg.is_prompt for sg in execute_model_req.seq_group_metadata_list):
+            return False
+        # None of the sequences at final chunk (curr_len == full_len).
+        for sg in execute_model_req.seq_group_metadata_list:
+            for _, seq_data in sg.seq_data.items():
+                full_len = getattr(seq_data, "prompt_token_ids_length", 0)
+                curr_len = len(getattr(seq_data, "prompt_token_ids", ()))
+                if full_len == 0:
+                    continue
+                if curr_len >= full_len:
+                    return False
+        return True
+
+    def shutdown_background(self):
+        self._shutdown = True
+        for ve, q in self._bg_step_queues.items():
+            q.put(None)
+        for t in self._bg_step_threads.values():
+            t.join(timeout=1.0)
 
     def update_on_demand_profiler_cfg(self):
         assert self.on_demand_profiler_step_counter==0
@@ -521,7 +580,29 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
             if execute_model_req is not None:
                 ve = execute_model_req.virtual_engine
+                # Early return path.
+                if self._early_return_allowed(execute_model_req):
+                    # Queue background execution; DO NOT apply patch inline.
+                    self._enqueue_background_prefill(
+                        ve, execute_model_req, execute_model_req_patch, original_prompt_sizes)
+                    # Return dummy sampler outputs immediately.
+                    dummy_count = len(execute_model_req.seq_group_metadata_list)
+                    return [
+                        SamplerOutput(
+                            outputs=[CompletionSequenceGroupOutput(samples=[], prompt_logprobs=None)],
+                            sampled_token_probs=None,
+                            sampled_token_ids=None,
+                            spec_decode_worker_metrics=None,
+                        )
+                        for _ in range(dummy_count)
+                    ]
+                # Normal synchronous path.
                 cached_seq_data = self.all_cached_seq_data.get(ve, {})
+                # Only apply patch directly when no pending background steps.
+                q = self._bg_step_queues.get(ve)
+                if q and not q.empty():
+                    # Wait for previously enqueued background prefill steps to finish.
+                    q.join()
                 self.all_cached_seq_data[ve] = (
                     self._apply_patch_to_execute_model_req(
                         execute_model_req,
