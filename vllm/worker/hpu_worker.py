@@ -174,7 +174,11 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
     def _enqueue_background_prefill(self, model_input, num_steps, kwargs):
         self._ensure_bg_thread(model_input.virtual_engine)
-        self._bg_step_queues[model_input.virtual_engine].put((model_input, num_steps, kwargs))
+        q = self._bg_step_queues[model_input.virtual_engine]
+        # Enforce per-VE max queue length of 1.
+        while q.qsize() >= 1:
+            time.sleep(0.005)  # 5 ms backoff
+        q.put((model_input, num_steps, kwargs))
 
     def _early_return_allowed(self, execute_model_req) -> bool:
         if execute_model_req is None:
