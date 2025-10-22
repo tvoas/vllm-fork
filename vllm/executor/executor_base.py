@@ -430,28 +430,35 @@ class DistributedExecutorBase(ExecutorBase):
             logger.info(f"[EXEC] attempt-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
             with self._cache_lock[ve]:
                 logger.info(f"[EXEC] acquired-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
-                # Update executor-side cached base
                 entry = self.cached_execute_model_reqs.get(ve)
+                base_hash = ""
+                cache = {}
                 if entry:
                     base_hash, cache = entry
-                    for seq_key in all_remainders:
-                        for attr in all_remainders[seq_key]:
-                            remainder = all_remainders[seq_key][attr]
-                            if seq_key in cache and attr in cache[seq_key]:
-                                target = cache[seq_key][attr]
-                                if isinstance(target, (list, array.array)):
-                                    target.extend(remainder)
-                                elif isinstance(target, tuple):
-                                    cache[seq_key][attr] = target + tuple(remainder)
-                self.collective_rpc("stream_prefill_chunk",
-                                    args=(ve, all_remainders))
-                self.cached_execute_model_reqs[ve] = (base_hash, cache)
+                    for seq_key, attr_map in all_remainders.items():
+                        if seq_key not in cache:
+                            continue
+                        for attr, remainder in attr_map.items():
+                            if attr not in cache[seq_key]:
+                                continue
+                            target = cache[seq_key][attr]
+                            if isinstance(target, (list, array.array)):
+                                target.extend(remainder)
+                            elif isinstance(target, tuple):
+                                cache[seq_key][attr] = target + tuple(remainder)
+                # Send to workers (they will ignore sequences not yet cached)
+                try:
+                    self.collective_rpc("stream_prefill_chunk", args=(ve, all_remainders))
+                except Exception as e:
+                    logger.warning(f"[EXEC] stream_prefill_chunk rpc failed ve={ve}: {e}")
+                if entry:
+                    self.cached_execute_model_reqs[ve] = (base_hash, cache)
                 logger.info(f"[EXEC] release-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
-
             self._streaming_active[ve] = False
         t = threading.Thread(target=_worker, name=f"prefill-stream-ve{ve}", daemon=True)
         self._streaming_threads[ve] = t
         t.start()
+
     
     def _chunk_execute_model_req(
         self,
@@ -466,24 +473,16 @@ class DistributedExecutorBase(ExecutorBase):
                 cutoff_len = chunk_info[2]
                 if cutoff_len == 0:
                     continue
-
                 for attr in chunkable_attrs:
                     val = getattr(seq_data, attr)
                     total_len = len(val)
-
                     if cutoff_len >= total_len:
-                        continue  # Nothing to truncate.
-
-                    # Slice off remainder.
+                        continue
                     remainder = val[cutoff_len:total_len]
                     truncated = val[:cutoff_len]
-
-                    # Store as (chunk_size, remainder_sequence)
-                    chunk_unit = cutoff_len - chunk_info[1] if cutoff_len - chunk_info[1] > 0 else len(remainder)
-                    self._chunk_remainders[seq_key][attr] = (chunk_unit, remainder)
-
-                    # Truncate seq_data
+                    self._chunk_remainders[seq_key][attr] = remainder
                     setattr(seq_data, attr, truncated)
+
 
     def restore_chunked_execute_model_req(
         self,
@@ -491,12 +490,10 @@ class DistributedExecutorBase(ExecutorBase):
     ):
         if execute_model_req is None:
             return
-
         def _as_array_l(val):
             if isinstance(val, array.array):
-                return val
+                return array.array(val.typecode, val)
             return array.array("l", val)
-
         chunkable_attrs = [
             "_cached_all_token_ids",
             "_prompt_token_ids",
@@ -512,14 +509,18 @@ class DistributedExecutorBase(ExecutorBase):
                 for seq_key, seq_data in seq_group.seq_data.items():
                     if seq_key not in self._chunk_remainders:
                         continue
-                    remainder = self._chunk_remainders[seq_key]
+                    remainder_map = self._chunk_remainders[seq_key]
                     for attr in chunkable_attrs:
+                        if attr not in remainder_map:
+                            continue
+                        patch_val = remainder_map[attr]
                         cur = getattr(seq_data, attr)
-                        patch_val = remainder.get(attr, None)
-
                         if isinstance(cur, array.array):
                             if patch_val is not None:
-                                cur.extend(_as_array_l(patch_val))
+                                if isinstance(patch_val, array.array):
+                                    cur.extend(patch_val)
+                                else:
+                                    cur.extend(_as_array_l(patch_val))
                             setattr(seq_data, attr,
                                 array.array("l", cur))  # avoid aliasing
                         elif isinstance(cur, list):
@@ -529,11 +530,11 @@ class DistributedExecutorBase(ExecutorBase):
                                 list(cur))  # avoid aliasing
                         elif isinstance(cur, tuple):
                             if patch_val:
-                                cur = cur + tuple(patch_val)
+                                cur = cur + (tuple(patch_val) if not isinstance(patch_val, tuple) else patch_val)
                             setattr(seq_data, attr, cur)
-
                     del self._chunk_remainders[seq_key]
             logger.info(f"[EXEC] release-lock _cache_lock ve={execute_model_req.virtual_engine} func=restore_chunked_execute_model_req")
+
 
     def _compute_execute_model_req_patch(
         self,
