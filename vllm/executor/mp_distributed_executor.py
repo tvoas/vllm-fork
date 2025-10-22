@@ -241,7 +241,7 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
         tasks = []
         if current_platform.is_hpu():
             original_execute_model_req = execute_model_req
-            tasks, execute_model_req = self.prepare_execute_model_req_patch(
+            virtual_engine, original_prompt_sizes, execute_model_req = self.prepare_execute_model_req_patch(
                 execute_model_req,
                 execute_step_count,
             )
@@ -258,7 +258,7 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                     _run_task_with_lock(driver_worker.execute_method_async,
                                         self.pp_locks[pp_rank],
                                         "execute_model", execute_model_req)))
-        
+        self._start_background_streaming(virtual_engine, original_prompt_sizes)
         results = await asyncio.gather(*tasks)
 
         if current_platform.is_hpu():

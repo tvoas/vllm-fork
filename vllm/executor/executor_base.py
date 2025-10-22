@@ -422,7 +422,7 @@ class DistributedExecutorBase(ExecutorBase):
             if ve not in self._cache_lock:
                 self._cache_lock[ve] = threading.Lock()
         logger.info(f"[EXEC] attempt-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
-        streaming_tasks = []
+        #streaming_tasks = []
         with self._cache_lock[ve]:
             logger.info(f"[EXEC] acquired-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
             entry = self.cached_execute_model_reqs.get(ve)
@@ -447,21 +447,23 @@ class DistributedExecutorBase(ExecutorBase):
 
                 if has_remainder:
                     logger.info(f"[EXEC] launching streamed remainder update ve={ve} seq_keys={list(all_remainders.keys())}")
-                    def _wrap_task(t):
-                        return asyncio.create_task(t) if asyncio.iscoroutine(t) else t
-                    # Driver (PP stage 0)
-                    driver_task = self.driver_stream_prefill_chunk(ve, all_remainders)
-                    streaming_tasks.append(_wrap_task(driver_task))
-                    # Remaining PP stages
-                    for pp_rank, driver_worker in enumerate(self.tp_driver_workers, start=1):
-                        t = driver_worker.execute_method_async("stream_prefill_chunk", ve, all_remainders)
-                        streaming_tasks.append(_wrap_task(t))
+                    self.collective_rpc("stream_prefill_chunk",
+                                    args=(ve, all_remainders))
+                    #def _wrap_task(t):
+                    #    return asyncio.create_task(t) if asyncio.iscoroutine(t) else t
+                    ## Driver (PP stage 0)
+                    #driver_task = self.driver_stream_prefill_chunk(ve, all_remainders)
+                    #streaming_tasks.append(_wrap_task(driver_task))
+                    ## Remaining PP stages
+                    #for pp_rank, driver_worker in enumerate(self.tp_driver_workers, start=1):
+                    #    t = driver_worker.execute_method_async("stream_prefill_chunk", ve, all_remainders)
+                    #    streaming_tasks.append(_wrap_task(t))
                 else:
                     logger.info(f"[EXEC] no non-empty remainders to stream ve={ve}")
             if entry:
                 self.cached_execute_model_reqs[ve] = (base_hash, cache)
             logger.info(f"[EXEC] release-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
-            return streaming_tasks
+            #return streaming_tasks
     
     def _chunk_execute_model_req(
         self,
@@ -802,8 +804,7 @@ class DistributedExecutorBase(ExecutorBase):
                     use_cached_base_req = True
                 logger.info(f"[EXEC] release-lock _cache_lock ve={execute_model_req.virtual_engine} func=prepare_execute_model_req_patch")
 
-            streaming_tasks = self._start_background_streaming(virtual_engine, original_prompt_sizes)
-        return streaming_tasks, (
+        return virtual_engine, original_prompt_sizes, (
             virtual_engine if use_cached_base_req else execute_model_req,
             execute_model_req_patch,
             use_cached_base_req,
