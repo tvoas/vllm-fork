@@ -258,8 +258,8 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                     _run_task_with_lock(driver_worker.execute_method_async,
                                         self.pp_locks[pp_rank],
                                         "execute_model", execute_model_req)))
-        self._start_background_streaming(virtual_engine, original_prompt_sizes)
         results = await asyncio.gather(*tasks)
+        self._start_background_streaming(virtual_engine, original_prompt_sizes)
 
         if current_platform.is_hpu():
             self.restore_chunked_execute_model_req(
