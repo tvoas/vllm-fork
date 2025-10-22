@@ -356,7 +356,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         per_seq_flags = []
         if hasattr(self, "_last_prefill_or_decode"):
             try:
-                per_seq_flags = self._last_prefill_or_decode(model_input, execute_model_req)
+                per_seq_flags = self._last_prefill_or_decode(execute_model_req)
             except Exception:
                 per_seq_flags = []
         needs_sampling = (not is_prompt) or (per_seq_flags and any(per_seq_flags))
