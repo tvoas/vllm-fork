@@ -286,16 +286,11 @@ class DistributedExecutorBase(ExecutorBase):
         # in the parallel workers. It's a coroutine in the AsyncLLMEngine case.
         self.parallel_worker_tasks: Optional[Union[Any, Awaitable[Any]]] = None
         self.cached_execute_model_reqs: Dict[int, ExecuteModelRequest] = {}
-        self.execute_step_count = 0
-        import threading
-        self.step_count_lock = threading.Lock()
         # Tracks per-seq prefill chunk step (1-based).
         self._prefill_chunk_steps: Dict[Hashable, int] = {}
         # Remainders beyond current transmitted truncation:
         # {virtual_engine: {seq_key: {attr: list/array/tuple remainder}}}
         self._chunk_remainders: Dict[int, Dict[Hashable, Dict[str, Any]]] = {}
-        # Background streaming state
-        self._streaming_threads: Dict[int, threading.Thread] = {}
         self._master_cache_lock = threading.Lock()
         self._cache_lock: Dict[int, threading.Lock] = {}
         super().__init__(*args, **kwargs)
@@ -412,59 +407,6 @@ class DistributedExecutorBase(ExecutorBase):
         `stop_remote_worker_execution_loop`.
         The API is idempotent (guarantee only 1 loop run at any moment)."""
         raise NotImplementedError
-    
-    def _start_background_streaming(self, ve: int, original_prompt_sizes: Dict[int, Tuple[int,int,int]]):
-        all_remainders = {}
-        for seq_key in original_prompt_sizes:
-            remainders = self._chunk_remainders.get(seq_key, {})
-            all_remainders[seq_key] = remainders
-        with self._master_cache_lock:
-            if ve not in self._cache_lock:
-                self._cache_lock[ve] = threading.Lock()
-        logger.info(f"[EXEC] attempt-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
-        streaming_tasks = []
-        with self._cache_lock[ve]:
-            logger.info(f"[EXEC] acquired-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
-            entry = self.cached_execute_model_reqs.get(ve)
-            base_hash = ""
-            cache = {}
-            has_remainder = False
-            if entry:
-                base_hash, cache = entry
-                for seq_key, attr_map in all_remainders.items():
-                    if seq_key not in cache:
-                        continue
-                    for attr, remainder in attr_map.items():
-                        if attr not in cache[seq_key]:
-                            continue
-                        if len(remainder) > 0:
-                            has_remainder = True
-                        target = cache[seq_key][attr]
-                        if isinstance(target, (list, array.array)):
-                            target.extend(remainder)
-                        elif isinstance(target, tuple):
-                            cache[seq_key][attr] = target + tuple(remainder)
-
-                if has_remainder:
-                    logger.info(f"[EXEC] launching streamed remainder update ve={ve} seq_keys={list(all_remainders.keys())}")
-                    #self.collective_rpc("stream_prefill_chunk",
-                    #                args=(ve, all_remainders))
-                    def _wrap_task(t):
-                        return asyncio.create_task(t) if asyncio.iscoroutine(t) else t
-                    # Driver (PP stage 0)
-                    driver_task = self.driver_stream_prefill_chunk(ve, all_remainders)
-                    streaming_tasks.append(_wrap_task(driver_task))
-                    # Remaining PP stages
-                    for pp_rank, driver_worker in enumerate(self.tp_driver_workers, start=1):
-                        t = driver_worker.execute_method_async("stream_prefill_chunk", ve, all_remainders)
-                        streaming_tasks.append(_wrap_task(t))
-                else:
-                    logger.info(f"[EXEC] no non-empty remainders to stream ve={ve}")
-            if entry:
-                self.cached_execute_model_reqs[ve] = (base_hash, cache)
-            logger.info(f"[EXEC] release-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
-            return streaming_tasks
-    
     def _chunk_execute_model_req(
         self,
         execute_model_req: Any,
@@ -507,9 +449,7 @@ class DistributedExecutorBase(ExecutorBase):
         with self._master_cache_lock:
             if execute_model_req.virtual_engine not in self._cache_lock:
                 self._cache_lock[execute_model_req.virtual_engine] = threading.Lock()
-        logger.info(f"[EXEC] attempt-lock _cache_lock ve={execute_model_req.virtual_engine} func=restore_chunked_execute_model_req")
         with self._cache_lock[execute_model_req.virtual_engine]:
-            logger.info(f"[EXEC] acquire-lock _cache_lock ve={execute_model_req.virtual_engine} func=restore_chunked_execute_model_req")
             for seq_group in execute_model_req.seq_group_metadata_list:
                 for seq_key, seq_data in seq_group.seq_data.items():
                     if seq_key not in self._chunk_remainders:
@@ -538,8 +478,6 @@ class DistributedExecutorBase(ExecutorBase):
                                 cur = cur + (tuple(patch_val) if not isinstance(patch_val, tuple) else patch_val)
                             setattr(seq_data, attr, cur)
                     del self._chunk_remainders[seq_key]
-            logger.info(f"[EXEC] release-lock _cache_lock ve={execute_model_req.virtual_engine} func=restore_chunked_execute_model_req")
-        self.log_execute_model_req(execute_model_req, prefix="Restored Executor Model Req")
 
     def _compute_execute_model_req_patch(
         self,
@@ -565,11 +503,6 @@ class DistributedExecutorBase(ExecutorBase):
         Returns:
             A dict keyed by sequence key with only the incremental changes.
         """
-        chunkable_attrs = [
-            "_cached_all_token_ids",
-            "_prompt_token_ids",
-            "_prompt_token_ids_tuple",
-        ]
         patch_by_key: Dict[Hashable, Dict[str, Any]] = {}
         for seq_group in execute_model_req.seq_group_metadata_list:
             sampling_params = seq_group.sampling_params
@@ -715,69 +648,10 @@ class DistributedExecutorBase(ExecutorBase):
                     limits[seq_key] = (0, 0)
         return limits
     
-    def log_execute_model_req(self, execute_model_req, ret=False, depth=0, prefix="ExecuteModelReq") -> None:
-        log = ["    " * depth + prefix]
-        def add(label, value, depth=0):
-            header = '    ' * depth
-            log.append(f"{header}{label}: {value}")
-        for gi, group in enumerate(getattr(execute_model_req, "seq_group_metadata_list", [])):
-            add(f"SequenceGroupMetadata[{gi}]", "--------------------------------------------------", depth+1)
-            add("request_id", getattr(group, "request_id", None), depth+2)
-            add("is_prompt", getattr(group, "is_prompt", None), depth+2)
-            # seq_data loop
-            for seq_id, seq in getattr(group, "seq_data", {}).items():
-                add("seq_id", seq_id, depth+2)
-                prompt_ids = getattr(seq, "prompt_token_ids", [])
-                output_ids = getattr(seq, "output_token_ids", [])
-                add("prompt_token_ids", prompt_ids, depth+3)
-                add("prompt_token_ids_length", len(prompt_ids), depth+3)
-                add("output_token_ids", output_ids, depth+3)
-                add("output_token_ids_length", len(output_ids), depth+3)
-                add("cumulative_logprob", getattr(seq, "cumulative_logprob", None), depth+3)
-                # get_num_computed_tokens could be attr or method
-                computed = getattr(seq, "get_num_computed_tokens", None)
-                if callable(computed):
-                    try:
-                        computed = computed()
-                    except Exception:
-                        pass
-                add("get_num_computed_tokens", computed, depth+3)
-            # sampling_params.max_tokens
-            sampling_params = getattr(group, "sampling_params", None)
-            max_tokens = getattr(sampling_params, "max_tokens", None) if sampling_params else None
-            add("sampling_params.max_tokens", max_tokens, depth+2)
-            # block_tables loop
-            for seq_id, blocks in getattr(group, "block_tables", {}).items():
-                add(f"block_tables[seq_id={seq_id}].values", blocks, depth+2)
-                try:
-                    length = len(blocks)
-                except Exception:
-                    length = None
-                add(f"block_tables[seq_id={seq_id}].length", length, depth+2)
-            add("do_sample", getattr(group, "do_sample", getattr(sampling_params, "do_sample", None)), depth+2)
-            add("state", getattr(group, "state", None), depth+2)
-            add("token_chunk_size", getattr(group, "token_chunk_size", None), depth+2)
-        # Top-level fields
-        add("virtual_engine", getattr(execute_model_req, "virtual_engine", None), depth+1)
-        add("num_lookahead_slots", getattr(execute_model_req, "num_lookahead_slots", None), depth+1)
-        add("running_queue_size", getattr(execute_model_req, "running_queue_size", None), depth+1)
-        add("previous_hidden_states", getattr(execute_model_req, "previous_hidden_states", None), depth+1)
-        add("num_steps", getattr(execute_model_req, "num_steps", None), depth+1)
-        add("async_callback", getattr(execute_model_req, "async_callback", None), depth+1)
-        add("is_dummy_batch", getattr(execute_model_req, "is_dummy_batch", None), depth+1)
-        if ret:
-            return log
-        try:
-            with open(f"/workspace/world0_inputs.txt", "a") as f:
-                f.write("\n".join(log) + "\n\n\n")
-        except Exception:
-            pass
-
     def prepare_execute_model_req_patch(
         self,
         execute_model_req: Optional[Any],
-        execute_step_count: int = 0,
-    ) -> Tuple[List[asyncio.Task], Tuple[Any, Dict[Hashable, Dict[str, Any]], bool, Dict[int, Tuple[int,int,int]], int]]:
+    ) -> Tuple[Any, Dict[Hashable, Dict[str, Any]], bool]:
         """Produce an incremental patch and optionally reuse a cached
         base request.
 
@@ -813,9 +687,7 @@ class DistributedExecutorBase(ExecutorBase):
         original_prompt_sizes = {}
         execute_model_req_patch: Dict[Hashable, Dict[str, Any]] = {}
         use_cached_base_req = False
-        tasks = []
         if execute_model_req is not None:
-            self.log_execute_model_req(execute_model_req, prefix="Executor Model Req 1")
             virtual_engine = execute_model_req.virtual_engine
             if virtual_engine in self.cached_execute_model_reqs:
                 prev_execute_model_req_hash, cached_execute_model_req = (
@@ -844,9 +716,7 @@ class DistributedExecutorBase(ExecutorBase):
             with self._master_cache_lock:
                 if execute_model_req.virtual_engine not in self._cache_lock:
                     self._cache_lock[execute_model_req.virtual_engine] = threading.Lock()
-            logger.info(f"[EXEC] attempt-lock _cache_lock ve={execute_model_req.virtual_engine} func=prepare_execute_model_req_patch")
             with self._cache_lock[virtual_engine]:
-                logger.info(f"[EXEC] acquire-lock _cache_lock ve={execute_model_req.virtual_engine} func=prepare_execute_model_req_patch")
                 execute_model_req_patch = self._compute_execute_model_req_patch(
                     cached_execute_model_req, execute_model_req, tracked_attrs)
                 self.cached_execute_model_reqs[
@@ -861,12 +731,9 @@ class DistributedExecutorBase(ExecutorBase):
                 )
                 if prev_execute_model_req_hash == new_execute_model_req_hash:
                     use_cached_base_req = True
-                logger.info(f"[EXEC] release-lock _cache_lock ve={execute_model_req.virtual_engine} func=prepare_execute_model_req_patch")
-            self.log_execute_model_req(execute_model_req, prefix="Executor Model Req 2")
-        return virtual_engine, original_prompt_sizes, (
+        return (
             virtual_engine if use_cached_base_req else execute_model_req,
             execute_model_req_patch,
             use_cached_base_req,
             original_prompt_sizes,
-            execute_step_count,
         )

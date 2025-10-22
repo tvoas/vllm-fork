@@ -129,7 +129,6 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                           max_concurrent_workers=self.parallel_config.
                           max_parallel_loading_workers)
         self.driver_exec_model = make_async(self.driver_worker.execute_model)
-        self.driver_stream_prefill_chunk = make_async(self.driver_worker.stream_prefill_chunk)
         self.pp_locks: Optional[List[Union[asyncio.Lock,
                                            nullcontext[Any]]]] = None
         self.shutdown_workers = True
@@ -214,9 +213,6 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
         self,
         execute_model_req: Optional[ExecuteModelRequest] = None
     ) -> List[SamplerOutput]:
-        with self.step_count_lock:
-            self.execute_step_count += 1
-            execute_step_count = self.execute_step_count
         if not self.tp_driver_workers:
             return await self.driver_exec_model(execute_model_req)
 
@@ -238,15 +234,14 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                 lock_type()
                 for _ in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
             ]
-        tasks = []
+
         if current_platform.is_hpu():
             original_execute_model_req = execute_model_req
-            virtual_engine, original_prompt_sizes, execute_model_req = self.prepare_execute_model_req_patch(
+            execute_model_req = self.prepare_execute_model_req_patch(
                 execute_model_req,
-                execute_step_count,
             )
 
-        tasks += [
+        tasks = [
             asyncio.create_task(
                 _run_task_with_lock(self.driver_exec_model, self.pp_locks[0],
                                     execute_model_req))
@@ -259,8 +254,6 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                                         self.pp_locks[pp_rank],
                                         "execute_model", execute_model_req)))
         results = await asyncio.gather(*tasks)
-        tasks = self._start_background_streaming(virtual_engine, original_prompt_sizes)
-        await asyncio.gather(*tasks)
 
         if current_platform.is_hpu():
             self.restore_chunked_execute_model_req(
