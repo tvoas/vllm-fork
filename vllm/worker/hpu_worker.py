@@ -156,6 +156,14 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         with self._master_cache_lock:
             if virtual_engine not in self._cache_lock:
                 self._cache_lock[virtual_engine] = threading.Lock()
+        attempts = 0
+        while virtual_engine not in self.all_cached_seq_data:
+            # Wait until initial execute_model has populated cache for this VE.
+            # Throttled log to avoid spam.
+            if attempts % 200 == 0:
+                logger.info(f"[WORKER={get_world_group().rank_in_group}] waiting-cache-init _cache_lock ve={virtual_engine} func=stream_prefill_chunk")
+            attempts += 1
+            time.sleep(0.001)  # 1ms backoff
         logger.info(f"[WORKER={get_world_group().rank_in_group}] attempt-lock _cache_lock ve={virtual_engine} func=stream_prefill_chunk seq_keys={list(chunk_map.keys())}")
         with self._cache_lock[virtual_engine]:
             logger.info(f"[WORKER={get_world_group().rank_in_group}] acquire-lock _cache_lock ve={virtual_engine} func=stream_prefill_chunk seq_keys={list(chunk_map.keys())}")
