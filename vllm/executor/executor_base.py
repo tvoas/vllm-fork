@@ -447,18 +447,8 @@ class DistributedExecutorBase(ExecutorBase):
 
                 if has_remainder:
                     logger.info(f"[EXEC] launching streamed remainder update ve={ve} seq_keys={list(all_remainders.keys())}")
-                    # Schedule per-rank stream_prefill_chunk just like execute_model dispatch.
-                    # Remaining PP stages (driver workers for other stages)
-                    for pp_rank, driver_worker in enumerate(self.tp_driver_workers,
-                                                            start=1):
-                        streaming_tasks.append(
-                            asyncio.create_task(
-                                driver_worker.execute_method_async(
-                                    "stream_prefill_chunk", ve, all_remainders)))
-                    # Driver (PP stage 0)
-                    streaming_tasks += [asyncio.create_task(
-                        self.driver_worker.execute_method_async(
-                            "stream_prefill_chunk", ve, all_remainders))]
+                    streaming_tasks += [worker.execute_method_async("stream_prefill_chunk", ve, all_remainders)
+                                        for worker in self.tp_driver_workers]
                 else:
                     logger.info(f"[EXEC] no non-empty remainders to stream ve={ve}")
             if entry:
