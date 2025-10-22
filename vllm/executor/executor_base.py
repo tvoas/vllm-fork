@@ -9,6 +9,7 @@ from typing import (Any, Awaitable, Callable, Dict, Hashable, List, Optional,
                     Set, Tuple, Union)
 
 import torch.nn as nn
+import threading
 from typing_extensions import TypeVar
 
 import vllm.platforms
@@ -296,7 +297,7 @@ class DistributedExecutorBase(ExecutorBase):
         # Background streaming state
         self._streaming_threads: Dict[int, threading.Thread] = {}
         self._streaming_active: Dict[int, bool] = {}
-        self._streaming_lock = threading.Lock()
+        self._master_cache_lock = threading.Lock()
         self._cache_lock: Dict[int, threading.Lock] = {}
         super().__init__(*args, **kwargs)
 
@@ -423,6 +424,9 @@ class DistributedExecutorBase(ExecutorBase):
             for seq_key in original_prompt_sizes:
                 remainders = self._chunk_remainders.get(seq_key, {})
                 all_remainders[seq_key] = remainders
+            with self._master_cache_lock:
+                if ve not in self._cache_lock:
+                    self._cache_lock[ve] = threading.Lock()
             logger.info(f"[EXEC] attempt-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
             with self._cache_lock[ve]:
                 logger.info(f"[EXEC] acquired-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
@@ -445,7 +449,6 @@ class DistributedExecutorBase(ExecutorBase):
                 logger.info(f"[EXEC] release-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
 
             self._streaming_active[ve] = False
-        import threading
         t = threading.Thread(target=_worker, name=f"prefill-stream-ve{ve}", daemon=True)
         self._streaming_threads[ve] = t
         t.start()
@@ -499,6 +502,9 @@ class DistributedExecutorBase(ExecutorBase):
             "_prompt_token_ids",
             "_prompt_token_ids_tuple",
         ]
+        with self._master_cache_lock:
+            if execute_model_req.virtual_engine not in self._cache_lock:
+                self._cache_lock[execute_model_req.virtual_engine] = threading.Lock()
         logger.info(f"[EXEC] attempt-lock _cache_lock ve={execute_model_req.virtual_engine} func=restore_chunked_execute_model_req")
         with self._cache_lock[execute_model_req.virtual_engine]:
             logger.info(f"[EXEC] acquire-lock _cache_lock ve={execute_model_req.virtual_engine} func=restore_chunked_execute_model_req")
@@ -769,6 +775,9 @@ class DistributedExecutorBase(ExecutorBase):
                     original_prompt_sizes[seq_key] = (original_prompt_sizes.get(seq_key, 0), chunk_size[0], chunk_size[1])
 
             self._chunk_execute_model_req(execute_model_req, original_prompt_sizes, chunkable_attrs)
+            with self._master_cache_lock:
+                if execute_model_req.virtual_engine not in self._cache_lock:
+                    self._cache_lock[execute_model_req.virtual_engine] = threading.Lock()
             logger.info(f"[EXEC] attempt-lock _cache_lock ve={execute_model_req.virtual_engine} func=prepare_execute_model_req_patch")
             with self._cache_lock[virtual_engine]:
                 logger.info(f"[EXEC] acquire-lock _cache_lock ve={execute_model_req.virtual_engine} func=prepare_execute_model_req_patch")
