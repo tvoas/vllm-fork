@@ -129,6 +129,7 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                           max_concurrent_workers=self.parallel_config.
                           max_parallel_loading_workers)
         self.driver_exec_model = make_async(self.driver_worker.execute_model)
+        self.driver_stream_prefill_chunk = make_async(self.driver_worker.stream_prefill_chunk)
         self.pp_locks: Optional[List[Union[asyncio.Lock,
                                            nullcontext[Any]]]] = None
         self.shutdown_workers = True
