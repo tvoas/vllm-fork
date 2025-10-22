@@ -556,7 +556,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         2: use_cached_base_req (bool)
         3: execute_step_count (int)
         """
-        return
         try:
             base_obj, patch, reused, orig_count, step_count = prepare_result
         except Exception:
@@ -611,7 +610,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             pass
 
     def log_execute_model_req(self, execute_model_req, ret=False, depth=0, prefix="ExecuteModelReq") -> None:
-        return
         log = ["    " * depth + prefix]
         def add(label, value, depth=0):
             header = '    ' * depth
@@ -666,13 +664,10 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         try:
             with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
                 f.write("\n".join(log) + "\n\n\n")
-
-                f.write(f"full_execute_model_req = {execute_model_req}" + "\n\n\n")
         except Exception:
             pass
 
     def log_model_input(self, model_input) -> None:
-        return
         log = ["ModelInput"]
         def add(label, value, depth=0):
             log.append(f"{'    '*depth}{label}: {value}")
@@ -759,7 +754,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         prefix="CachedSeqData",
         ret=False,
     ):
-        return
         log = ["    " * depth + prefix]
         def add(label, value, d=0):
             log.append(f"{'    ' * (depth + d)}{label}: {value}")
