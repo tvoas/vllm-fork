@@ -423,22 +423,26 @@ class DistributedExecutorBase(ExecutorBase):
             for seq_key in original_prompt_sizes:
                 remainders = self._chunk_remainders.get(seq_key, {})
                 all_remainders[seq_key] = remainders
+            logger.info(f"[EXEC] attempt-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
             with self._cache_lock[ve]:
+                logger.info(f"[EXEC] acquired-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
                 # Update executor-side cached base
                 entry = self.cached_execute_model_reqs.get(ve)
                 if entry:
                     base_hash, cache = entry
                     for seq_key in all_remainders:
                         for attr in all_remainders[seq_key]:
+                            remainder = all_remainders[seq_key][attr]
                             if seq_key in cache and attr in cache[seq_key]:
                                 target = cache[seq_key][attr]
                                 if isinstance(target, (list, array.array)):
-                                    target.extend(sl)
+                                    target.extend(remainder)
                                 elif isinstance(target, tuple):
-                                    cache[seq_key][attr] = target + tuple(sl)
+                                    cache[seq_key][attr] = target + tuple(remainder)
                 self.collective_rpc("stream_prefill_chunk",
                                     args=(ve, all_remainders))
                 self.cached_execute_model_reqs[ve] = (base_hash, cache)
+                logger.info(f"[EXEC] release-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
 
             self._streaming_active[ve] = False
         import threading
@@ -495,7 +499,9 @@ class DistributedExecutorBase(ExecutorBase):
             "_prompt_token_ids",
             "_prompt_token_ids_tuple",
         ]
+        logger.info(f"[EXEC] attempt-lock _cache_lock ve={execute_model_req.virtual_engine} func=restore_chunked_execute_model_req")
         with self._cache_lock[execute_model_req.virtual_engine]:
+            logger.info(f"[EXEC] acquire-lock _cache_lock ve={execute_model_req.virtual_engine} func=restore_chunked_execute_model_req")
             for seq_group in execute_model_req.seq_group_metadata_list:
                 for seq_key, seq_data in seq_group.seq_data.items():
                     if seq_key not in self._chunk_remainders:
@@ -521,6 +527,7 @@ class DistributedExecutorBase(ExecutorBase):
                             setattr(seq_data, attr, cur)
 
                     del self._chunk_remainders[seq_key]
+            logger.info(f"[EXEC] release-lock _cache_lock ve={execute_model_req.virtual_engine} func=restore_chunked_execute_model_req")
 
     def _compute_execute_model_req_patch(
         self,
@@ -762,7 +769,9 @@ class DistributedExecutorBase(ExecutorBase):
                     original_prompt_sizes[seq_key] = (original_prompt_sizes.get(seq_key, 0), chunk_size[0], chunk_size[1])
 
             self._chunk_execute_model_req(execute_model_req, original_prompt_sizes, chunkable_attrs)
+            logger.info(f"[EXEC] attempt-lock _cache_lock ve={execute_model_req.virtual_engine} func=prepare_execute_model_req_patch")
             with self._cache_lock[virtual_engine]:
+                logger.info(f"[EXEC] acquire-lock _cache_lock ve={execute_model_req.virtual_engine} func=prepare_execute_model_req_patch")
                 execute_model_req_patch = self._compute_execute_model_req_patch(
                     cached_execute_model_req, execute_model_req, tracked_attrs)
                 self.cached_execute_model_reqs[
@@ -777,6 +786,7 @@ class DistributedExecutorBase(ExecutorBase):
                 )
                 if prev_execute_model_req_hash == new_execute_model_req_hash:
                     use_cached_base_req = True
+                logger.info(f"[EXEC] release-lock _cache_lock ve={execute_model_req.virtual_engine} func=prepare_execute_model_req_patch")
 
             self._start_background_streaming(virtual_engine, original_prompt_sizes)
         return (
