@@ -169,7 +169,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             logger.info(f"[WORKER={get_world_group().rank_in_group}] acquire-lock _cache_lock ve={virtual_engine} func=stream_prefill_chunk seq_keys={list(chunk_map.keys())}")
             cached_seq_data = self.all_cached_seq_data[virtual_engine]
             if get_world_group().rank_in_group == 0:
-                self.log_cached_seq_data(cached_seq_data, virtual_engine=ve, prefix="CachedSeqData Before Stream")
+                self.log_cached_seq_data(cached_seq_data, virtual_engine=virtual_engine, prefix="CachedSeqData Before Stream")
             for seq_key in chunk_map:
                 if seq_key not in cached_seq_data:
                     return
@@ -186,7 +186,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         seq_cache[attr] = dest + tuple(tokens)
             logger.info(f"[WORKER={get_world_group().rank_in_group}] release-lock _cache_lock ve={virtual_engine} func=stream_prefill_chunk seq_keys={list(chunk_map.keys())}")
             if get_world_group().rank_in_group == 0:
-                self.log_cached_seq_data(cached_seq_data, virtual_engine=ve, prefix="CachedSeqData Before After")
+                self.log_cached_seq_data(cached_seq_data, virtual_engine=virtual_engine, prefix="CachedSeqData Before After")
 
     def update_on_demand_profiler_cfg(self):
         assert self.on_demand_profiler_step_counter==0
