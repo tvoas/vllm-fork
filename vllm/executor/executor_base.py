@@ -296,7 +296,6 @@ class DistributedExecutorBase(ExecutorBase):
         self._chunk_remainders: Dict[int, Dict[Hashable, Dict[str, Any]]] = {}
         # Background streaming state
         self._streaming_threads: Dict[int, threading.Thread] = {}
-        self._streaming_active: Dict[int, bool] = {}
         self._master_cache_lock = threading.Lock()
         self._cache_lock: Dict[int, threading.Lock] = {}
         super().__init__(*args, **kwargs)
@@ -414,7 +413,7 @@ class DistributedExecutorBase(ExecutorBase):
         The API is idempotent (guarantee only 1 loop run at any moment)."""
         raise NotImplementedError
     
-    def _stream_worker(self, ve, original_prompt_sizes):
+    def _start_background_streaming(self, ve: int, original_prompt_sizes: Dict[int, Tuple[int,int,int]]):
         all_remainders = {}
         for seq_key in original_prompt_sizes:
             remainders = self._chunk_remainders.get(seq_key, {})
@@ -422,12 +421,10 @@ class DistributedExecutorBase(ExecutorBase):
         with self._master_cache_lock:
             if ve not in self._cache_lock:
                 self._cache_lock[ve] = threading.Lock()
-            if ve not in self._streaming_tasks:
-                self._streaming_tasks[ve] = []
         logger.info(f"[EXEC] attempt-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
+        streaming_tasks = []
         with self._cache_lock[ve]:
             logger.info(f"[EXEC] acquired-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
-            self._streaming_tasks[ve] = []
             entry = self.cached_execute_model_reqs.get(ve)
             base_hash = ""
             cache = {}
@@ -452,13 +449,13 @@ class DistributedExecutorBase(ExecutorBase):
                     logger.info(f"[EXEC] launching streamed remainder update ve={ve} seq_keys={list(all_remainders.keys())}")
                     # Schedule per-rank stream_prefill_chunk just like execute_model dispatch.
                     # Driver (PP stage 0)
-                    self._streaming_tasks[ve] += [asyncio.create_task(
+                    streaming_tasks += [asyncio.create_task(
                         self.driver_worker.execute_method_async(
                             "stream_prefill_chunk", ve, all_remainders))]
                     # Remaining PP stages (driver workers for other stages)
                     for pp_rank, driver_worker in enumerate(self.tp_driver_workers,
                                                             start=1):
-                        self._streaming_tasks.append(
+                        streaming_tasks.append(
                             asyncio.create_task(
                                 driver_worker.execute_method_async(
                                     self.pp_locks[pp_rank],
@@ -468,18 +465,7 @@ class DistributedExecutorBase(ExecutorBase):
             if entry:
                 self.cached_execute_model_reqs[ve] = (base_hash, cache)
             logger.info(f"[EXEC] release-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
-        self._streaming_active[ve] = False
-    
-    def _start_background_streaming(self, ve: int, original_prompt_sizes: Dict[int, Tuple[int,int,int]]):
-        # Spawn only once per VE.
-        if self._streaming_active.get(ve, False):
-            return
-        self._streaming_active[ve] = True
-
-        t = threading.Thread(target=self._stream_worker, name=f"prefill-stream-ve{ve}", daemon=True, args=(ve, original_prompt_sizes))
-        self._streaming_threads[ve] = t
-        t.start()
-
+            return streaming_tasks
     
     def _chunk_execute_model_req(
         self,
@@ -820,8 +806,8 @@ class DistributedExecutorBase(ExecutorBase):
                     use_cached_base_req = True
                 logger.info(f"[EXEC] release-lock _cache_lock ve={execute_model_req.virtual_engine} func=prepare_execute_model_req_patch")
 
-            self._start_background_streaming(virtual_engine, original_prompt_sizes)
-        return self._streaming_tasks[virtual_engine][:], (
+            streaming_tasks = self._start_background_streaming(virtual_engine, original_prompt_sizes)
+        return streaming_tasks, (
             virtual_engine if use_cached_base_req else execute_model_req,
             execute_model_req_patch,
             use_cached_base_req,
