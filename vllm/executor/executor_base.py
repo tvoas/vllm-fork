@@ -293,6 +293,11 @@ class DistributedExecutorBase(ExecutorBase):
         # Remainders beyond current transmitted truncation:
         # {virtual_engine: {seq_key: {attr: list/array/tuple remainder}}}
         self._chunk_remainders: Dict[int, Dict[Hashable, Dict[str, Any]]] = {}
+        # Background streaming state
+        self._streaming_threads: Dict[int, threading.Thread] = {}
+        self._streaming_active: Dict[int, bool] = {}
+        self._streaming_lock = threading.Lock()
+        self._cache_lock: Dict[int, threading.Lock] = {}
         super().__init__(*args, **kwargs)
 
     def execute_model(
@@ -408,6 +413,39 @@ class DistributedExecutorBase(ExecutorBase):
         The API is idempotent (guarantee only 1 loop run at any moment)."""
         raise NotImplementedError
     
+    def _start_background_streaming(self, ve: int, original_prompt_sizes: Dict[int, Tuple[int,int,int]]):
+        # Spawn only once per VE.
+        if self._streaming_active.get(ve, False):
+            return
+        self._streaming_active[ve] = True
+        def _worker():
+            all_remainders = {}
+            for seq_key in original_prompt_sizes:
+                remainders = self._chunk_remainders.get(seq_key, {})
+                all_remainders[seq_key] = remainders
+            with self._cache_lock[ve]:
+                # Update executor-side cached base
+                entry = self.cached_execute_model_reqs.get(ve)
+                if entry:
+                    base_hash, cache = entry
+                    for seq_key in all_remainders:
+                        for attr in all_remainders[seq_key]:
+                            if seq_key in cache and attr in cache[seq_key]:
+                                target = cache[seq_key][attr]
+                                if isinstance(target, (list, array.array)):
+                                    target.extend(sl)
+                                elif isinstance(target, tuple):
+                                    cache[seq_key][attr] = target + tuple(sl)
+                self.collective_rpc("stream_prefill_chunk",
+                                    args=(ve, all_remainders))
+                self.cached_execute_model_reqs[ve] = (base_hash, cache)
+
+            self._streaming_active[ve] = False
+        import threading
+        t = threading.Thread(target=_worker, name=f"prefill-stream-ve{ve}", daemon=True)
+        self._streaming_threads[ve] = t
+        t.start()
+    
     def _chunk_execute_model_req(
         self,
         execute_model_req: Any,
@@ -433,8 +471,9 @@ class DistributedExecutorBase(ExecutorBase):
                     remainder = val[cutoff_len:total_len]
                     truncated = val[:cutoff_len]
 
-                    # Store/append remainder.
-                    self._chunk_remainders[seq_key][attr] = remainder
+                    # Store as (chunk_size, remainder_sequence)
+                    chunk_unit = cutoff_len - chunk_info[1] if cutoff_len - chunk_info[1] > 0 else len(remainder)
+                    self._chunk_remainders[seq_key][attr] = (chunk_unit, remainder)
 
                     # Truncate seq_data
                     setattr(seq_data, attr, truncated)
@@ -456,31 +495,32 @@ class DistributedExecutorBase(ExecutorBase):
             "_prompt_token_ids",
             "_prompt_token_ids_tuple",
         ]
-        for seq_group in execute_model_req.seq_group_metadata_list:
-            for seq_key, seq_data in seq_group.seq_data.items():
-                if seq_key not in self._chunk_remainders:
-                    continue
-                remainder = self._chunk_remainders[seq_key]
-                for attr in chunkable_attrs:
-                    cur = getattr(seq_data, attr)
-                    patch_val = remainder.get(attr, None)
+        with self._cache_lock[execute_model_req.virtual_engine]:
+            for seq_group in execute_model_req.seq_group_metadata_list:
+                for seq_key, seq_data in seq_group.seq_data.items():
+                    if seq_key not in self._chunk_remainders:
+                        continue
+                    remainder = self._chunk_remainders[seq_key]
+                    for attr in chunkable_attrs:
+                        cur = getattr(seq_data, attr)
+                        patch_val = remainder.get(attr, None)
 
-                    if isinstance(cur, array.array):
-                        if patch_val is not None:
-                            cur.extend(_as_array_l(patch_val))
-                        setattr(seq_data, attr,
-                            array.array("l", cur))  # avoid aliasing
-                    elif isinstance(cur, list):
-                        if patch_val:
-                            cur.extend(patch_val)
-                        setattr(seq_data, attr,
-                            list(cur))  # avoid aliasing
-                    elif isinstance(cur, tuple):
-                        if patch_val:
-                            cur = cur + tuple(patch_val)
-                        setattr(seq_data, attr, cur)
+                        if isinstance(cur, array.array):
+                            if patch_val is not None:
+                                cur.extend(_as_array_l(patch_val))
+                            setattr(seq_data, attr,
+                                array.array("l", cur))  # avoid aliasing
+                        elif isinstance(cur, list):
+                            if patch_val:
+                                cur.extend(patch_val)
+                            setattr(seq_data, attr,
+                                list(cur))  # avoid aliasing
+                        elif isinstance(cur, tuple):
+                            if patch_val:
+                                cur = cur + tuple(patch_val)
+                            setattr(seq_data, attr, cur)
 
-                del self._chunk_remainders[seq_key]
+                    del self._chunk_remainders[seq_key]
 
     def _compute_execute_model_req_patch(
         self,
@@ -722,20 +762,23 @@ class DistributedExecutorBase(ExecutorBase):
                     original_prompt_sizes[seq_key] = (original_prompt_sizes.get(seq_key, 0), chunk_size[0], chunk_size[1])
 
             self._chunk_execute_model_req(execute_model_req, original_prompt_sizes, chunkable_attrs)
-            execute_model_req_patch = self._compute_execute_model_req_patch(
-                cached_execute_model_req, execute_model_req, tracked_attrs)
-            self.cached_execute_model_reqs[
-                virtual_engine] = self._update_cache_with_new_tokens(
+            with self._cache_lock[virtual_engine]:
+                execute_model_req_patch = self._compute_execute_model_req_patch(
                     cached_execute_model_req, execute_model_req, tracked_attrs)
-            self._strip_patch_data_from_execute_model_req(execute_model_req)
+                self.cached_execute_model_reqs[
+                    virtual_engine] = self._update_cache_with_new_tokens(
+                        cached_execute_model_req, execute_model_req, tracked_attrs)
+                self._strip_patch_data_from_execute_model_req(execute_model_req)
 
-            new_execute_model_req_hash = sha256(execute_model_req)
-            self.cached_execute_model_reqs[virtual_engine] = (
-                new_execute_model_req_hash,
-                self.cached_execute_model_reqs[virtual_engine],
-            )
-            if prev_execute_model_req_hash == new_execute_model_req_hash:
-                use_cached_base_req = True
+                new_execute_model_req_hash = sha256(execute_model_req)
+                self.cached_execute_model_reqs[virtual_engine] = (
+                    new_execute_model_req_hash,
+                    self.cached_execute_model_reqs[virtual_engine],
+                )
+                if prev_execute_model_req_hash == new_execute_model_req_hash:
+                    use_cached_base_req = True
+
+            self._start_background_streaming(virtual_engine, original_prompt_sizes)
         return (
             virtual_engine if use_cached_base_req else execute_model_req,
             execute_model_req_patch,

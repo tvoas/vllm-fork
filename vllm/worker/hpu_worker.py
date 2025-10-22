@@ -145,6 +145,30 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         self.cached_execute_model_req: Dict[int, ExecuteModelRequest] = {}
         self._unpadded_lengths = {}
         self.lock = threading.Lock()
+        self._cache_lock: Dict[int, threading.Lock] = {}
+
+    def stream_prefill_chunk(self, virtual_engine: int, chunk_map: Dict) -> None:
+        """Append streamed prefill chunk tokens to cached seq data (background)."""
+        if not get_tp_group().is_first_rank:
+            return
+        if virtual_engine not in self._cache_lock:
+            self._cache_lock[virtual_engine] = threading.Lock()
+        with self._cache_lock[virtual_engine]:
+            cached_seq_data = self.all_cached_seq_data[virtual_engine]
+            for seq_key in chunk_map:
+                if seq_key not in cached_seq_data:
+                    return
+                seq_cache = cached_seq_data[seq_key]
+                for attr, tokens in chunk_map[seq_key].items():
+                    if attr not in seq_cache:
+                        continue
+                    dest = seq_cache[attr]
+                    if isinstance(dest, array.array):
+                        dest.extend(tokens)
+                    elif isinstance(dest, list):
+                        dest.extend(tokens)
+                    elif isinstance(dest, tuple):
+                        seq_cache[attr] = dest + tuple(tokens)
 
     def update_on_demand_profiler_cfg(self):
         assert self.on_demand_profiler_step_counter==0
@@ -521,14 +545,15 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
             if execute_model_req is not None:
                 ve = execute_model_req.virtual_engine
-                cached_seq_data = self.all_cached_seq_data.get(ve, {})
-                self.all_cached_seq_data[ve] = (
-                    self._apply_patch_to_execute_model_req(
-                        execute_model_req,
-                        cached_seq_data,
-                        execute_model_req_patch,
-                        original_prompt_sizes,
-                    ))
+                with self._cache_lock[ve]:
+                    cached_seq_data = self.all_cached_seq_data.get(ve, {})
+                    self.all_cached_seq_data[ve] = (
+                        self._apply_patch_to_execute_model_req(
+                            execute_model_req,
+                            cached_seq_data,
+                            execute_model_req_patch,
+                            original_prompt_sizes,
+                        ))
 
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION     - will log graph compilations per engine step, only when there was any - highly recommended to use alongside PT_HPU_METRICS_GC_DETAILS! # noqa:E501
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL - will log graph compilations per engine step, always, even if there were none # noqa:E501
