@@ -543,6 +543,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         execute_model_req: Optional[Union[ExecuteModelRequest, Tuple]] = None,
     ) -> Optional[List[SamplerOutput]]:
         execute_step_count = 0
+        logger.info(f"[WORKER={get_world_group().rank_in_group}][{execute_step_count}] here _cache_lock ve=? func=execute_model")
         if isinstance(execute_model_req, tuple):
             assert len(execute_model_req) == 5, (
                 "execute_model_req must be a tuple of length 5, got "
@@ -562,9 +563,9 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 with self._master_cache_lock:
                     if ve not in self._cache_lock:
                         self._cache_lock[ve] = threading.Lock()
-                logger.info(f"[WORKER={get_world_group().rank_in_group}] attempt-lock _cache_lock ve={ve} func=execute_model")
+                logger.info(f"[WORKER={get_world_group().rank_in_group}][{execute_step_count}] attempt-lock _cache_lock ve={ve} func=execute_model")
                 with self._cache_lock[ve]:
-                    logger.info(f"[WORKER={get_world_group().rank_in_group}] acquire-lock _cache_lock ve={ve} func=execute_model")
+                    logger.info(f"[WORKER={get_world_group().rank_in_group}][{execute_step_count}] acquire-lock _cache_lock ve={ve} func=execute_model")
                     cached_seq_data = self.all_cached_seq_data.get(ve, {})
                     self.all_cached_seq_data[ve] = (
                         self._apply_patch_to_execute_model_req(
@@ -573,7 +574,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                             execute_model_req_patch,
                             original_prompt_sizes,
                         ))
-                    logger.info(f"[WORKER={get_world_group().rank_in_group}] release-lock _cache_lock ve={ve} func=execute_model")
+                    logger.info(f"[WORKER={get_world_group().rank_in_group}][{execute_step_count}] release-lock _cache_lock ve={ve} func=execute_model")
 
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION     - will log graph compilations per engine step, only when there was any - highly recommended to use alongside PT_HPU_METRICS_GC_DETAILS! # noqa:E501
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL - will log graph compilations per engine step, always, even if there were none # noqa:E501

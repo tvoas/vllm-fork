@@ -414,48 +414,69 @@ class DistributedExecutorBase(ExecutorBase):
         The API is idempotent (guarantee only 1 loop run at any moment)."""
         raise NotImplementedError
     
+    def _stream_worker(self, ve, original_prompt_sizes):
+        all_remainders = {}
+        for seq_key in original_prompt_sizes:
+            remainders = self._chunk_remainders.get(seq_key, {})
+            all_remainders[seq_key] = remainders
+        with self._master_cache_lock:
+            if ve not in self._cache_lock:
+                self._cache_lock[ve] = threading.Lock()
+            if ve not in self._streaming_tasks:
+                self._streaming_tasks[ve] = []
+        logger.info(f"[EXEC] attempt-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
+        with self._cache_lock[ve]:
+            logger.info(f"[EXEC] acquired-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
+            self._streaming_tasks[ve] = []
+            entry = self.cached_execute_model_reqs.get(ve)
+            base_hash = ""
+            cache = {}
+            has_remainder = False
+            if entry:
+                base_hash, cache = entry
+                for seq_key, attr_map in all_remainders.items():
+                    if seq_key not in cache:
+                        continue
+                    for attr, remainder in attr_map.items():
+                        if attr not in cache[seq_key]:
+                            continue
+                        if len(remainder) > 0:
+                            has_remainder = True
+                        target = cache[seq_key][attr]
+                        if isinstance(target, (list, array.array)):
+                            target.extend(remainder)
+                        elif isinstance(target, tuple):
+                            cache[seq_key][attr] = target + tuple(remainder)
+
+                if has_remainder:
+                    logger.info(f"[EXEC] launching streamed remainder update ve={ve} seq_keys={list(all_remainders.keys())}")
+                    # Schedule per-rank stream_prefill_chunk just like execute_model dispatch.
+                    # Driver (PP stage 0)
+                    self._streaming_tasks[ve] += [asyncio.create_task(
+                        self.driver_worker.execute_method_async(
+                            "stream_prefill_chunk", ve, all_remainders))]
+                    # Remaining PP stages (driver workers for other stages)
+                    for pp_rank, driver_worker in enumerate(self.tp_driver_workers,
+                                                            start=1):
+                        self._streaming_tasks.append(
+                            asyncio.create_task(
+                                driver_worker.execute_method_async(
+                                    self.pp_locks[pp_rank],
+                                    "stream_prefill_chunk", ve, all_remainders)))
+                else:
+                    logger.info(f"[EXEC] no non-empty remainders to stream ve={ve}")
+            if entry:
+                self.cached_execute_model_reqs[ve] = (base_hash, cache)
+            logger.info(f"[EXEC] release-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
+        self._streaming_active[ve] = False
+    
     def _start_background_streaming(self, ve: int, original_prompt_sizes: Dict[int, Tuple[int,int,int]]):
         # Spawn only once per VE.
         if self._streaming_active.get(ve, False):
             return
         self._streaming_active[ve] = True
-        def _worker():
-            all_remainders = {}
-            for seq_key in original_prompt_sizes:
-                remainders = self._chunk_remainders.get(seq_key, {})
-                all_remainders[seq_key] = remainders
-            with self._master_cache_lock:
-                if ve not in self._cache_lock:
-                    self._cache_lock[ve] = threading.Lock()
-            logger.info(f"[EXEC] attempt-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
-            with self._cache_lock[ve]:
-                logger.info(f"[EXEC] acquired-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
-                entry = self.cached_execute_model_reqs.get(ve)
-                base_hash = ""
-                cache = {}
-                if entry:
-                    base_hash, cache = entry
-                    for seq_key, attr_map in all_remainders.items():
-                        if seq_key not in cache:
-                            continue
-                        for attr, remainder in attr_map.items():
-                            if attr not in cache[seq_key]:
-                                continue
-                            target = cache[seq_key][attr]
-                            if isinstance(target, (list, array.array)):
-                                target.extend(remainder)
-                            elif isinstance(target, tuple):
-                                cache[seq_key][attr] = target + tuple(remainder)
-                # Send to workers (they will ignore sequences not yet cached)
-                try:
-                    self.collective_rpc("stream_prefill_chunk", args=(ve, all_remainders))
-                except Exception as e:
-                    logger.warning(f"[EXEC] stream_prefill_chunk rpc failed ve={ve}: {e}")
-                if entry:
-                    self.cached_execute_model_reqs[ve] = (base_hash, cache)
-                logger.info(f"[EXEC] release-lock _cache_lock ve={ve} func=_start_background_streaming seq_keys={list(all_remainders.keys())}")
-            self._streaming_active[ve] = False
-        t = threading.Thread(target=_worker, name=f"prefill-stream-ve{ve}", daemon=True)
+
+        t = threading.Thread(target=self._stream_worker, name=f"prefill-stream-ve{ve}", daemon=True, args=(ve, original_prompt_sizes))
         self._streaming_threads[ve] = t
         t.start()
 
@@ -714,7 +735,7 @@ class DistributedExecutorBase(ExecutorBase):
         self,
         execute_model_req: Optional[Any],
         execute_step_count: int = 0,
-    ) -> Tuple[Any, Dict[Hashable, Dict[str, Any]], bool]:
+    ) -> Tuple[List[asyncio.Task], Tuple[Any, Dict[Hashable, Dict[str, Any]], bool, Dict[int, Tuple[int,int,int]], int]]:
         """Produce an incremental patch and optionally reuse a cached
         base request.
 
@@ -750,6 +771,7 @@ class DistributedExecutorBase(ExecutorBase):
         original_prompt_sizes = {}
         execute_model_req_patch: Dict[Hashable, Dict[str, Any]] = {}
         use_cached_base_req = False
+        tasks = []
         if execute_model_req is not None:
             virtual_engine = execute_model_req.virtual_engine
             if virtual_engine in self.cached_execute_model_reqs:
@@ -799,7 +821,7 @@ class DistributedExecutorBase(ExecutorBase):
                 logger.info(f"[EXEC] release-lock _cache_lock ve={execute_model_req.virtual_engine} func=prepare_execute_model_req_patch")
 
             self._start_background_streaming(virtual_engine, original_prompt_sizes)
-        return (
+        return self._streaming_tasks[virtual_engine][:], (
             virtual_engine if use_cached_base_req else execute_model_req,
             execute_model_req_patch,
             use_cached_base_req,

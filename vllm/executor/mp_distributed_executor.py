@@ -237,15 +237,15 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                 lock_type()
                 for _ in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
             ]
-
+        tasks = []
         if current_platform.is_hpu():
             original_execute_model_req = execute_model_req
-            execute_model_req = self.prepare_execute_model_req_patch(
+            tasks, execute_model_req = self.prepare_execute_model_req_patch(
                 execute_model_req,
                 execute_step_count,
             )
 
-        tasks = [
+        tasks += [
             asyncio.create_task(
                 _run_task_with_lock(self.driver_exec_model, self.pp_locks[0],
                                     execute_model_req))
@@ -257,6 +257,7 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                     _run_task_with_lock(driver_worker.execute_method_async,
                                         self.pp_locks[pp_rank],
                                         "execute_model", execute_model_req)))
+        
         results = await asyncio.gather(*tasks)
 
         if current_platform.is_hpu():
