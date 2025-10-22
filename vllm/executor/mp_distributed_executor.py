@@ -29,6 +29,11 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
 
     uses_ray: bool = False
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._highest_closed_step: int = -1
+        self._launch_wait_backoff_sec: float = 0.001
+
     def _check_cuda(self) -> None:
         """Check that the number of GPUs is sufficient for the parallel
         configuration. Separate from _init_executor to reduce the number of
@@ -238,6 +243,11 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                 for _ in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
             ]
 
+        # HOLD OFF LAUNCH UNTIL PRIOR STEP CLOSED (simple sequencing guard)
+        # Ensures step N only launches after N-1 closed.
+        while execute_step_count != self._highest_closed_step + 1:
+            await asyncio.sleep(self._launch_wait_backoff_sec)
+
         original_execute_model_req = execute_model_req
         if current_platform.is_hpu():
             execute_model_req = self.prepare_execute_model_req_patch(
@@ -245,7 +255,7 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                 execute_step_count,
             )
 
-        #logger.info(f"[EX] Launching for VE {None if original_execute_model_req is None else original_execute_model_req.virtual_engine}")
+        logger.info(f"[EX][{execute_step_count}] Launching for VE {None if original_execute_model_req is None else original_execute_model_req.virtual_engine}")
 
         tasks = [
             asyncio.create_task(
@@ -267,7 +277,9 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
         #    )
 
         # Only the last PP stage has the final results.
-        #logger.info(f"[EX] Closing for VE {None if original_execute_model_req is None else original_execute_model_req.virtual_engine}")
+        logger.info(f"[EX][{execute_step_count}] Closing for VE {None if original_execute_model_req is None else original_execute_model_req.virtual_engine}")
+        # Update highest closed step.
+        self._highest_closed_step = max(self._highest_closed_step, execute_step_count)
         return results[-1]
 
     async def _start_worker_execution_loop(self):
