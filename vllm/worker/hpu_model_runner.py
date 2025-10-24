@@ -37,7 +37,7 @@ from vllm.attention import AttentionMetadata, get_attn_backend
 from vllm.attention.backends.abstract import AttentionType
 from vllm.attention.backends.hpu_attn import HPUAttentionImpl
 from vllm.config import DeviceConfig, VllmConfig
-from vllm.distributed import broadcast_tensor_dict
+from vllm.distributed import broadcast_tensor_dict, world_broadcast_tensor_dict
 from vllm.distributed.kv_transfer import get_kv_transfer_group
 from vllm.distributed.parallel_state import (DeferredRecvPayload, get_dp_group,
                                              get_pp_group, get_tp_group,
@@ -1306,7 +1306,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         # For both multi-step scheduling and delayed sampling
         self.is_single_step = \
             self.vllm_config.scheduler_config.num_scheduler_steps == 1
-        self.cached_step_outputs: List[CachedStepOutput] = []
+        self.cached_step_outputs: List[Tuple[CachedStepOutput, List[List[int]]]] = []
         self.is_pooler = False
         self.is_causal = is_causal
         # For delayed sampling
@@ -3538,18 +3538,19 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                     broadcast_tensor_dict(src=0)
             if self._is_fla_model():
                 self.add_fla_dummy_data(inputs)
+            deferred_sampling = \
+                self.parallel_config.pipeline_parallel_size > 1 \
+                and get_pp_group().is_last_rank \
+                and self.vllm_config.scheduler_config.num_scheduler_steps == 1 
+            intermediate_tensors = None
+            if not get_pp_group().is_first_rank:
+                intermediate_tensors = \
+                    self.model.make_empty_intermediate_tensors(
+                        batch_size=batch_size,
+                        context_size=seq_len if is_prompt else 1,
+                        dtype=self.model_config.dtype,
+                        device=self.device)
             if is_prompt or self.is_single_step:
-                deferred_sampling = \
-                    self.parallel_config.pipeline_parallel_size > 1 \
-                    and get_pp_group().is_last_rank
-                intermediate_tensors = None
-                if not get_pp_group().is_first_rank:
-                    intermediate_tensors = \
-                        self.model.make_empty_intermediate_tensors(
-                            batch_size=batch_size,
-                            context_size=seq_len if is_prompt else 1,
-                            dtype=self.model_config.dtype,
-                            device=self.device)
                 output = self.execute_model(
                     inputs,
                     kv_caches,
@@ -3570,6 +3571,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                              is_last_step=False)
                 self.execute_model(inputs,
                                    kv_caches,
+                                   intermediate_tensors=intermediate_tensors,
                                    warmup_mode=True,
                                    num_steps=2,
                                    seqs=seqs,
@@ -3579,6 +3581,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                                              is_last_step=True)
                 self.execute_model(inputs,
                                    kv_caches,
+                                   intermediate_tensors=intermediate_tensors,
                                    warmup_mode=True,
                                    num_steps=2,
                                    seqs=seqs,
@@ -4331,13 +4334,14 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 htorch.core.mark_step()
 
         if not model_input.is_first_multi_step:
-            if not model_input.is_last_step:
-                # not first or last multi-step
-                return []
-            # last multi-step
-            output = self._decode_sampler_outputs(
-                model_input) if self.is_driver_worker else []
-            torch.hpu.synchronize()
+            if get_pp_group().is_last_rank:
+                if not model_input.is_last_step:
+                    # not first or last multi-step
+                    return []
+                # last multi-step
+                output = self._decode_sampler_outputs(
+                    model_input) if self.is_driver_worker else []
+                torch.hpu.synchronize()
         if model_input.is_first_multi_step:
             # first multi-step
             if self.lora_config:
@@ -4489,8 +4493,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 data.output_token_ids[:orig_output_tokens_len]
 
             for i in range(num_steps):
-                if i != 0 and not self.is_driver_worker:
-                    broadcast_data = broadcast_tensor_dict(src=0)
+                if i != 0 and not (self.is_driver_worker and get_pp_group().is_last_rank):
+                    src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
+                    broadcast_data = world_broadcast_tensor_dict(src=src)
                     if 'early_exit' in broadcast_data and broadcast_data[
                             'early_exit']:
                         return [output] if num_steps == 1 else []
@@ -4503,6 +4508,11 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         self.trim_attn_metadata(
                             broadcast_data["attn_metadata"])
                     })
+
+                if num_steps > 1 and not get_pp_group().is_first_rank:
+                    intermediate_tensors = get_pp_group().recv_tensor_dict(
+                        all_gather_group=get_tp_group(), deferred=True)
+
                 # Receive KV cache in distributed KV cache transfer setting
                 # In disagg prefill setting, it will also recv hidden states
                 # and bypass model forwarding. In KV cache database setting,
@@ -4616,7 +4626,15 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     return [fake_output]
 
                 if not get_pp_group().is_last_rank:
-                    return hidden_states
+                    if num_steps == 1:
+                        return hidden_states
+                    else:
+                        assert isinstance(hidden_states, IntermediateTensors)
+                        get_pp_group().send_tensor_dict(hidden_states.tensors,
+                                                        all_gather_group=get_tp_group())
+                        if i == num_steps - 1:
+                            return hidden_states
+                        continue
 
                 # In case there are any logits processors pending
                 # we need to sync with host earlier
@@ -4631,7 +4649,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     # we obtain the actual sampled results in advance
                     self._patch_prev_output()
 
-                if self.parallel_config.pipeline_parallel_size > 1:
+                if self.vllm_config.scheduler_config.num_scheduler_steps == 1 and self.parallel_config.pipeline_parallel_size > 1:
                     # NOTE(Tanner): defer sampling so we can
                     # release the PP lock.
                     return hidden_states
@@ -4670,10 +4688,17 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         logits=logits,
                         sampling_metadata=sampling_metadata,
                     )
+                    if output.sampled_token_ids is None:
+                        output.sampled_token_ids_cpu = output[0].samples[0].output_token
+                    else:
+                        output.sampled_token_ids_cpu = output.sampled_token_ids
+                    output.sampled_token_ids = None
+                    output.sampled_token_probs = None
+                    output.logprobs = None
                     if num_steps > 1:
-                        output = output.sampled_token_ids
-                        self.cached_step_outputs.append(
-                            CachedStepOutput(output))
+                        output = output.sampled_token_ids_cpu
+                        #output = output.to("cpu", non_blocking=True)
+                        self.cached_step_outputs.append((CachedStepOutput(output), [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]))
                     if use_delayed_sampling and self.is_driver_worker:
                         token_ids = self._pad_to_max_num_seqs(
                             output.sampled_token_ids, DUMMY_TOKEN_ID)
@@ -4722,8 +4747,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 dummy_token = (540, )
                                 data.output_token_ids += (dummy_token)
                             else:
-                                broadcast_tensor_dict({'early_exit': True},
-                                                      src=0)
+                                src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
+                                world_broadcast_tensor_dict({'early_exit': True},
+                                                      src=src)
                                 if num_steps == 1:
                                     return [output]
                                 else:
@@ -4758,7 +4784,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         "attn_metadata": vars(result.attn_metadata),
                         "lora_mask": lora_mask,
                     }
-                    broadcast_tensor_dict(model_kwargs_broadcast_data, src=0)
+                    src = (self.parallel_config.pipeline_parallel_size - 1) * self.parallel_config.tensor_parallel_size
+                    world_broadcast_tensor_dict(model_kwargs_broadcast_data, src=src)
                 else:
                     try_revert_dummy_output_tokens()
 
@@ -4800,6 +4827,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 return [output] if self.is_driver_worker else []
             else:
                 return []
+        if not get_pp_group().is_last_rank:
+            return []
         return output if type(output) is list else [output]
 
     def execute_sample(
@@ -4873,8 +4902,12 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         use_async_out_proc = model_input.async_callback is not None
         sampler_outputs = []
         num_outputs = len(self.cached_step_outputs)
+        seq_ids = [seq_group.seq_ids for seq_group in model_input.sampling_metadata.seq_groups]
         for i in range(num_outputs):
-            next_token_ids = self.cached_step_outputs.pop(0).token_ids
+            if seq_ids[0][0] != self.cached_step_outputs[0][-1][0][0]:
+                continue
+            next_token_ids = self.cached_step_outputs.pop(0)[0].token_ids
+            #next_token_ids = next_token_ids.tolist()
             next_token_ids = next_token_ids.cpu().tolist()
             sampler_output = self._make_decode_output(
                 next_token_ids, model_input.sampling_metadata.seq_groups)
