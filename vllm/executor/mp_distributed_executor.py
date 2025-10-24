@@ -240,6 +240,9 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                 for _ in range(self.parallel_config.pipeline_parallel_size)
             ]
 
+        if execute_model_req is not None and not execute_model_req.is_first_multi_step and not execute_model_req.is_last_step:
+            return [None]
+
         if current_platform.is_hpu():
             original_execute_model_req = execute_model_req
             execute_model_req = self.prepare_execute_model_req_patch(
