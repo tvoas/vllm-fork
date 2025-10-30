@@ -4,6 +4,8 @@
 import asyncio
 import copy
 import time
+from collections import deque
+import os
 import weakref
 from functools import partial
 from typing import (Any, AsyncGenerator, Callable, Coroutine, Dict, Iterable,
@@ -45,6 +47,38 @@ ENGINE_ITERATION_TIMEOUT_S = envs.VLLM_ENGINE_ITERATION_TIMEOUT_S
 class AsyncEngineDeadError(RuntimeError):
     pass
 
+
+class _AdaptivePoller:
+    __slots__ = ("_samples", "_history_len", "_default", "_min", "_max",
+                    "_target_fraction", "_last_sample_time", "_stale_after")
+    def __init__(self, history_len, default, min_v, max_v, target_fraction, stale_after):
+        self._samples = deque(maxlen=history_len)
+        # Pre-fill with default to stabilize early variance.
+        for _ in range(history_len):
+            self._samples.append(default)
+        self._history_len = history_len
+        self._default = default
+        self._min = min_v
+        self._max = max_v
+        self._target_fraction = target_fraction
+        self._last_sample_time = time.perf_counter()
+        self._stale_after = stale_after
+    def add(self, value: float):
+        self._samples.append(value)
+        self._last_sample_time = time.perf_counter()
+    def _mean(self):
+        return sum(self._samples) / len(self._samples)
+    def interval(self):
+        # Light stale handling: drift back toward default if no samples recently.
+        now = time.perf_counter()
+        if now - self._last_sample_time > self._stale_after:
+            # Replace oldest sample with default to gently revert.
+            if self._samples:
+                self._samples.append(self._default)
+            self._last_sample_time = now
+        est = self._mean() * self._target_fraction
+        est = max(self._min, min(self._max, est))
+        return est
 
 def _log_task_completion(task: asyncio.Task,
                          error_callback: Callable[[Exception], None]) -> None:
@@ -832,9 +866,39 @@ class AsyncLLMEngine(EngineClient):
         pipeline_parallel_size = \
                 engine.engine.parallel_config.pipeline_parallel_size
         has_requests_in_progress = [False] * (pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+
+        # --- Adaptive polling setup ---
+        # These defaults are used until enough samples are collected.
+        POLL_HISTORY_LEN = int(os.environ.get("VLLM_ADAPTIVE_POLL_HISTORY", "32"))
+        DEFAULT_ALL_BUSY_INTERVAL = float(os.environ.get("VLLM_POLL_ALL_BUSY_DEFAULT", "0.02"))   # 20ms
+        DEFAULT_PARTIAL_BUSY_INTERVAL = float(os.environ.get("VLLM_POLL_PARTIAL_BUSY_DEFAULT", "0.005"))  # 5ms
+        DEFAULT_SINGLE_BUSY_INTERVAL = float(os.environ.get("VLLM_POLL_SINGLE_BUSY_DEFAULT", "0.10"))  # 100ms
+        MIN_INTERVAL = float(os.environ.get("VLLM_POLL_MIN_INTERVAL", "0.001"))  # 1ms
+        MAX_INTERVAL = float(os.environ.get("VLLM_POLL_MAX_INTERVAL", "0.10"))   # 100ms
+        STALE_AFTER_S = float(os.environ.get("VLLM_POLL_STALE_AFTER", "2.0"))
+        # Fraction of mean step time to target as poll interval.
+        TARGET_FRACTION_ALL = float(os.environ.get("VLLM_POLL_TARGET_FRACTION_ALL", "0.5"))
+        TARGET_FRACTION_PARTIAL = float(os.environ.get("VLLM_POLL_TARGET_FRACTION_PARTIAL", "0.25"))
+        TARGET_FRACTION_SINGLE = float(os.environ.get("VLLM_POLL_TARGET_FRACTION_SINGLE", "0.9"))
+
+        poller_all_busy = _AdaptivePoller(POLL_HISTORY_LEN, DEFAULT_ALL_BUSY_INTERVAL,
+                                          MIN_INTERVAL, MAX_INTERVAL,
+                                          TARGET_FRACTION_ALL, STALE_AFTER_S)
+        poller_partial_busy = _AdaptivePoller(POLL_HISTORY_LEN, DEFAULT_PARTIAL_BUSY_INTERVAL,
+                                              MIN_INTERVAL, MAX_INTERVAL,
+                                              TARGET_FRACTION_PARTIAL, STALE_AFTER_S)
+        poller_single_busy = _AdaptivePoller(POLL_HISTORY_LEN, DEFAULT_SINGLE_BUSY_INTERVAL,
+                                             MIN_INTERVAL, MAX_INTERVAL,
+                                             TARGET_FRACTION_SINGLE, STALE_AFTER_S)
+
+        # Track start times & occupancy mode at launch for each VE to compute durations.
+        ve_start_times: List[Optional[float]] = [None] * (pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+
         while True:
+            request_tracker = engine._request_tracker
+
             if not any(has_requests_in_progress):
-                logger.debug("Waiting for new requests...")
+                logger.info("Waiting for new requests...")
                 # Stop the execute model loop in parallel workers until there
                 # are more requests to process. This avoids waiting
                 # indefinitely in torch.distributed ops which may otherwise
@@ -842,7 +906,6 @@ class AsyncLLMEngine(EngineClient):
                 # they can process any other queued control plane messages,
                 # such as add/remove lora adapters.
                 await engine.engine.stop_remote_worker_execution_loop_async()
-                request_tracker = engine._request_tracker
                 # Allow engine to be garbage collected while
                 # waiting for new requests
                 del engine
@@ -854,35 +917,80 @@ class AsyncLLMEngine(EngineClient):
                 if not engine:
                     return
                 logger.debug("Got new requests!")
-                requests_in_progress = [
-                    asyncio.create_task(engine.engine_step(ve))
-                    for ve in range(pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
-                ]
+                #logger.info(f"async_llm_engine.run_engine_loop start 1 for VE in {range(pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)}")
+                requests_in_progress = []
+                for ve in range(pipeline_parallel_size + envs.VLLM_PP_BONUS_VE):
+                    ve_start_times[ve] = time.perf_counter()
+                    requests_in_progress.append(asyncio.create_task(engine.engine_step(ve)))
                 has_requests_in_progress = [True] * (pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+            elif not all(has_requests_in_progress) and request_tracker.has_new_requests():
+                for ve, active in enumerate(has_requests_in_progress):
+                    if not active:
+                        #logger.debug(f"Spawning engine_step for VE {ve} due to newly arrived requests during polling.")
+                        ve_start_times[ve] = time.perf_counter()
+                        requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
+                        has_requests_in_progress[ve] = True
 
             # Abort if iteration takes too long due to unrecoverable errors
             # (eg. NCCL timeouts).
             try:
+                if pipeline_parallel_size + envs.VLLM_PP_BONUS_VE == 1:
+                    all_busy = False
+                    single_busy = True
+                else:
+                    all_busy = all(has_requests_in_progress)
+                    single_busy = (sum(has_requests_in_progress) == 1)
                 async with asyncio_timeout(ENGINE_ITERATION_TIMEOUT_S):
+                    if all_busy:
+                        poll_timeout = poller_all_busy.interval()
+                    elif single_busy:
+                        poll_timeout = poller_single_busy.interval()
+                    else:
+                        poll_timeout = poller_partial_busy.interval()
                     done, _ = await asyncio.wait(
                         requests_in_progress,
+                        timeout=poll_timeout,
                         return_when=asyncio.FIRST_COMPLETED)
+
+                    # Yield to event loop (balance across VEs / RPC tasks).
                     for _ in range(pipeline_parallel_size + envs.VLLM_PP_BONUS_VE):
                         await asyncio.sleep(0)
+
+                # Process finished tasks.
                 for task in done:
-                    result = task.result()
                     virtual_engine = requests_in_progress.index(task)
+                    # Compute duration
+                    start_t = ve_start_times[virtual_engine]
+                    if start_t is not None:
+                        duration = time.perf_counter() - start_t
+                        if all_busy:
+                            poller_all_busy.add(duration)
+                        else:
+                            poller_partial_busy.add(duration)
+                    ve_start_times[virtual_engine] = None
+                    result = task.result()
                     has_unfinished_requests = (
                         engine.engine.
                         has_unfinished_requests_for_virtual_engine(
                             virtual_engine))
                     if result or has_unfinished_requests:
+                        #logger.info(f"async_llm_engine.run_engine_loop start for VE{virtual_engine}")
+                        ve_start_times[virtual_engine] = time.perf_counter()
                         requests_in_progress[virtual_engine] = (
                             asyncio.create_task(
                                 engine.engine_step(virtual_engine)))
                         has_requests_in_progress[virtual_engine] = True
                     else:
                         has_requests_in_progress[virtual_engine] = False
+
+                # After processing completions, if new requests arrived and idle VEs exist, launch them immediately.
+                if request_tracker.has_new_requests():
+                    for ve, active in enumerate(has_requests_in_progress):
+                        if not active:
+                            ve_start_times[ve] = time.perf_counter()
+                            #logger.info(f"async_llm_engine.run_engine_loop post start for VE{virtual_engine}")
+                            requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
+                            has_requests_in_progress[ve] = True
             except asyncio.TimeoutError as exc:
                 logger.error(
                     "Engine iteration timed out. This should never happen!")

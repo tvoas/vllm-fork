@@ -626,9 +626,33 @@ class LLMEngine:
             scheduler.get_num_unfinished_seq_groups()
             for scheduler in self.scheduler
         ]
-        min_cost_scheduler = self.scheduler[costs.index(min(costs))]
-        min_cost_scheduler.add_seq_group(seq_group)
-
+        #min_cost_scheduler = self.scheduler[costs.index(min(costs))]
+        #min_cost_scheduler.add_seq_group(seq_group)
+        # Optional concentration of low-concurrency workloads onto a single VE
+        target_decode_size = envs.VLLM_TARGET_DECODE_SIZE
+        total_unfinished = sum(costs)
+        # If enabled and after adding this seq_group we are still within the threshold,
+        # force placement on VE 0. This clusters both prefill & decode for first version.
+        # (Future refinement can separate prefill vs decode behavior.)
+        if target_decode_size > 0 and (total_unfinished + 1) <= target_decode_size:
+            self.scheduler[0].add_seq_group(seq_group)
+            logger.info(
+                "SERIAL: VLLM_TARGET_DECODE_SIZE=%d active=%d -> placing request %s on VE0",
+                target_decode_size,
+                total_unfinished + 1,
+                request_id,
+            )
+        else:
+            min_cost_scheduler = self.scheduler[costs.index(min(costs))]
+            min_cost_scheduler.add_seq_group(seq_group)
+            logger.info(
+                "PARALLEL: VLLM_TARGET_DECODE_SIZE=%d active=%d -> placing request %s on VE%d",
+                target_decode_size,
+                total_unfinished + 1,
+                request_id,
+                costs.index(min(costs))
+            )
+                   
         return seq_group
 
     def stop_remote_worker_execution_loop(self) -> None:
