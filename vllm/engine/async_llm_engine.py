@@ -832,7 +832,12 @@ class AsyncLLMEngine(EngineClient):
         pipeline_parallel_size = \
                 engine.engine.parallel_config.pipeline_parallel_size
         has_requests_in_progress = [False] * pipeline_parallel_size
+
+        POLL_TIME_S = 0.02
+
         while True:
+            request_tracker = engine._request_tracker
+
             if not any(has_requests_in_progress):
                 logger.debug("Waiting for new requests...")
                 # Stop the execute model loop in parallel workers until there
@@ -842,7 +847,6 @@ class AsyncLLMEngine(EngineClient):
                 # they can process any other queued control plane messages,
                 # such as add/remove lora adapters.
                 await engine.engine.stop_remote_worker_execution_loop_async()
-                request_tracker = engine._request_tracker
                 # Allow engine to be garbage collected while
                 # waiting for new requests
                 del engine
@@ -854,11 +858,15 @@ class AsyncLLMEngine(EngineClient):
                 if not engine:
                     return
                 logger.debug("Got new requests!")
-                requests_in_progress = [
-                    asyncio.create_task(engine.engine_step(ve))
-                    for ve in range(pipeline_parallel_size)
-                ]
-                has_requests_in_progress = [True] * pipeline_parallel_size
+                requests_in_progress = []
+                for ve in range(pipeline_parallel_size):
+                    requests_in_progress.append(asyncio.create_task(engine.engine_step(ve)))
+                has_requests_in_progress = [True] * (pipeline_parallel_size)
+            elif not all(has_requests_in_progress) and request_tracker.has_new_requests():
+                for ve, active in enumerate(has_requests_in_progress):
+                    if not active:
+                        requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
+                        has_requests_in_progress[ve] = True
 
             # Abort if iteration takes too long due to unrecoverable errors
             # (eg. NCCL timeouts).
@@ -866,12 +874,17 @@ class AsyncLLMEngine(EngineClient):
                 async with asyncio_timeout(ENGINE_ITERATION_TIMEOUT_S):
                     done, _ = await asyncio.wait(
                         requests_in_progress,
+                        timeout=POLL_TIME_S,
                         return_when=asyncio.FIRST_COMPLETED)
+
+                    # Yield to event loop (balance across VEs / RPC tasks).
                     for _ in range(pipeline_parallel_size):
                         await asyncio.sleep(0)
+
+                # Process finished tasks.
                 for task in done:
-                    result = task.result()
                     virtual_engine = requests_in_progress.index(task)
+                    result = task.result()
                     has_unfinished_requests = (
                         engine.engine.
                         has_unfinished_requests_for_virtual_engine(
@@ -883,6 +896,13 @@ class AsyncLLMEngine(EngineClient):
                         has_requests_in_progress[virtual_engine] = True
                     else:
                         has_requests_in_progress[virtual_engine] = False
+
+                # After processing completions, if new requests arrived and idle VEs exist, launch them immediately.
+                if request_tracker.has_new_requests():
+                    for ve, active in enumerate(has_requests_in_progress):
+                        if not active:
+                            requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
+                            has_requests_in_progress[ve] = True
             except asyncio.TimeoutError as exc:
                 logger.error(
                     "Engine iteration timed out. This should never happen!")
