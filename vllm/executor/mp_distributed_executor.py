@@ -213,6 +213,12 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
         self,
         execute_model_req: Optional[ExecuteModelRequest] = None
     ) -> List[SamplerOutput]:
+        #if execute_model_req is not None:
+        #    ids = [list(seq.seq_data.keys()) for seq in execute_model_req.seq_group_metadata_list]
+        #    prompts = [seq.is_prompt for seq in execute_model_req.seq_group_metadata_list]
+        #    logger.info(f"mp_executor._driver_execute_model_async start for VE{execute_model_req.virtual_engine} with IDs={ids} and prompts={prompts}")
+        #else:
+        #    logger.info(f"mp_executor._driver_execute_model_async start with None")
         if not self.tp_driver_workers:
             return await self.driver_exec_model(execute_model_req)
 
@@ -236,6 +242,12 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
             ]
 
         if execute_model_req is not None and not execute_model_req.is_first_multi_step and not execute_model_req.is_last_step:
+            #if execute_model_req is not None:
+            #    ids = [list(seq.seq_data.keys()) for seq in execute_model_req.seq_group_metadata_list]
+            #    prompts = [seq.is_prompt for seq in execute_model_req.seq_group_metadata_list]
+            #    logger.info(f"mp_executor._driver_execute_model_async done 1 for VE{execute_model_req.virtual_engine} with IDs={ids} and prompts={prompts}")
+            #else:
+            #    logger.info(f"mp_executor._driver_execute_model_async done 1 with None")
             return [None]
 
         if current_platform.is_hpu():
@@ -264,6 +276,12 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
             )
 
         # Only the last PP stage has the final results.
+        #if original_execute_model_req is not None:
+        #    ids = [list(seq.seq_data.keys()) for seq in original_execute_model_req.seq_group_metadata_list]
+        #    prompts = [seq.is_prompt for seq in original_execute_model_req.seq_group_metadata_list]
+        #    logger.info(f"mp_executor._driver_execute_model_async done 2 for VE{original_execute_model_req.virtual_engine} with IDs={ids} and prompts={prompts}")
+        #else:
+        #    logger.info(f"mp_executor._driver_execute_model_async done 2 with None")
         return results[-1]
 
     async def _start_worker_execution_loop(self):

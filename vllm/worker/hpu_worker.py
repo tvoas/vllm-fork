@@ -474,6 +474,13 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                             execute_model_req_patch,
                             original_prompt_sizes,
                         ))
+                    
+        #if execute_model_req is not None:
+        #    ids = [list(seq.seq_data.keys()) for seq in execute_model_req.seq_group_metadata_list]
+        #    prompts = [seq.is_prompt for seq in execute_model_req.seq_group_metadata_list]
+        #    logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{execute_model_req.virtual_engine} with IDs={ids} and prompts={prompts}")
+        #else:
+        #    logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start with None")
 
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION     - will log graph compilations per engine step, only when there was any - highly recommended to use alongside PT_HPU_METRICS_GC_DETAILS! # noqa:E501
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL - will log graph compilations per engine step, always, even if there were none # noqa:E501
@@ -544,6 +551,12 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 self._remove_chunk_padding(execute_model_req)
             self.cached_execute_model_req[
                 execute_model_req.virtual_engine] = execute_model_req
+        #if execute_model_req is not None:
+        #    ids = [list(seq.seq_data.keys()) for seq in execute_model_req.seq_group_metadata_list]
+        #    prompts = [seq.is_prompt for seq in execute_model_req.seq_group_metadata_list]
+        #    logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model end for VE{execute_model_req.virtual_engine} with IDs={ids} and prompts={prompts}")
+        #else:
+        #    logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model end with None")
         return output
 
     def _execute_model(
