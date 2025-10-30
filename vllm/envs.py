@@ -895,6 +895,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # 2: Truncate req with no pad
     "VLLM_CHUNK_PREFILL_STRAT":
     lambda: int(os.getenv("VLLM_CHUNK_PREFILL_STRAT", "0")),
+
+    # VLLM_TARGET_DECODE_SIZE concentrate low concurrency requests on single VE.
+    "VLLM_TARGET_DECODE_SIZE":
+    lambda: int(os.getenv("VLLM_TARGET_DECODE_SIZE", "0")),
 }
 
 # --8<-- [end:env-vars-definition]
