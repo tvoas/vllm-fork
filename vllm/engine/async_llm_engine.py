@@ -899,7 +899,7 @@ class AsyncLLMEngine(EngineClient):
             request_tracker = engine._request_tracker
 
             if not any(has_requests_in_progress):
-                logger.info("Waiting for new requests...")
+                logger.debug("Waiting for new requests...")
                 # Stop the execute model loop in parallel workers until there
                 # are more requests to process. This avoids waiting
                 # indefinitely in torch.distributed ops which may otherwise
@@ -918,7 +918,7 @@ class AsyncLLMEngine(EngineClient):
                 if not engine:
                     return
                 logger.debug("Got new requests!")
-                #logger.info(f"async_llm_engine.run_engine_loop start 1 for VE in {range(pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)}")
+                logger.info(f"async_llm_engine.run_engine_loop start 1 for VE in {range(pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)}")
                 requests_in_progress = []
                 for ve in range(pipeline_parallel_size + envs.VLLM_PP_BONUS_VE):
                     #ve_start_times[ve] = time.perf_counter()
@@ -927,7 +927,7 @@ class AsyncLLMEngine(EngineClient):
             elif not all(has_requests_in_progress) and request_tracker.has_new_requests():
                 for ve, active in enumerate(has_requests_in_progress):
                     if not active:
-                        #logger.debug(f"Spawning engine_step for VE {ve} due to newly arrived requests during polling.")
+                        logger.debug(f"Spawning engine_step for VE {ve} due to newly arrived requests during polling.")
                         #ve_start_times[ve] = time.perf_counter()
                         requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
                         has_requests_in_progress[ve] = True
@@ -975,7 +975,7 @@ class AsyncLLMEngine(EngineClient):
                         has_unfinished_requests_for_virtual_engine(
                             virtual_engine))
                     if result or has_unfinished_requests:
-                        #logger.info(f"async_llm_engine.run_engine_loop start for VE{virtual_engine}")
+                        logger.info(f"async_llm_engine.run_engine_loop start for VE{virtual_engine}")
                         #ve_start_times[virtual_engine] = time.perf_counter()
                         requests_in_progress[virtual_engine] = (
                             asyncio.create_task(
@@ -988,7 +988,7 @@ class AsyncLLMEngine(EngineClient):
                 if request_tracker.has_new_requests():
                     for ve, active in enumerate(has_requests_in_progress):
                         if not active:
-                            #logger.debug(f"Spawning engine_step for VE {ve} due to newly arrived requests during polling.")
+                            logger.info(f"Spawning engine_step for VE {ve} due to newly arrived requests during polling.")
                             #ve_start_times[ve] = time.perf_counter()
                             requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
                             has_requests_in_progress[ve] = True
