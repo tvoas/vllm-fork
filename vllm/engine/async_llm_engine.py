@@ -867,32 +867,33 @@ class AsyncLLMEngine(EngineClient):
                 engine.engine.parallel_config.pipeline_parallel_size
         has_requests_in_progress = [False] * (pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
 
-        # --- Adaptive polling setup ---
-        # These defaults are used until enough samples are collected.
-        POLL_HISTORY_LEN = int(os.environ.get("VLLM_ADAPTIVE_POLL_HISTORY", "32"))
-        DEFAULT_ALL_BUSY_INTERVAL = float(os.environ.get("VLLM_POLL_ALL_BUSY_DEFAULT", "0.02"))   # 20ms
-        DEFAULT_PARTIAL_BUSY_INTERVAL = float(os.environ.get("VLLM_POLL_PARTIAL_BUSY_DEFAULT", "0.005"))  # 5ms
-        DEFAULT_SINGLE_BUSY_INTERVAL = float(os.environ.get("VLLM_POLL_SINGLE_BUSY_DEFAULT", "0.10"))  # 100ms
-        MIN_INTERVAL = float(os.environ.get("VLLM_POLL_MIN_INTERVAL", "0.001"))  # 1ms
-        MAX_INTERVAL = float(os.environ.get("VLLM_POLL_MAX_INTERVAL", "0.10"))   # 100ms
-        STALE_AFTER_S = float(os.environ.get("VLLM_POLL_STALE_AFTER", "2.0"))
-        # Fraction of mean step time to target as poll interval.
-        TARGET_FRACTION_ALL = float(os.environ.get("VLLM_POLL_TARGET_FRACTION_ALL", "0.5"))
-        TARGET_FRACTION_PARTIAL = float(os.environ.get("VLLM_POLL_TARGET_FRACTION_PARTIAL", "0.25"))
-        TARGET_FRACTION_SINGLE = float(os.environ.get("VLLM_POLL_TARGET_FRACTION_SINGLE", "0.9"))
+        POLL_TIME_S = 0.02
+        ## --- Adaptive polling setup ---
+        ## These defaults are used until enough samples are collected.
+        #POLL_HISTORY_LEN = int(os.environ.get("VLLM_ADAPTIVE_POLL_HISTORY", "32"))
+        #DEFAULT_ALL_BUSY_INTERVAL = float(os.environ.get("VLLM_POLL_ALL_BUSY_DEFAULT", "0.02"))   # 20ms
+        #DEFAULT_PARTIAL_BUSY_INTERVAL = float(os.environ.get("VLLM_POLL_PARTIAL_BUSY_DEFAULT", "0.005"))  # 5ms
+        #DEFAULT_SINGLE_BUSY_INTERVAL = float(os.environ.get("VLLM_POLL_SINGLE_BUSY_DEFAULT", "0.10"))  # 100ms
+        #MIN_INTERVAL = float(os.environ.get("VLLM_POLL_MIN_INTERVAL", "0.001"))  # 1ms
+        #MAX_INTERVAL = float(os.environ.get("VLLM_POLL_MAX_INTERVAL", "0.10"))   # 100ms
+        #STALE_AFTER_S = float(os.environ.get("VLLM_POLL_STALE_AFTER", "2.0"))
+        ## Fraction of mean step time to target as poll interval.
+        #TARGET_FRACTION_ALL = float(os.environ.get("VLLM_POLL_TARGET_FRACTION_ALL", "0.5"))
+        #TARGET_FRACTION_PARTIAL = float(os.environ.get("VLLM_POLL_TARGET_FRACTION_PARTIAL", "0.25"))
+        #TARGET_FRACTION_SINGLE = float(os.environ.get("VLLM_POLL_TARGET_FRACTION_SINGLE", "0.9"))
 
-        poller_all_busy = _AdaptivePoller(POLL_HISTORY_LEN, DEFAULT_ALL_BUSY_INTERVAL,
-                                          MIN_INTERVAL, MAX_INTERVAL,
-                                          TARGET_FRACTION_ALL, STALE_AFTER_S)
-        poller_partial_busy = _AdaptivePoller(POLL_HISTORY_LEN, DEFAULT_PARTIAL_BUSY_INTERVAL,
-                                              MIN_INTERVAL, MAX_INTERVAL,
-                                              TARGET_FRACTION_PARTIAL, STALE_AFTER_S)
-        poller_single_busy = _AdaptivePoller(POLL_HISTORY_LEN, DEFAULT_SINGLE_BUSY_INTERVAL,
-                                             MIN_INTERVAL, MAX_INTERVAL,
-                                             TARGET_FRACTION_SINGLE, STALE_AFTER_S)
+        #poller_all_busy = _AdaptivePoller(POLL_HISTORY_LEN, DEFAULT_ALL_BUSY_INTERVAL,
+        #                                  MIN_INTERVAL, MAX_INTERVAL,
+        #                                  TARGET_FRACTION_ALL, STALE_AFTER_S)
+        #poller_partial_busy = _AdaptivePoller(POLL_HISTORY_LEN, DEFAULT_PARTIAL_BUSY_INTERVAL,
+        #                                      MIN_INTERVAL, MAX_INTERVAL,
+        #                                      TARGET_FRACTION_PARTIAL, STALE_AFTER_S)
+        #poller_single_busy = _AdaptivePoller(POLL_HISTORY_LEN, DEFAULT_SINGLE_BUSY_INTERVAL,
+        #                                     MIN_INTERVAL, MAX_INTERVAL,
+        #                                     TARGET_FRACTION_SINGLE, STALE_AFTER_S)
 
-        # Track start times & occupancy mode at launch for each VE to compute durations.
-        ve_start_times: List[Optional[float]] = [None] * (pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+        ## Track start times & occupancy mode at launch for each VE to compute durations.
+        #ve_start_times: List[Optional[float]] = [None] * (pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
 
         while True:
             request_tracker = engine._request_tracker
@@ -920,14 +921,14 @@ class AsyncLLMEngine(EngineClient):
                 #logger.info(f"async_llm_engine.run_engine_loop start 1 for VE in {range(pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)}")
                 requests_in_progress = []
                 for ve in range(pipeline_parallel_size + envs.VLLM_PP_BONUS_VE):
-                    ve_start_times[ve] = time.perf_counter()
+                    #ve_start_times[ve] = time.perf_counter()
                     requests_in_progress.append(asyncio.create_task(engine.engine_step(ve)))
                 has_requests_in_progress = [True] * (pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
             elif not all(has_requests_in_progress) and request_tracker.has_new_requests():
                 for ve, active in enumerate(has_requests_in_progress):
                     if not active:
                         #logger.debug(f"Spawning engine_step for VE {ve} due to newly arrived requests during polling.")
-                        ve_start_times[ve] = time.perf_counter()
+                        #ve_start_times[ve] = time.perf_counter()
                         requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
                         has_requests_in_progress[ve] = True
 
@@ -941,15 +942,15 @@ class AsyncLLMEngine(EngineClient):
                     all_busy = all(has_requests_in_progress)
                     single_busy = (sum(has_requests_in_progress) == 1)
                 async with asyncio_timeout(ENGINE_ITERATION_TIMEOUT_S):
-                    if all_busy:
-                        poll_timeout = poller_all_busy.interval()
-                    elif single_busy:
-                        poll_timeout = poller_single_busy.interval()
-                    else:
-                        poll_timeout = poller_partial_busy.interval()
+                    #if all_busy:
+                    #    poll_timeout = poller_all_busy.interval()
+                    #elif single_busy:
+                    #    poll_timeout = poller_single_busy.interval()
+                    #else:
+                    #    poll_timeout = poller_partial_busy.interval()
                     done, _ = await asyncio.wait(
                         requests_in_progress,
-                        timeout=poll_timeout,
+                        timeout=POLL_TIME_S,
                         return_when=asyncio.FIRST_COMPLETED)
 
                     # Yield to event loop (balance across VEs / RPC tasks).
@@ -959,15 +960,15 @@ class AsyncLLMEngine(EngineClient):
                 # Process finished tasks.
                 for task in done:
                     virtual_engine = requests_in_progress.index(task)
-                    # Compute duration
-                    start_t = ve_start_times[virtual_engine]
-                    if start_t is not None:
-                        duration = time.perf_counter() - start_t
-                        if all_busy:
-                            poller_all_busy.add(duration)
-                        else:
-                            poller_partial_busy.add(duration)
-                    ve_start_times[virtual_engine] = None
+                    ## Compute duration
+                    #start_t = ve_start_times[virtual_engine]
+                    #if start_t is not None:
+                    #    duration = time.perf_counter() - start_t
+                    #    if all_busy:
+                    #        poller_all_busy.add(duration)
+                    #    else:
+                    #        poller_partial_busy.add(duration)
+                    #ve_start_times[virtual_engine] = None
                     result = task.result()
                     has_unfinished_requests = (
                         engine.engine.
@@ -975,7 +976,7 @@ class AsyncLLMEngine(EngineClient):
                             virtual_engine))
                     if result or has_unfinished_requests:
                         #logger.info(f"async_llm_engine.run_engine_loop start for VE{virtual_engine}")
-                        ve_start_times[virtual_engine] = time.perf_counter()
+                        #ve_start_times[virtual_engine] = time.perf_counter()
                         requests_in_progress[virtual_engine] = (
                             asyncio.create_task(
                                 engine.engine_step(virtual_engine)))
@@ -987,8 +988,8 @@ class AsyncLLMEngine(EngineClient):
                 if request_tracker.has_new_requests():
                     for ve, active in enumerate(has_requests_in_progress):
                         if not active:
-                            ve_start_times[ve] = time.perf_counter()
-                            #logger.info(f"async_llm_engine.run_engine_loop post start for VE{virtual_engine}")
+                            #logger.debug(f"Spawning engine_step for VE {ve} due to newly arrived requests during polling.")
+                            #ve_start_times[ve] = time.perf_counter()
                             requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
                             has_requests_in_progress[ve] = True
             except asyncio.TimeoutError as exc:
