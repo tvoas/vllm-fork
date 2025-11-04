@@ -493,13 +493,16 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
             batch_size = attn_metadata.num_prefills
         # Convert Flat inputs into 2D Inputs
         hidden_size = query.shape[-1]
-        query = query.reshape(batch_size, seq_len, hidden_size)
+        if len(query.shape) == 2:
+            query = query.reshape(batch_size, seq_len, hidden_size)
 
         hidden_size = key.shape[-1]
-        key = key.reshape(batch_size, seq_len, hidden_size)
+        if len(key.shape) == 2:
+            key = key.reshape(batch_size, seq_len, hidden_size)
 
         hidden_size = value.shape[-1]
-        value = value.reshape(batch_size, seq_len, hidden_size)
+        if len(value.shape) == 2:
+            value = value.reshape(batch_size, seq_len, hidden_size)
 
         # Insert key and value to kv cache
         attn_data.batch_size, attn_data.seq_len, attn_data.hidden_size\
