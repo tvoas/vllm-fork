@@ -17,6 +17,7 @@ import time
 from array import array
 from contextlib import suppress
 from enum import Enum, IntEnum
+from functools import wraps
 from typing import (TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple,
                     Optional, Set, Tuple, Type, TypeVar, Union)
 
@@ -1033,6 +1034,61 @@ class CachedStepOutput:
         self.is_prompt = is_prompt
 
 
+def with_thread_limits():
+    """
+    Decorator to temporarily set OMP_NUM_THREADS and PyTorch threads,
+    and restore them after the function call.
+    
+    Args:
+        div_omp: divide CPU cores by this for OMP_NUM_THREADS
+        div_torch: divide CPU cores by this for torch.set_num_threads
+    """
+
+    def decorator(func):
+
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            if not envs.VLLM_HPU_CONVERT_TO_FP8UZ:
+                return func(*args, **kwargs)
+
+            world_size = 1
+            if torch.distributed.is_initialized():
+                world_size = torch.distributed.get_world_size()
+            world_size = min(world_size, 8)
+
+            div_omp = world_size
+            div_torch = world_size
+
+            # Save original settings
+            old_omp = os.environ.get("OMP_NUM_THREADS", None)
+            old_torch = torch.get_num_threads()
+            import psutil
+            num_cores = len(psutil.Process().cpu_affinity() or [0])
+
+            # Set new limits
+            os.environ["OMP_NUM_THREADS"] = str(max(1, num_cores // div_omp))
+            torch.set_num_threads(max(1, num_cores // div_torch))
+            logger.warning_once(
+                "Setting OMP_NUM_THREADS to %s and torch.set_num_threads to %s "
+                "for %s available CPU cores and world size %s",
+                os.environ["OMP_NUM_THREADS"], torch.get_num_threads(),
+                num_cores, world_size)
+            try:
+                # Call the actual function
+                return func(*args, **kwargs)
+            finally:
+                # Restore original settings
+                if old_omp is None:
+                    os.environ.pop("OMP_NUM_THREADS", None)
+                else:
+                    os.environ["OMP_NUM_THREADS"] = old_omp
+                torch.set_num_threads(old_torch)
+
+        return wrapper
+
+    return decorator
+
+
 class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
     """
     Helper class for shared methods between GPU model runners.
@@ -1262,6 +1318,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         else:
             self.use_alibi = False
 
+    @with_thread_limits()
     def load_model(self) -> None:
         import habana_frameworks.torch.core as htcore
         if self.model_config.quantization == 'inc' or \
@@ -1902,6 +1959,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
 
         if any(context_lens):
             assert not self.scheduler_config.chunked_prefill_enabled
+            assert self.scheduler_config.max_num_prefill_seqs == 1
+            assert bs == 1, (
+                "Prefix caching with multiple sequences is not supported yet.")
             # prefix caching
 
             max_num_block = max(len(bt) for bt in prefix_block_tables)
@@ -2775,9 +2835,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         """
         with self.profiler.record_event('internal', 'prepare_input_tensors'):
             assert seq_group_metadata_list is not None
-            if self.profiler.enabled:
-                self.profiler_counter_helper.capture_seq_group_metadata_stats(
-                    seq_group_metadata_list=seq_group_metadata_list)
+            self.profiler_counter_helper.capture_seq_group_metadata_stats(
+                seq_group_metadata_list=seq_group_metadata_list)
             model_input, sampling_metadata = self.prepare_input_tensors(
                 seq_group_metadata_list, finished_requests_ids, align_worker)
             assert model_input.attn_metadata is not None
@@ -3985,7 +4044,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         warmup_mode=False,
         previous_hidden_states: Optional[torch.Tensor] = None,
         seqs=None,
-        ctx_blocks: int = 1,
+        ctx_blocks: int = 0,
         is_dummy_run: bool = False,
         is_pt_profiler_run: bool = False,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
@@ -4074,6 +4133,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 if not warmup_mode:
                     ctx_blocks = seq_len
                 seq_len = 1
+            elif attn_metadata.block_list is not None:
+                if not warmup_mode:
+                    ctx_blocks = attn_metadata.block_list.shape[-1]
 
             if self._is_fla_model():
                 use_graphs = not is_prompt
@@ -4219,8 +4281,15 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         attn_metadata,
                         kv_caches=kv_caches
                     )
+                real_seq_lens = model_input.seq_lens
+                real_seq_lens = real_seq_lens if real_seq_lens else \
+                    self.profiler_counter_helper.real_seq_lens
+                real_query_lens = model_input.query_lens
+                real_query_lens = real_query_lens if real_query_lens else \
+                    self.profiler_counter_helper.prompt_seq_lens
                 profiler_args = {
-                    'real_seq_len': model_input.seq_lens,
+                    'real_seq_lens': real_seq_lens,
+                    'real_query_lens': real_query_lens,
                     'real_batch_size': real_batch_size
                 }
 
