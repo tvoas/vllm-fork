@@ -351,6 +351,19 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                 execute_model_req.virtual_engine,
                 execute_model_req.finished_requests_ids))
 
+        # Compute needs_sampling on driver before broadcast.
+        is_prompt = model_input.is_prompt #bool(getattr(getattr(model_input, "attn_metadata", None), "is_prompt", False))
+        per_seq_flags = []
+        if hasattr(self, "_last_prefill_or_decode"):
+            try:
+                per_seq_flags = self._last_prefill_or_decode(model_input, execute_model_req)
+            except Exception:
+                per_seq_flags = []
+        needs_sampling = (not is_prompt) or (per_seq_flags and any(per_seq_flags))
+        if hasattr(model_input, "needs_sampling"):
+            model_input = dataclasses.replace(model_input,
+                                              needs_sampling=needs_sampling)
+
         kwargs = extract_previous_hidden_states(execute_model_req)
 
         if self.do_metadata_broadcast:
