@@ -1587,8 +1587,6 @@ class Scheduler:
                 min(self.max_num_mixed_seqs, self.scheduler_config.max_num_seqs)
                 - (self.scheduler_config.max_num_prefill_seqs or 0),
             )
-            #logger.info(f"Scheduler._schedule_chunked_prefill.allowed_decode_capacity "
-            #            f"allowed_decode_capacity={allowed_decode_capacity}")
             prefill_running_subset = [sg for sg in original_running if sg.is_prefill()]
             if allowed_decode_capacity == 0:
                 decode_running_subset = []
