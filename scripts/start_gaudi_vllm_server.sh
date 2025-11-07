@@ -9,7 +9,7 @@ Help() {
     # Display Help
     echo "Start a vLLM server for a huggingface model on Gaudi."
     echo
-    echo "Usage: bash start_gaudi_vllm_server.sh <-w> [-t:m:a:d:q:x:p:b:g:u:e:l:c:sf] [-h]"
+    echo "Usage: bash start_gaudi_vllm_server.sh <-w> [-t:m:a:d:q:x:p:b:g:k:u:e:l:c:sf] [-h]"
     echo "Options:"
     echo "-w  Weights of the model, str, could be model id in huggingface or local path."
     echo "    DO NOT change the model name as some of the parameters depend on it."
@@ -37,6 +37,8 @@ Help() {
     echo "-g  max-seq-len-to-capture for vLLM, int, default=${PREFERED_SEQ_LEN_TO_CAPTURE}"
     echo "    Used to control the maximum batched tokens to be captured in HPUgraph."
     echo "    Reduce this value could decrease memory usage, but not smaller than 2048."
+    echo "-k  enable-chunked prefill and cap max-num-batched-tokens"
+    echo "    to the specified value, int, default=disabled"
     echo "-u  gpu-memory-utilization, float, default=0.9"
     echo "    Used to control the GPU memory utilization. Reduce this value if OOM occurs."
     echo "-e  Extra vLLM server parameters, str, default=None"
@@ -57,7 +59,7 @@ Help() {
 }
 
 # Get the options
-while getopts hw:t:r:m:a:d:q:x:p:b:g:u:e:l:c:sf flag; do
+while getopts hw:t:r:m:a:d:q:x:p:b:g:k:u:e:l:c:sf flag; do
     case $flag in
     h) # display Help
         Help
@@ -87,6 +89,8 @@ while getopts hw:t:r:m:a:d:q:x:p:b:g:u:e:l:c:sf flag; do
         max_num_seqs=$OPTARG ;;
     g) # max-seq-len-to-capture
         max_seq_len_to_capture=$OPTARG ;;
+    k) # max-num-batched-tokens for chunked prefill
+        chunk_size=$OPTARG ;;
     u) # gpu-memory-utilization
         gpu_memory_utilization=$OPTARG ;;
     e) # extra vLLM server parameters
@@ -136,6 +140,7 @@ max_model_len=${max_model_len:-"16384"}
 max_num_prefill_seqs=${max_num_prefill_seqs-${PREFERED_PREFILL_BS}}
 max_num_seqs=${max_num_seqs:-$PREFERED_DECODING_BS}
 max_seq_len_to_capture=${max_seq_len_to_capture:-$PREFERED_SEQ_LEN_TO_CAPTURE}
+chunk_size=${chunk_size:-""}
 gpu_memory_utilization=${gpu_memory_utilization:-"0.9"}
 extra_params=(${extra_params[@]:-})
 max_padding_ratio=${max_padding_ratio:-"0.25"}
@@ -157,14 +162,26 @@ echo "    TP=${num_tp_hpu} PP=${num_pp_hpu}"
 echo "    URL: ${host}:${port}"
 echo "    max_num_seqs: ${max_num_seqs}"
 echo "    max_model_len: ${max_model_len}"
+if [[ "$chunk_size" != "" ]]; then
+    echo "    chunked prefill enabled with max-num-batched-tokens: ${chunk_size}"
+fi
 
-case_name=serve_${model_name}_${dtype}_${DEVICE_NAME}_len${max_model_len}_bs${max_num_seqs}_tp${num_tp_hpu}_pp${num_pp_hpu}_$(date +%F-%H-%M-%S)
+if [[ "$chunk_size" != "" ]]; then
+    case_name=serve_${model_name}_${dtype}_${DEVICE_NAME}_len${max_model_len}_chunk${chunk_size}_bs${max_num_seqs}_tp${num_tp_hpu}_pp${num_pp_hpu}_$(date +%F-%H-%M-%S)
+else
+    case_name=serve_${model_name}_${dtype}_${DEVICE_NAME}_len${max_model_len}_bs${max_num_seqs}_tp${num_tp_hpu}_pp${num_pp_hpu}_$(date +%F-%H-%M-%S)
+fi
 log_file="${case_name}.log"
 
 set_config
 
 echo "Changed environment variables:" |& tee "${log_file}"
 echo -e "${changed_env}\n" |& tee -a "${log_file}"
+
+bonus_args=""
+if [[ "$chunk_size" != "" ]]; then
+    bonus_args+=" --enable-chunked-prefill "
+fi
 
 command_string=$(echo ${NUMA_CTL_CMD} \
 python3 -m vllm.entrypoints.openai.api_server \
@@ -183,6 +200,7 @@ python3 -m vllm.entrypoints.openai.api_server \
     --trust-remote-code \
     --seed 2025 \
     --distributed_executor_backend "${dist_backend}" \
+    ${bonus_args} \
     "${extra_params[@]}")
 
 echo "Start a vLLM server for ${model_name} on Gaudi $DEVICE_NAME with command:" |& tee -a "${log_file}"
