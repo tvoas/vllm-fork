@@ -591,27 +591,27 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     output.tensors, all_gather_group=get_tp_group())
                 return [None]
 
-        if get_pp_group().is_last_rank and get_pp_group().world_size > 1:
-            if not model_input.is_prompt or model_input.needs_sampling:
-                output = self.model_runner.execute_sample(
-                    hidden_states=output,
-                    model_input=model_input,
-                    num_steps=num_steps,
-                )
-            elif get_tp_group().is_first_rank:
-                # All sequences still in prefill: return dummy sampler outputs
-                dummy_count = len(execute_model_req.seq_group_metadata_list)
-                output = [
-                    SamplerOutput(
-                        outputs=[CompletionSequenceGroupOutput(samples=[], prompt_logprobs=None)],
-                        sampled_token_probs=None,
-                        sampled_token_ids=None,
-                        spec_decode_worker_metrics=None,
-                    )
-                    for _ in range(dummy_count)
-                ]
-            else:
-                output = [None]
+        #if get_pp_group().is_last_rank and get_pp_group().world_size > 1:
+        #    if not model_input.is_prompt or model_input.needs_sampling:
+        #        output = self.model_runner.execute_sample(
+        #            hidden_states=output,
+        #            model_input=model_input,
+        #            num_steps=num_steps,
+        #        )
+        #    elif get_tp_group().is_first_rank:
+        #        # All sequences still in prefill: return dummy sampler outputs
+        #        dummy_count = len(execute_model_req.seq_group_metadata_list)
+        #        output = [
+        #            SamplerOutput(
+        #                outputs=[CompletionSequenceGroupOutput(samples=[], prompt_logprobs=None)],
+        #                sampled_token_probs=None,
+        #                sampled_token_ids=None,
+        #                spec_decode_worker_metrics=None,
+        #            )
+        #            for _ in range(dummy_count)
+        #        ]
+        #    else:
+        #        output = [None]
 
         # output is List[SamplerOutput]
         return output
