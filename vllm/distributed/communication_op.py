@@ -6,7 +6,7 @@ from typing import Any, Optional, Union
 import torch
 import torch.distributed
 
-from .parallel_state import get_tp_group, get_world_group
+from .parallel_state import get_tp_group
 
 
 def tensor_model_parallel_all_reduce(input_: torch.Tensor) -> torch.Tensor:
@@ -39,10 +39,3 @@ def broadcast_tensor_dict(tensor_dict: Optional[dict[Any, Union[torch.Tensor,
     if not torch.distributed.is_initialized():
         return tensor_dict
     return get_tp_group().broadcast_tensor_dict(tensor_dict, src)
-
-def world_broadcast_tensor_dict(tensor_dict: Optional[dict[Any, Union[torch.Tensor,
-                                                                Any]]] = None,
-                          src: int = 0):
-    if not torch.distributed.is_initialized():
-        return tensor_dict
-    return get_world_group().broadcast_tensor_dict(tensor_dict, src)
