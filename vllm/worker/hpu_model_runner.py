@@ -3513,6 +3513,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                 deferred_sampling = \
                     self.parallel_config.pipeline_parallel_size > 1 \
                     and get_pp_group().is_last_rank
+                deferred_sampling = False
                 intermediate_tensors = None
                 if not get_pp_group().is_first_rank:
                     intermediate_tensors = \
@@ -4602,10 +4603,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     # we obtain the actual sampled results in advance
                     self._patch_prev_output()
 
-                if self.parallel_config.pipeline_parallel_size > 1:
-                    # NOTE(Tanner): defer sampling so we can
-                    # release the PP lock.
-                    return hidden_states
+                #if self.parallel_config.pipeline_parallel_size > 1:
+                #    # NOTE(Tanner): defer sampling so we can
+                #    # release the PP lock.
+                #    return hidden_states
 
                 # Compute the logits.
                 with self.profiler.record_event('internal',
