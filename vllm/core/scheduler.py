@@ -517,6 +517,7 @@ class Scheduler:
         # simple and NOT fair. It can lead to starvation of some
         # LoRAs. This should be improved in the future.
         self.lora_config = lora_config
+        self.max_num_mixed_seqs = int(os.getenv("VLLM_MAX_NUM_MIXED_SEQS", 0))
 
         version = "selfattn"
         if (self.scheduler_config.runner_type == "pooling"
@@ -1584,13 +1585,16 @@ class Scheduler:
             # Allow some decode groups to remain to fill up to max_num_seqs.
             allowed_decode_capacity = max(
                 0,
-                (self.scheduler_config.max_num_seqs or 0)
+                min(self.max_num_mixed_seqs, self.scheduler_config.max_num_seqs)
                 - (self.scheduler_config.max_num_prefill_seqs or 0),
             )
             prefill_running_subset = [sg for sg in original_running if sg.is_prefill()]
-            decode_running_subset = [
-                sg for sg in original_running if not sg.is_prefill()
-            ][:allowed_decode_capacity]
+            if allowed_decode_capacity == 0:
+                decode_running_subset = []
+            else:    
+                decode_running_subset = [
+                    sg for sg in original_running if not sg.is_prefill()
+                ][:allowed_decode_capacity]
             self.running = deque(prefill_running_subset + decode_running_subset)
             self.swapped = deque([sg for sg in original_swapped if sg.is_prefill()])
 
@@ -1608,8 +1612,6 @@ class Scheduler:
             )
             if len(running_scheduled.preempted) + len(running_scheduled.swapped_out) == 0:
                 swapped_in = self._schedule_swapped(budget, curr_loras, enable_chunking=True)
-                # Drop any decode groups just in case (should be none in prefill-only filtering).
-                swapped_in.decode_seq_groups = []
 
             # Enforce microbatch sequence cap = max_num_prefill_seqs (continuing + new only).
             cfg_limit = self.scheduler_config.max_num_prefill_seqs
