@@ -732,6 +732,7 @@ class Scheduler:
         curr_loras: Optional[Set[int]],
         enable_chunking: bool = False,
         partial_prefill_metadata: Optional[PartialPrefillMetadata] = None,
+        decode_id_filter=None,
     ) -> SchedulerRunningOutputs:
         """Schedule sequence groups that are running.
 
@@ -779,8 +780,19 @@ class Scheduler:
 
         running_queue = self.running
         assert len(self._async_stopped) == 0
+        leftover_running: Deque[SequenceGroup] = deque()
         while running_queue:
             seq_group = running_queue[0]
+            skip_seq_group = False
+            if decode_id_filter is not None:
+                for seq in seq_group.seqs:
+                    seq_id = seq.seq_id
+                    #TVOAS-DEBUG-LOG# logger.info(f"Scheduler._schedule_running: decode_id_filter checking seq_id={seq_id} -> {seq_id in decode_id_filter}")
+                    if seq_id not in decode_id_filter:
+                        skip_seq_group = True
+            if skip_seq_group:
+                leftover_running.appendleft(running_queue.popleft())
+                continue
             # We discard the cached tokens info here because we don't need it
             # for running sequence:
             #   1. If a sequence is running with chunked prefill, the cached
@@ -899,6 +911,7 @@ class Scheduler:
                     budget.add_num_seqs(seq_group.request_id, num_running_seqs)
                 if curr_loras is not None and seq_group.lora_int_id > 0:
                     curr_loras.add(seq_group.lora_int_id)
+        running_queue.extendleft(leftover_running)
 
         self._scheduler_running_outputs_cache[self.next_cache_id].reset()
         self._scheduled_seq_group_cache[self.next_cache_id].reset()
@@ -910,6 +923,7 @@ class Scheduler:
         budget: SchedulingBudget,
         curr_loras: Optional[Set[int]],
         enable_chunking: bool = False,
+        decode_id_filter=None,
     ) -> SchedulerSwappedInOutputs:
         """Schedule sequence groups that are swapped out.
 
@@ -942,7 +956,16 @@ class Scheduler:
         leftover_swapped: Deque[SequenceGroup] = deque()
         while swapped_queue:
             seq_group = swapped_queue[0]
-
+            skip_seq_group = False
+            if decode_id_filter is not None:
+                for seq in seq_group.seqs:
+                    seq_id = seq.seq_id
+                    #TVOAS-DEBUG-LOG# logger.info(f"Scheduler._schedule_swapped: decode_id_filter checking seq_id={seq_id} -> {seq_id in decode_id_filter}")
+                    if seq_id in decode_id_filter:
+                        skip_seq_group = True
+            if skip_seq_group:
+                leftover_swapped.appendleft(swapped_queue.popleft())
+                continue
             # If the sequence group cannot be swapped in, stop.
             is_prefill = seq_group.is_prefill()
             alloc_status = self.block_manager.can_swap_in(
@@ -1539,7 +1562,7 @@ class Scheduler:
             preempted=preempted,
         )
 
-    def _schedule_chunked_prefill(self) -> SchedulerOutputs:
+    def _schedule_chunked_prefill(self, decode_id_filter=None) -> SchedulerOutputs:
         """Schedule queued requests.
 
         Chunked prefill allows to chunk prefill requests, batch them together
@@ -1571,14 +1594,14 @@ class Scheduler:
         )
         prefill_running_existing = any(sg.is_prefill() for sg in self.running)
         prefill_swapped_existing = any(sg.is_prefill() for sg in self.swapped)
-        prefill_only_mode = prefill_waiting or prefill_running_existing or prefill_swapped_existing
+        prefill_mode = prefill_waiting or prefill_running_existing or prefill_swapped_existing
         # Skip prefill-only path entirely if we already have max_num_seqs worth of decoding.
-        if prefill_only_mode:
+        if prefill_mode:
             decoding_running = [sg for sg in self.running if not sg.is_prefill()]
             if (self.scheduler_config.max_num_seqs is not None
                 and len(decoding_running) >= self.scheduler_config.max_num_seqs):
-                prefill_only_mode = False
-        if prefill_only_mode and self.scheduler_config.max_num_prefill_seqs is not None:
+                prefill_mode = False
+        if prefill_mode and self.scheduler_config.max_num_prefill_seqs is not None:
             # Temporarily restrict running/swapped queues to prefills (+ limited decodes).
             original_running = self.running
             original_swapped = self.swapped
@@ -1588,6 +1611,8 @@ class Scheduler:
                 min(self.max_num_mixed_seqs, self.scheduler_config.max_num_seqs)
                 - (self.scheduler_config.max_num_prefill_seqs or 0),
             )
+            #logger.info(f"Scheduler._schedule_chunked_prefill.allowed_decode_capacity "
+            #            f"allowed_decode_capacity={allowed_decode_capacity}")
             prefill_running_subset = [sg for sg in original_running if sg.is_prefill()]
             if allowed_decode_capacity == 0:
                 decode_running_subset = []
@@ -1612,9 +1637,6 @@ class Scheduler:
             )
             if len(running_scheduled.preempted) + len(running_scheduled.swapped_out) == 0:
                 swapped_in = self._schedule_swapped(budget, curr_loras, enable_chunking=True)
-                # Drop any decode groups just in case (should be none in prefill-only filtering).
-                swapped_in.decode_seq_groups = []
-
             # Enforce microbatch sequence cap = max_num_prefill_seqs (continuing + new only).
             cfg_limit = self.scheduler_config.max_num_prefill_seqs
             continuing_seq_count = (
@@ -1696,13 +1718,14 @@ class Scheduler:
             curr_loras,
             enable_chunking=True,
             partial_prefill_metadata=partial_prefill_metadata,
+            decode_id_filter=decode_id_filter,
         )
 
         # Schedule swapped out requests.
         # If preemption happens, it means we don't have space for swap-in.
         if len(running_scheduled.preempted) + len(
                 running_scheduled.swapped_out) == 0:
-            swapped_in = self._schedule_swapped(budget, curr_loras)
+            swapped_in = self._schedule_swapped(budget, curr_loras, decode_id_filter=decode_id_filter)
 
         prefills = self._schedule_prefills(
             budget,
@@ -1790,10 +1813,10 @@ class Scheduler:
         ]
         return finishing + not_finishing
 
-    def _schedule(self) -> SchedulerOutputs:
+    def _schedule(self, decode_id_filter=None) -> SchedulerOutputs:
         """Schedule queued requests."""
         if self.scheduler_config.chunked_prefill_enabled:
-            return self._schedule_chunked_prefill()
+            return self._schedule_chunked_prefill(decode_id_filter=decode_id_filter)
         else:
             return self._schedule_default()
 
@@ -1829,14 +1852,15 @@ class Scheduler:
         return no_single_seq
 
     def schedule(
-            self
+            self,
+            decode_id_filter=None
     ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs, bool]:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
         # such as self.running, self.swapped, and self.waiting.
         scheduler_start_time = time.perf_counter()
 
-        scheduler_outputs: SchedulerOutputs = self._schedule()
+        scheduler_outputs: SchedulerOutputs = self._schedule(decode_id_filter=decode_id_filter)
         now = time.time()
 
         if not self.cache_config.enable_prefix_caching:

@@ -3,11 +3,13 @@
 
 import asyncio
 import copy
+import os
 import time
 import weakref
 from functools import partial
 from typing import (Any, AsyncGenerator, Callable, Coroutine, Dict, Iterable,
                     List, Mapping, Optional, Set, Tuple, Type, Union, overload)
+import threading
 from weakref import ReferenceType
 
 from typing_extensions import deprecated
@@ -265,10 +267,12 @@ class _AsyncLLMEngine(LLMEngine):
     """Extension of LLMEngine to add async methods."""
 
     def __init__(self, *args, **kwargs):
+        self.lock_update_req = {}
         super().__init__(*args, **kwargs)
 
     async def step_async(
-        self, virtual_engine: int
+        self, virtual_engine: int,
+        loop_idx = 0
     ) -> List[Union[RequestOutput, PoolingRequestOutput]]:
         """Performs one decoding iteration and returns newly generated results.
         The workers are ran asynchronously if possible.
@@ -291,20 +295,37 @@ class _AsyncLLMEngine(LLMEngine):
         # Clear outputs for each new scheduler iteration
         ctx.request_outputs.clear()
 
+        #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_01[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
+
+        if virtual_engine not in self.lock_update_req:
+            self.lock_update_req[virtual_engine] = threading.Lock()
+            #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async has no VE{virtual_engine} in lock_update_req. Creating")
+        with self.lock_update_req[virtual_engine]:
+            #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: has lock")
+            await self.model_executor._wait_for_sg_locks(virtual_engine)
+            #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: waited for sg lock")
+            self.model_executor._set_current_loop_idx(virtual_engine, loop_idx)
+            #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: set current loop idx")
+            decode_id_filter = self.model_executor._get_valid_decode_id(virtual_engine)
+            #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: decode_id_filter={decode_id_filter}, prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
+        #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: released lock")
+
         # skip the scheduler if there are any remaining steps in the seq groups.
         # This ensures that the scheduler is only called again when the current
         # batch has completed.
         if not self._has_remaining_steps(seq_group_metadata_list):
+            #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_02[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
 
             # Schedule iteration
             (seq_group_metadata_list, scheduler_outputs,
              allow_async_output_proc
-             ) = self.scheduler[virtual_engine].schedule()
+             ) = self.scheduler[virtual_engine].schedule(decode_id_filter=decode_id_filter)
 
             ctx.seq_group_metadata_list = seq_group_metadata_list
             ctx.scheduler_outputs = scheduler_outputs
 
             if not scheduler_outputs.is_empty():
+                #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_03[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 # this will cause mamba_cache/minimax_cache failed
                 # to release finished_requests_ids of the last steps
                 finished_requests_ids = self.scheduler[
@@ -312,23 +333,26 @@ class _AsyncLLMEngine(LLMEngine):
 
             # Maybe switch from async mode to sync mode
             if not allow_async_output_proc and len(ctx.output_queue) > 0:
+                #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_04[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 self._process_model_outputs(ctx=ctx)
 
             if (self.scheduler_config.is_multi_step
                     and scheduler_outputs.num_lookahead_slots > 0):
+                #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_05[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 # cache the scheduler outputs for the next iteration if we have
                 # lookahead slots
                 self._cache_scheduler_outputs_for_multi_step(
                     virtual_engine, seq_group_metadata_list, scheduler_outputs,
                     allow_async_output_proc)
         else:
+            #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_06[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             finished_requests_ids = list()
 
         assert seq_group_metadata_list is not None
         assert scheduler_outputs is not None
 
         if not scheduler_outputs.is_empty():
-
+            #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_07[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             # Check if we have a cached last_output from the previous iteration.
             # For supporting PP this is probably the best way to pass the
             # sampled_token_ids, as a separate broadcast over all the PP stages
@@ -350,6 +374,7 @@ class _AsyncLLMEngine(LLMEngine):
                 last_sampled_token_ids=last_sampled_token_ids)
 
             if allow_async_output_proc:
+                #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_08[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 execute_model_req.async_callback = self.async_callbacks[
                     virtual_engine]
 
@@ -360,20 +385,26 @@ class _AsyncLLMEngine(LLMEngine):
             # we need to do this here so that last step's sampled_token_ids can
             # be passed to the next iteration for PP.
             if self.scheduler_config.is_multi_step:
+                #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_09[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 self._update_cached_scheduler_output(virtual_engine, outputs)
         else:
+            #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_10[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             if len(ctx.output_queue) > 0:
+                #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_11[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 self._process_model_outputs(ctx=ctx)
             outputs = []
 
         # Finish the current step for all the sequence groups.
         if self.scheduler_config.is_multi_step:
+            #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_12[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             for seq_group in seq_group_metadata_list:
                 seq_group.finish_step()
 
         if not self._has_remaining_steps(seq_group_metadata_list):
+            #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_13[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             # Clear the cache if we have finished all the steps
             if self.scheduler_config.is_multi_step:
+                #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_14[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 self.cached_scheduler_outputs[
                     virtual_engine] = SchedulerOutputState()
 
@@ -391,6 +422,7 @@ class _AsyncLLMEngine(LLMEngine):
                               is_first_step_output=is_first_step_output)
 
             if outputs and allow_async_output_proc:
+                #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_15[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 assert len(
                     outputs
                 ) == 1, "Async postprocessor expects only a single output set"
@@ -399,6 +431,7 @@ class _AsyncLLMEngine(LLMEngine):
                     scheduler_outputs.scheduled_seq_groups)
 
             if not allow_async_output_proc:
+                #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_16[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 self._process_model_outputs(ctx=ctx)
 
                 # Log stats.
@@ -408,15 +441,20 @@ class _AsyncLLMEngine(LLMEngine):
                 self.do_tracing(scheduler_outputs)
 
         else:
+            #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_17[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             # Multi-step case
+            self.model_executor._unset_current_loop_idx(virtual_engine, loop_idx)
             return ctx.request_outputs
 
         if not self.has_unfinished_requests():
+            #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_18[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             # Drain async postprocessor (if exists)
             if len(ctx.output_queue) > 0:
+                #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_19[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 self._process_model_outputs(ctx=ctx)
             assert len(ctx.output_queue) == 0
-
+        self.model_executor._unset_current_loop_idx(virtual_engine, loop_idx)
+        #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async.log_20[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
         return ctx.request_outputs
 
     async def stop_remote_worker_execution_loop_async(self) -> None:
@@ -770,7 +808,7 @@ class AsyncLLMEngine(EngineClient):
             self._background_loop_unshielded = None
         self.background_loop = None
 
-    async def engine_step(self, virtual_engine: int) -> bool:
+    async def engine_step(self, virtual_engine: int, loop_idx = 0) -> bool:
         """Kick the engine to process the waiting requests.
 
         Returns True if there are in-progress requests."""
@@ -793,7 +831,7 @@ class AsyncLLMEngine(EngineClient):
         if aborted_requests:
             await self._engine_abort(aborted_requests)
 
-        request_outputs = await self.engine.step_async(virtual_engine)
+        request_outputs = await self.engine.step_async(virtual_engine, loop_idx)
 
         # Put the outputs into the corresponding streams.
         # If used as a callback, then already invoked inside
@@ -831,9 +869,18 @@ class AsyncLLMEngine(EngineClient):
 
         pipeline_parallel_size = \
                 engine.engine.parallel_config.pipeline_parallel_size
-        has_requests_in_progress = [False] * (pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+        ve_true_count = pipeline_parallel_size + envs.VLLM_PP_BONUS_VE
+        ve_look_a_head = 1
+        ve_interleave_count = ve_true_count * (1 + ve_look_a_head)
+        loops_per_ve = (1 + ve_look_a_head)
+        has_requests_in_progress = [False] * (ve_interleave_count)
 
         POLL_TIME_S = 0.02
+
+        # Ordered loop scheduling (prevent a VE loop from rescheduling out of round-robin order).
+        ordered_loops_enabled = os.getenv("VLLM_ORDERED_VE_LOOPS", "1").lower() not in ("0", "false", "no")
+        # For each VE track next loop_idx to be rescheduled.
+        next_loop_idx_per_ve = [0] * ve_true_count
 
         while True:
             request_tracker = engine._request_tracker
@@ -858,15 +905,32 @@ class AsyncLLMEngine(EngineClient):
                 if not engine:
                     return
                 logger.debug("Got new requests!")
+                #TVOAS-DEBUG-LOG# logger.info(f"async_llm_engine.run_engine_loop start 1 for VE in {[i % ve_true_count for i in range(ve_interleave_count)]}")
                 requests_in_progress = []
-                for ve in range(pipeline_parallel_size + envs.VLLM_PP_BONUS_VE):
-                    requests_in_progress.append(asyncio.create_task(engine.engine_step(ve)))
-                has_requests_in_progress = [True] * (pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+                for i in range(ve_interleave_count):
+                    ve = i % ve_true_count
+                    loop_idx = i // ve_true_count
+                    # Always launch initial set (all loops) so ordering only affects reschedules.
+                    requests_in_progress.append(asyncio.create_task(engine.engine_step(ve, loop_idx)))
+                if ordered_loops_enabled:
+                    next_loop_idx_per_ve = [0] * ve_true_count
+                has_requests_in_progress = [True] * ve_interleave_count
             elif not all(has_requests_in_progress) and request_tracker.has_new_requests():
-                for ve, active in enumerate(has_requests_in_progress):
-                    if not active:
-                        requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
-                        has_requests_in_progress[ve] = True
+                for idx, active in enumerate(has_requests_in_progress):
+                    if active:
+                        continue
+                    ve = idx % ve_true_count
+                    loop_idx = idx // ve_true_count
+                    if ordered_loops_enabled:
+                        # Only spawn if this loop_idx is the next expected and no pending completion blocking.
+                        if loop_idx != next_loop_idx_per_ve[ve]:
+                            # Yield to event loop (balance across VEs / RPC tasks).
+                            await asyncio.sleep(0)
+                            continue
+                        next_loop_idx_per_ve[ve] = (next_loop_idx_per_ve[ve] + 1) % loops_per_ve
+                    #TVOAS-DEBUG-LOG# logger.info(f"Spawning engine_step for VE {ve} and loop {loop_idx} due to newly arrived requests during polling.")
+                    requests_in_progress[idx] = asyncio.create_task(engine.engine_step(ve, loop_idx))
+                    has_requests_in_progress[idx] = True
 
             # Abort if iteration takes too long due to unrecoverable errors
             # (eg. NCCL timeouts).
@@ -878,31 +942,53 @@ class AsyncLLMEngine(EngineClient):
                         return_when=asyncio.FIRST_COMPLETED)
 
                     # Yield to event loop (balance across VEs / RPC tasks).
-                    for _ in range(pipeline_parallel_size + envs.VLLM_PP_BONUS_VE):
+                    for _ in range(ve_interleave_count):
                         await asyncio.sleep(0)
 
                 # Process finished tasks.
                 for task in done:
-                    virtual_engine = requests_in_progress.index(task)
+                    idx = requests_in_progress.index(task)
+                    ve = idx % ve_true_count
+                    loop_idx = idx // ve_true_count
                     result = task.result()
                     has_unfinished_requests = (
                         engine.engine.
                         has_unfinished_requests_for_virtual_engine(
-                            virtual_engine))
+                            ve))
                     if result or has_unfinished_requests:
-                        requests_in_progress[virtual_engine] = (
+                        if ordered_loops_enabled:
+                            # Only spawn if this loop_idx is the next expected and no pending completion blocking.
+                            if loop_idx != next_loop_idx_per_ve[ve]:
+                                has_requests_in_progress[idx] = False
+                                # Yield to event loop (balance across VEs / RPC tasks).
+                                await asyncio.sleep(0)
+                                continue
+                            next_loop_idx_per_ve[ve] = (next_loop_idx_per_ve[ve] + 1) % loops_per_ve
+                        #TVOAS-DEBUG-LOG# logger.info(f"async_llm_engine.run_engine_loop start for VE{ve} and loop {loop_idx}")
+                        requests_in_progress[idx] = (
                             asyncio.create_task(
-                                engine.engine_step(virtual_engine)))
-                        has_requests_in_progress[virtual_engine] = True
+                                engine.engine_step(ve, loop_idx)))
+                        has_requests_in_progress[idx] = True
                     else:
-                        has_requests_in_progress[virtual_engine] = False
+                        has_requests_in_progress[idx] = False
 
                 # After processing completions, if new requests arrived and idle VEs exist, launch them immediately.
                 if request_tracker.has_new_requests():
-                    for ve, active in enumerate(has_requests_in_progress):
-                        if not active:
-                            requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
-                            has_requests_in_progress[ve] = True
+                    for idx, active in enumerate(has_requests_in_progress):
+                        if active:
+                            continue
+                        ve = idx % ve_true_count
+                        loop_idx = idx // ve_true_count
+                        if ordered_loops_enabled:
+                            # Only spawn if this loop_idx is the next expected and no pending completion blocking.
+                            if loop_idx != next_loop_idx_per_ve[ve]:
+                                # Yield to event loop (balance across VEs / RPC tasks).
+                                await asyncio.sleep(0)
+                                continue
+                            next_loop_idx_per_ve[ve] = (next_loop_idx_per_ve[ve] + 1) % loops_per_ve
+                        #TVOAS-DEBUG-LOG# logger.info(f"Spawning engine_step for VE {ve} and loop {loop_idx} due to newly arrived requests during polling.")
+                        requests_in_progress[idx] = asyncio.create_task(engine.engine_step(ve, loop_idx))
+                        has_requests_in_progress[idx] = True
             except asyncio.TimeoutError as exc:
                 logger.error(
                     "Engine iteration timed out. This should never happen!")
