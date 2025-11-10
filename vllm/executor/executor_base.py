@@ -20,7 +20,7 @@ from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.sequence import ExecuteModelRequest, PoolerOutput
+from vllm.sequence import ExecuteModelRequest, PoolerOutput, SequenceStage
 from vllm.utils import make_async, sha256
 from vllm.worker.worker_base import WorkerBase
 
@@ -38,6 +38,59 @@ def log_message(message: str, cache={}):
     with open(f"{cache['VLLM_TIME_LOG_DIRECTORY']}driver_log.txt", "a", encoding="utf-8") as f:
         f.write(f"[TIME={now}]{message}\n")
     logger.info(f"[TIME={now}]{message}")
+
+def log_execute_model_req(execute_model_req, prefix="ExecuteModelReq") -> None:
+    log = [prefix]
+    def add(label, value, depth=0):
+        header = '    ' * depth
+        log.append(f"{header}{label}: {value}")
+    for gi, group in enumerate(getattr(execute_model_req, "seq_group_metadata_list", [])):
+        add(f"SequenceGroupMetadata[{gi}]", "--------------------------------------------------", 1)
+        add("request_id", getattr(group, "request_id", None), 2)
+        add("is_prompt", getattr(group, "is_prompt", None), 2)
+        # seq_data loop
+        for seq_id, seq in getattr(group, "seq_data", {}).items():
+            add("seq_id", seq_id, 2)
+            prompt_ids = getattr(seq, "prompt_token_ids", [])
+            output_ids = getattr(seq, "output_token_ids", [])
+            #add("prompt_token_ids", prompt_ids, 3)
+            add("prompt_token_ids_length", len(prompt_ids), 3)
+            #add("output_token_ids", output_ids, 3)
+            add("output_token_ids_length", len(output_ids), 3)
+            add("cumulative_logprob", getattr(seq, "cumulative_logprob", None), 3)
+            # get_num_computed_tokens could be attr or method
+            computed = getattr(seq, "get_num_computed_tokens", None)
+            if callable(computed):
+                try:
+                    computed = computed()
+                except Exception:
+                    pass
+            add("get_num_computed_tokens", computed, 3)
+        # sampling_params.max_tokens
+        sampling_params = getattr(group, "sampling_params", None)
+        max_tokens = getattr(sampling_params, "max_tokens", None) if sampling_params else None
+        add("sampling_params.max_tokens", max_tokens, 2)
+        # block_tables loop
+        for seq_id, blocks in getattr(group, "block_tables", {}).items():
+            #add(f"block_tables[seq_id={seq_id}].values", blocks, 2)
+            try:
+                length = len(blocks)
+            except Exception:
+                length = None
+            add(f"block_tables[seq_id={seq_id}].length", length, 2)
+        add("do_sample", getattr(group, "do_sample", getattr(sampling_params, "do_sample", None)), 2)
+        add("state", getattr(group, "state", None), 2)
+        add("token_chunk_size", getattr(group, "token_chunk_size", None), 2)
+    # Top-level fields
+    add("virtual_engine", getattr(execute_model_req, "virtual_engine", None), 1)
+    add("num_lookahead_slots", getattr(execute_model_req, "num_lookahead_slots", None), 1)
+    add("running_queue_size", getattr(execute_model_req, "running_queue_size", None), 1)
+    add("previous_hidden_states", getattr(execute_model_req, "previous_hidden_states", None), 1)
+    add("num_steps", getattr(execute_model_req, "num_steps", None), 1)
+    add("async_callback", getattr(execute_model_req, "async_callback", None), 1)
+    add("is_dummy_batch", getattr(execute_model_req, "is_dummy_batch", None), 1)
+    logger.info("\n".join(log))
+
 
 class ExecutorBase(ABC):
     """Base class for all executors.
@@ -306,6 +359,16 @@ class DistributedExecutorBase(ExecutorBase):
         self._chunk_remainders: Dict[int, Dict[Hashable, Dict[str, Any]]] = {}
         self._master_cache_lock = threading.Lock()
         self._cache_lock: Dict[int, threading.Lock] = {}
+        self.seq_id_state_machines: Dict[int, Dict[int, int]] = {}
+        self.lock_update_req: Dict[int, threading.Lock] = {}
+        self.prefill_steps_remaining = {}
+        self.extended_critical: Dict[int, bool] = {}
+        self.extended_critical_owner: Dict[int, int] = {}
+        self._prefill_progress = {}
+        # Loop index tracking per virtual engine (only while in extended critical).
+        self._current_loop_idx: Dict[int, int] = {}
+        # Decode gating: loop idx allowed to run decode per virtual engine.
+        self._decode_valid_loop_idx: Dict[int, Dict[int, List[int]]] = {}
         super().__init__(*args, **kwargs)
 
     def execute_model(
@@ -620,7 +683,6 @@ class DistributedExecutorBase(ExecutorBase):
                 seq_data._output_token_ids = array.array("l", [])
                 seq_data._prompt_token_ids = array.array("l", [])
                 seq_data._prompt_token_ids_tuple = ()
-                seq_data._num_computed_tokens = 0
                 seq_data._stage = seq_data._stage.value
 
     def _get_chunked_prefill_limits(
@@ -663,7 +725,168 @@ class DistributedExecutorBase(ExecutorBase):
                     limits[seq_key] = (0, 0)
         return limits
     
-    def prepare_execute_model_req_patch(
+    async def _wait_for_sg_locks(self, virtual_engine: int):
+        #TVOAS-DEBUG-LOG# logger.info(f"DistributedExecutorBase._wait_for_sg_locks start for VE{virtual_engine}")
+        wait_ms = 10
+        log_spins = 200
+        if virtual_engine not in self.seq_id_state_machines:
+            #TVOAS-DEBUG-LOG# logger.info(f"DistributedExecutorBase._wait_for_sg_locks has no VE{virtual_engine} in seq_id_state_machines. Creating")
+            self.seq_id_state_machines[virtual_engine] = {}
+        spins = 0
+        start_t = time.perf_counter()
+        # Wait while any seq locked OR extended critical section active.
+        while any(state == 1 for state in self.seq_id_state_machines[virtual_engine].values()) \
+              or self.extended_critical.get(virtual_engine, False):
+            spins += 1
+            if spins % log_spins == 0:
+                elapsed = (time.perf_counter() - start_t) * 1000.0
+                logger.info("VE%s still locked after %d spins (%.1f ms)", virtual_engine, spins, elapsed)
+            await asyncio.sleep(wait_ms / 1000.0)
+        elapsed = (time.perf_counter() - start_t) * 1000.0
+        #TVOAS-DEBUG-LOG# logger.info("VE%s free after %d spins (%.1f ms)", virtual_engine, spins, elapsed)
+        #TVOAS-DEBUG-LOG# if virtual_engine not in self.extended_critical:
+            #TVOAS-DEBUG-LOG# logger.info(f"DistributedExecutorBase._wait_for_sg_locks has no VE{virtual_engine} in extended_critical. Creating")
+        self.extended_critical[virtual_engine] = True
+
+    def _set_current_loop_idx(self, virtual_engine: int, loop_idx: int) -> None:
+        assert self.extended_critical[virtual_engine], f"VE{virtual_engine} must be in extended critical to set loop idx."
+        self._current_loop_idx[virtual_engine] = loop_idx
+
+    def _unset_current_loop_idx(self, virtual_engine: int, loop_idx: int) -> None:
+        if self.extended_critical[virtual_engine]:
+            if self._current_loop_idx[virtual_engine] == loop_idx:
+                del self._current_loop_idx[virtual_engine]
+                self.extended_critical[virtual_engine] = False
+
+    def _get_valid_decode_id(self, virtual_engine: int) -> Optional[int]:
+        assert self.extended_critical[virtual_engine], f"VE{virtual_engine} must be in extended critical to get valid decode loop idx."
+        if virtual_engine not in self._decode_valid_loop_idx:
+            #TVOAS-DEBUG-LOG# logger.info(f"DistributedExecutorBase._get_valid_decode_id has no VE{virtual_engine} in _decode_valid_loop_idx. Creating")
+            self._decode_valid_loop_idx[virtual_engine] = {}
+        if self._current_loop_idx[virtual_engine] not in self._decode_valid_loop_idx[virtual_engine]:
+            #TVOAS-DEBUG-LOG# logger.info(f"DistributedExecutorBase._get_valid_decode_id has no VE{virtual_engine}.loop_idx{self._current_loop_idx[virtual_engine]} in _decode_valid_loop_idx. Creating")
+            self._decode_valid_loop_idx[virtual_engine][self._current_loop_idx[virtual_engine]] = []
+        return self._decode_valid_loop_idx[virtual_engine][self._current_loop_idx[virtual_engine]]
+    
+    def compute_remaining_prefill_steps(self, execute_model_req):
+        r = {}
+        for sg in execute_model_req.seq_group_metadata_list:
+            c = sg.token_chunk_size
+            for seq_id, seq in sg.seq_data.items():
+                if not sg.is_prompt:
+                    r[seq_id] = 0
+                    continue
+                total = len(seq.prompt_token_ids)
+                comp = seq.get_num_computed_tokens()
+                rem = total - comp
+                if rem <= 0 or c <= 0:
+                    r[seq_id] = 0
+                else:
+                    steps = rem // c
+                    if rem % c != 0:
+                        steps += 1
+                    if steps < 0:
+                        steps = 0
+                    r[seq_id] = steps
+        return r
+
+    def update_prefill_steps(self, execute_model_req):
+        ve = execute_model_req.virtual_engine
+        if ve in self.seq_id_state_machines:
+            for seq_id, state in self.seq_id_state_machines[ve].items():
+                assert state != 1, f"Prefill update reached with locked seq_id {seq_id} on VE{ve}"
+        remaining = self.compute_remaining_prefill_steps(execute_model_req)
+        for sg in execute_model_req.seq_group_metadata_list:
+            for seq_id, seq in sg.seq_data.items():
+                if seq_id not in self.prefill_steps_remaining:
+                    self.prefill_steps_remaining[seq_id] = remaining[seq_id] - 1
+                    #TVOAS-DEBUG-LOG# logger.info(f"DistributedExecutorBase.update_prefill_steps has no SID{seq_id} in prefill_steps_remaining. Creating")
+                else:
+                    self.prefill_steps_remaining[seq_id] -= 1
+                if self.prefill_steps_remaining[seq_id] == 0:
+                    loop_idx = self._current_loop_idx[ve]
+                    # Gate decode on this loop idx from now on.
+                    self._decode_valid_loop_idx[ve][loop_idx].append(seq_id)
+                    #TVOAS-DEBUG-LOG# logger.info(f"Set decode valid for seq_id={seq_id} to loop idx {loop_idx} of VE{ve}")
+        return self.prefill_steps_remaining
+    
+    def lock_seq_id_state_machines(self, execute_model_req):
+        ve = execute_model_req.virtual_engine
+        if ve not in self.seq_id_state_machines:
+            self.seq_id_state_machines[ve] = {}
+            #TVOAS-DEBUG-LOG# logger.info(f"DistributedExecutorBase.lock_seq_id_state_machines has no VE{ve} in seq_id_state_machines. Creating")
+        ve_map = self.seq_id_state_machines[ve]
+        for sg in execute_model_req.seq_group_metadata_list:
+            for seq_id in sg.seq_data.keys():
+                #TVOAS-DEBUG-LOG# if seq_id not in ve_map:
+                    #TVOAS-DEBUG-LOG# logger.info(f"DistributedExecutorBase.lock_seq_id_state_machines has no VE{ve}.SID{seq_id} in seq_id_state_machines. Creating")
+                ve_map[seq_id] = 1
+
+    def _fixup_execute_model_req_prefill(self, execute_model_req: Any) -> None:
+        if execute_model_req is None:
+            return
+        cfg = getattr(self, "scheduler_config", None)
+        max_num_batched_tokens = getattr(cfg, "max_num_batched_tokens", 0)
+        orig_chunks = {}
+        orig_computed = {}
+        new_chunks = {}
+        new_computed = {}
+        for sg in execute_model_req.seq_group_metadata_list:
+            if not sg.is_prompt:
+                continue
+            is_first_seq = True
+            orig_token_chunk_size = sg.token_chunk_size
+            for seq_id, seq_data in sg.seq_data.items():
+                full_prompt = len(getattr(seq_data, "prompt_token_ids", ()))
+                # Initialize tracking if missing
+                if seq_id not in self._prefill_progress:
+                    self._prefill_progress[seq_id] = (0, 0)
+                    #TVOAS-DEBUG-LOG# logger.info(f"DistributedExecutorBase._fixup_execute_model_req_prefill has no VE{execute_model_req.virtual_engine} in _prefill_progress. Creating")
+                _, progress = self._prefill_progress[seq_id]
+                # Determine base chunk size (first seen)
+                chunk_size = max(1, min(max_num_batched_tokens, full_prompt - progress))
+                orig_chunks[seq_id] = orig_token_chunk_size
+                orig_computed[seq_id] = seq_data._num_computed_tokens
+                if is_first_seq:
+                    sg.token_chunk_size = chunk_size
+                else:
+                    sg.token_chunk_size = min(chunk_size, sg.token_chunk_size)
+                # Reflect progress into sequence data object
+                seq_data._num_computed_tokens = progress
+                new_chunks[seq_id] = sg.token_chunk_size
+                new_computed[seq_id] = seq_data._num_computed_tokens
+                self._prefill_progress[seq_id] = (sg.token_chunk_size, seq_data._num_computed_tokens)
+            for seq_id, seq_data in sg.seq_data.items():
+                if seq_data._num_computed_tokens + sg.token_chunk_size >= len(seq_data.prompt_token_ids):
+                    sg.do_sample = True
+        #TVOAS-DEBUG-LOG# logger.info(f"FixupExecuteModelReqPrefill: VE{execute_model_req.virtual_engine} orig_chunks={orig_chunks}, new_chunks={new_chunks}, orig_computed={orig_computed}, new_computed={new_computed}")
+
+    def _advance_prefill_progress(self, execute_model_req: Any) -> None:
+        """
+        Update stored progress after a prefill chunk execution.
+        Must be called AFTER the chunk has run.
+        """
+        for sg in execute_model_req.seq_group_metadata_list:
+            if not sg.is_prompt:
+                continue
+            for seq_id, seq_data in sg.seq_data.items():
+                full_prompt = len(getattr(seq_data, "prompt_token_ids", ()))
+                chunk_size, prev = self._prefill_progress.get(seq_id, (0, 0))
+                new_progress = min(full_prompt, prev + chunk_size)
+                self._prefill_progress[seq_id] = (0, new_progress)
+
+                # If full prompt consumed and prefill tracker says no steps remain, switch to decode
+                remaining_steps = self.prefill_steps_remaining.get(seq_id)
+                if remaining_steps == 0:
+                    assert new_progress == full_prompt, f"Inconsistent prefill state for seq_id {seq_id}: remaining_steps=0 but new_progress={new_progress} != full_prompt={full_prompt}"
+                    seq_data._num_computed_tokens = full_prompt
+                    seq_data._stage = SequenceStage.DECODE
+                    #sg.is_prompt = False
+                    #sg.do_sample = True
+                    #sg.token_chunk_size = 1
+        # TODO: Cleanup prefill_steps_remaining entries now in decode
+
+    async def prepare_execute_model_req_patch(
         self,
         execute_model_req: Optional[Any],
         execution_counter: Optional[int] = None,
@@ -689,7 +912,6 @@ class DistributedExecutorBase(ExecutorBase):
         tracked_attrs: List[str] = [
             "_cached_all_token_ids",
             "_new_appended_tokens",
-            "_num_computed_tokens",
             "_output_token_ids",
             "_prompt_token_ids",
             "_prompt_token_ids_tuple",
@@ -705,6 +927,15 @@ class DistributedExecutorBase(ExecutorBase):
         use_cached_base_req = False
         if execute_model_req is not None:
             virtual_engine = execute_model_req.virtual_engine
+            if virtual_engine not in self.lock_update_req:
+                self.lock_update_req[virtual_engine] = threading.Lock()
+                #TVOAS-DEBUG-LOG# logger.info(f"DistributedExecutorBase.prepare_execute_model_req_patch has no VE{virtual_engine} in lock_update_req. Creating")
+            with self.lock_update_req[virtual_engine]:
+                self._fixup_execute_model_req_prefill(execute_model_req)
+                #TVOAS-DEBUG-LOG# log_execute_model_req(execute_model_req)
+                self.update_prefill_steps(execute_model_req)
+                self.lock_seq_id_state_machines(execute_model_req)
+            #TVOAS-DEBUG-LOG# logger.info(f"Preparing execute_model_req patch for VE{virtual_engine} with remaining prefills {self.prefill_steps_remaining} and states {self.seq_id_state_machines[virtual_engine]}")
             if virtual_engine in self.cached_execute_model_reqs:
                 prev_execute_model_req_hash, cached_execute_model_req = (
                     self.cached_execute_model_reqs[virtual_engine])

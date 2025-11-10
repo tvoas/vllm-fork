@@ -54,6 +54,185 @@ def log_message(message: str, cache={}):
         f.write(f"[TIME={now}]{message}\n")
     logger.info(f"[TIME={now}]{message}")
 
+def log_execute_model_req(execute_model_req, prefix="ExecuteModelReq") -> None:
+    log = [prefix]
+    def add(label, value, depth=0):
+        header = '    ' * depth
+        log.append(f"{header}{label}: {value}")
+    for gi, group in enumerate(getattr(execute_model_req, "seq_group_metadata_list", [])):
+        add(f"SequenceGroupMetadata[{gi}]", "--------------------------------------------------", 1)
+        add("request_id", getattr(group, "request_id", None), 2)
+        add("is_prompt", getattr(group, "is_prompt", None), 2)
+        # seq_data loop
+        for seq_id, seq in getattr(group, "seq_data", {}).items():
+            add("seq_id", seq_id, 2)
+            prompt_ids = getattr(seq, "prompt_token_ids", [])
+            output_ids = getattr(seq, "output_token_ids", [])
+            #add("prompt_token_ids", prompt_ids, 3)
+            add("prompt_token_ids_length", len(prompt_ids), 3)
+            #add("output_token_ids", output_ids, 3)
+            add("output_token_ids_length", len(output_ids), 3)
+            add("cumulative_logprob", getattr(seq, "cumulative_logprob", None), 3)
+            # get_num_computed_tokens could be attr or method
+            computed = getattr(seq, "get_num_computed_tokens", None)
+            if callable(computed):
+                try:
+                    computed = computed()
+                except Exception:
+                    pass
+            add("get_num_computed_tokens", computed, 3)
+        # sampling_params.max_tokens
+        sampling_params = getattr(group, "sampling_params", None)
+        max_tokens = getattr(sampling_params, "max_tokens", None) if sampling_params else None
+        add("sampling_params.max_tokens", max_tokens, 2)
+        # block_tables loop
+        for seq_id, blocks in getattr(group, "block_tables", {}).items():
+            #add(f"block_tables[seq_id={seq_id}].values", blocks, 2)
+            try:
+                length = len(blocks)
+            except Exception:
+                length = None
+            add(f"block_tables[seq_id={seq_id}].length", length, 2)
+        add("do_sample", getattr(group, "do_sample", getattr(sampling_params, "do_sample", None)), 2)
+        add("state", getattr(group, "state", None), 2)
+        add("token_chunk_size", getattr(group, "token_chunk_size", None), 2)
+    # Top-level fields
+    add("virtual_engine", getattr(execute_model_req, "virtual_engine", None), 1)
+    add("num_lookahead_slots", getattr(execute_model_req, "num_lookahead_slots", None), 1)
+    add("running_queue_size", getattr(execute_model_req, "running_queue_size", None), 1)
+    add("previous_hidden_states", getattr(execute_model_req, "previous_hidden_states", None), 1)
+    add("num_steps", getattr(execute_model_req, "num_steps", None), 1)
+    add("async_callback", getattr(execute_model_req, "async_callback", None), 1)
+    add("is_dummy_batch", getattr(execute_model_req, "is_dummy_batch", None), 1)
+    logger.info("\n".join(log))
+
+def log_model_input(model_input) -> None:
+    log = ["ModelInput"]
+    def add(label, value, depth=0):
+        log.append(f"{'    '*depth}{label}: {value}")
+    # Top-level simple fields
+    input_tokens = getattr(model_input, "input_tokens", None)
+    add("input_tokens", input_tokens, 1)
+    try:
+        add("input_tokens.shape", getattr(input_tokens, "shape", None), 1)
+    except Exception:
+        add("input_tokens.shape", None, 1)
+    add("seq_lens", getattr(model_input, "seq_lens", None), 1)
+    add("query_lens", getattr(model_input, "query_lens", None), 1)
+    # attn_metadata
+    attn = getattr(model_input, "attn_metadata", None)
+    add("attn_metadata", "--------------------------------------------------", 1)
+    if attn:
+        add("num_prefills", getattr(attn, "num_prefills", None), 2)
+        add("num_prefill_tokens", getattr(attn, "num_prefill_tokens", None), 2)
+        add("num_decode_tokens", getattr(attn, "num_decode_tokens", None), 2)
+        slot_mapping = getattr(attn, "slot_mapping", getattr(attn, "slot_mapping_tensor", None))
+        add("slot_mapping_tensor", slot_mapping, 2)
+        add("slot_mapping_tensor.shape", getattr(slot_mapping, "shape", None), 2)
+        # block related (log if present)
+        for name in ["block_list", "block_mapping", "block_usage", "block_groups", "alibi_blocks", "block_size"]:
+            add(name, getattr(attn, name, None), 2)
+        add("is_prompt", getattr(attn, "is_prompt", None), 2)
+        add("attn_bias", getattr(attn, "attn_bias", None), 2)
+        seq_lens_tensor = getattr(attn, "seq_lens_tensor", None)
+        add("seq_lens_tensor", seq_lens_tensor, 2)
+        add("seq_lens_tensor.shape", getattr(seq_lens_tensor, "shape", None), 2)
+        context_lens_tensor = getattr(attn, "context_lens_tensor", None)
+        add("context_lens_tensor", context_lens_tensor, 2)
+        add("context_lens_tensor.shape", getattr(context_lens_tensor, "shape", None), 2)
+        add("seq_lens", getattr(attn, "seq_lens", None), 2)
+    # More top-level fields
+    add("real_batch_size", getattr(model_input, "real_batch_size", None), 1)
+    add("batch_size_padded", getattr(model_input, "batch_size_padded", None), 1)
+    add("virtual_engine", getattr(model_input, "virtual_engine", None), 1)
+    add("lora_ids", getattr(model_input, "lora_ids", None), 1)
+    add("async_callback", getattr(model_input, "async_callback", None), 1)
+    add("is_first_multi_step", getattr(model_input, "is_first_multi_step", None), 1)
+    add("is_last_step", getattr(model_input, "is_last_step", None), 1)
+    add("previous_hidden_states", getattr(model_input, "previous_hidden_states", None), 1)
+    # sampling_metadata
+    sm = getattr(model_input, "sampling_metadata", None)
+    add("sampling_metadata", "--------------------------------------------------", 1)
+    if sm:
+        for gi, sg in enumerate(getattr(sm, "seq_groups", [])):
+            add(f"SeqGroup[{gi}]", "--------------------------------------------------", 2)
+            add("seq_ids", getattr(sg, "seq_ids", None), 3)
+            sp = getattr(sg, "sampling_params", None)
+            add("sampling_params.max_tokens", getattr(sp, "max_tokens", None), 3)
+            add("sampling_params.min_tokens", getattr(sp, "min_tokens", None), 3)
+            # seq_data loop
+            for seq_id, seq in getattr(sg, "seq_data", {}).items():
+                add(f"seq_id", seq_id, 3)
+                prompt_ids = getattr(seq, "prompt_token_ids", [])
+                output_ids = getattr(seq, "output_token_ids", [])
+                add("prompt_token_ids", prompt_ids, 4)
+                add("prompt_token_ids_length", len(prompt_ids), 4)
+                add("output_token_ids", output_ids, 4)
+                add("output_token_ids_length", len(output_ids), 4)
+                computed = getattr(seq, "get_num_computed_tokens", None)
+                if callable(computed):
+                    try:
+                        computed = computed()
+                    except Exception:
+                        pass
+                add("get_num_computed_tokens", computed, 4)
+            add("seq_len", getattr(sg, "seq_len", None), 3)
+            add("query_len", getattr(sg, "query_len", None), 3)
+            add("is_prompt", getattr(sg, "is_prompt", None), 3)
+    logger.info("\n".join(log))
+
+def log_cached_seq_data(
+    cached_seq_data,
+    virtual_engine=None,
+    depth=0,
+    prefix="CachedSeqData",
+    ret=False,
+):
+    log = ["    " * depth + prefix]
+    def add(label, value, d=0):
+        log.append(f"{'    ' * (depth + d)}{label}: {value}")
+    add("virtual_engine", virtual_engine, 1)
+    if not cached_seq_data:
+        add("empty", True, 1)
+        if ret:
+            return log
+        try:
+            with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
+                f.write("\n".join(log) + "\n\n\n")
+        except Exception:
+            pass
+        return
+    add("num_sequence_keys", len(cached_seq_data), 1)
+    tracked_attrs = [
+        "_cached_all_token_ids",
+        "_new_appended_tokens",
+        "_output_token_ids",
+        "_prompt_token_ids",
+        "_prompt_token_ids_tuple",
+        "_cumulative_logprob",
+    ]
+    for seq_key, data in cached_seq_data.items():
+        add(f"SequenceKey[{seq_key}]", "--------------------------------------------------", 1)
+        for attr in tracked_attrs:
+            if attr not in data:
+                continue
+            val = data[attr]
+            if isinstance(val, array.array):
+                norm = list(val)
+            else:
+                norm = val
+            add(attr, norm, 2)
+            if isinstance(norm, (list, tuple)):
+                add(f"{attr}.length", len(norm), 2)
+    if ret:
+        return log
+    try:
+        with open(f"/workspace/world{get_world_group().rank_in_group}_inputs.txt", "a") as f:
+            f.write("\n".join(log) + "\n\n\n")
+    except Exception:
+        pass
+
+
 class HPUWorker(LocalOrDistributedWorkerBase):
     """A worker class that executes (a partition of) the model on a HPU.
 
@@ -331,7 +510,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     '_prompt_token_ids': array.array("l"),
                     '_prompt_token_ids_tuple': (),
                     '_cumulative_logprob': None,
-                    '_num_computed_tokens': 0,
                 }
                 cached_data = cached_seq_data.setdefault(key, initial_data)
 
@@ -562,6 +740,10 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 self._remove_chunk_padding(execute_model_req)
             self.cached_execute_model_req[
                 execute_model_req.virtual_engine] = execute_model_req
+        #TVOAS-DEBUG-LOG# if execute_model_req is not None and get_tp_group().is_first_rank:
+            #TVOAS-DEBUG-LOG# ids = [list(seq.seq_data.keys()) for seq in execute_model_req.seq_group_metadata_list]
+            #TVOAS-DEBUG-LOG# prompts = [seq.is_prompt for seq in execute_model_req.seq_group_metadata_list]
+            #TVOAS-DEBUG-LOG# logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model end for VE{execute_model_req.virtual_engine} with IDs={ids} and prompts={prompts}")
         log_message(f"[WORKER{get_world_group().rank_in_group}][WR={get_world_group().rank_in_group}][EXEC={execution_counter}][VE={virtual_engine}][WORKER][END_HPU_EXECUTE_MODEL]")
         return output
 
@@ -575,6 +757,32 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         sequences are provided."""
         with self.lock:
             log_message(f"[WORKER{get_world_group().rank_in_group}][WR={get_world_group().rank_in_group}][EXEC={execution_counter}][VE={virtual_engine}][WORKER][HAS_LOCK]")
+            #TVOAS-DEBUG-LOG# if execute_model_req is not None and get_tp_group().is_first_rank:
+            #TVOAS-DEBUG-LOG#     def get_chunk_context_and_len(seq, chunk_size: int) -> tuple[int, int]:
+            #TVOAS-DEBUG-LOG#         total_prompt_len = len(seq._prompt_token_ids)
+            #TVOAS-DEBUG-LOG#         cached_len = seq._num_cached_tokens        # already cached
+            #TVOAS-DEBUG-LOG#         context_len = seq._num_computed_tokens            # already run
+            #TVOAS-DEBUG-LOG#         remaining = total_prompt_len - context_len - cached_len        # not yet computed
+            #TVOAS-DEBUG-LOG#         current_chunk_len = max(0, min(chunk_size, remaining))
+            #TVOAS-DEBUG-LOG#         return cached_len, context_len, current_chunk_len
+            #TVOAS-DEBUG-LOG#     ids = [list(seq.seq_data.keys()) for seq in execute_model_req.seq_group_metadata_list]
+            #TVOAS-DEBUG-LOG#     prompts = [seq.is_prompt for seq in execute_model_req.seq_group_metadata_list]
+            #TVOAS-DEBUG-LOG#     cached = []
+            #TVOAS-DEBUG-LOG#     contexts = []
+            #TVOAS-DEBUG-LOG#     sequences = []
+            #TVOAS-DEBUG-LOG#     chunks = []
+            #TVOAS-DEBUG-LOG#     for seq_group in execute_model_req.seq_group_metadata_list:
+            #TVOAS-DEBUG-LOG#         cached += [[]]
+            #TVOAS-DEBUG-LOG#         contexts += [[]]
+            #TVOAS-DEBUG-LOG#         sequences += [[]]
+            #TVOAS-DEBUG-LOG#         chunks += [seq_group.token_chunk_size]
+            #TVOAS-DEBUG-LOG#         for seq in seq_group.seq_data.values():
+            #TVOAS-DEBUG-LOG#             cache, context, sequence = get_chunk_context_and_len(seq, seq_group.token_chunk_size)
+            #TVOAS-DEBUG-LOG#             cached[-1].append(cache)
+            #TVOAS-DEBUG-LOG#             contexts[-1].append(context)
+            #TVOAS-DEBUG-LOG#             sequences[-1].append(sequence)
+            #TVOAS-DEBUG-LOG#     logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{execute_model_req.virtual_engine} with IDs={ids} and prompts={prompts}, cached={cached}, contexts={contexts}, sequences={sequences}, chunk_size={chunks}") 
+            #TVOAS-DEBUG-LOG#     #self.log_execute_model_req(execute_model_req, prefix=f"ExecuteModelReqAfterPatchVE{execute_model_req.virtual_engine}")
             inputs = self.prepare_input(execute_model_req)
             if inputs is None:
                 return None
