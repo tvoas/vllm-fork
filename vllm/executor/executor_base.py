@@ -3,6 +3,7 @@
 
 import asyncio
 import time
+import os
 from abc import ABC, abstractmethod
 from typing import (Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple,
                     Union)
@@ -24,6 +25,16 @@ logger = init_logger(__name__)
 
 _R = TypeVar("_R", default=Any)
 
+
+def log_message(message: str, cache={}):
+    if "VLLM_TIME_LOG_DIRECTORY" not in cache:
+        cache["VLLM_TIME_LOG_DIRECTORY"] = os.environ.get("VLLM_TIME_LOG_DIRECTORY", "default_logs").rstrip("/") + "/"
+    if not os.path.exists(cache["VLLM_TIME_LOG_DIRECTORY"]):
+        os.makedirs(cache["VLLM_TIME_LOG_DIRECTORY"], exist_ok=True)
+    now = time.perf_counter()
+    with open(f"{cache['VLLM_TIME_LOG_DIRECTORY']}driver_log.txt", "a", encoding="utf-8") as f:
+        f.write(f"[TIME={now}]{message}\n")
+    logger.info(f"[TIME={now}]{message}")
 
 class ExecutorBase(ABC):
     """Base class for all executors.
@@ -261,7 +272,8 @@ class ExecutorBase(ABC):
 
     async def execute_model_async(
             self,
-            execute_model_req: ExecuteModelRequest) -> List[SamplerOutput]:
+            execute_model_req: ExecuteModelRequest,
+            execution_counter: Optional[int] = None) -> List[SamplerOutput]:
         """Executes one model step on the given sequences."""
         output = await make_async(self.execute_model)(execute_model_req)
         return output
@@ -359,14 +371,15 @@ class DistributedExecutorBase(ExecutorBase):
 
     async def execute_model_async(
             self,
-            execute_model_req: ExecuteModelRequest) -> List[SamplerOutput]:
+            execute_model_req: ExecuteModelRequest,
+            execution_counter: Optional[int] = None,) -> List[SamplerOutput]:
         if self.parallel_worker_tasks is None:
             # Start model execution loop running in the parallel workers
             self.parallel_worker_tasks = asyncio.create_task(
                 self._start_worker_execution_loop())
 
         # Only the driver worker returns the sampling results.
-        return await self._driver_execute_model_async(execute_model_req)
+        return await self._driver_execute_model_async(execute_model_req, execution_counter)
 
     async def stop_remote_worker_execution_loop_async(self) -> None:
         if self.parallel_worker_tasks is None:
@@ -383,6 +396,7 @@ class DistributedExecutorBase(ExecutorBase):
     async def _driver_execute_model_async(
         self,
         execute_model_req: Optional[ExecuteModelRequest] = None,
+        execution_counter: Optional[int] = None,
     ) -> List[SamplerOutput]:
         """Execute the model asynchronously in the driver worker.
 

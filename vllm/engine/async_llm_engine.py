@@ -41,6 +41,10 @@ from vllm.utils import Device, deprecate_kwargs, weak_bind
 logger = init_logger(__name__)
 ENGINE_ITERATION_TIMEOUT_S = envs.VLLM_ENGINE_ITERATION_TIMEOUT_S
 
+def log_message(message: str):
+    with open("/root/.cache/huggingface/driver_log.txt", "a", encoding="utf-8") as f:
+        now = time.perf_counter()
+        f.write(f"[TIME={now}]{message}\n")
 
 class AsyncEngineDeadError(RuntimeError):
     pass
@@ -265,10 +269,12 @@ class _AsyncLLMEngine(LLMEngine):
     """Extension of LLMEngine to add async methods."""
 
     def __init__(self, *args, **kwargs):
+        self.execution_counter = 0
         super().__init__(*args, **kwargs)
 
     async def step_async(
-        self, virtual_engine: int
+        self, virtual_engine: int,
+        execution_counter: int,
     ) -> List[Union[RequestOutput, PoolingRequestOutput]]:
         """Performs one decoding iteration and returns newly generated results.
         The workers are ran asynchronously if possible.
@@ -279,6 +285,7 @@ class _AsyncLLMEngine(LLMEngine):
         and updates the scheduler with the model outputs. Finally, it decodes
         the sequences and returns the newly generated results.
         """
+        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={virtual_engine}][ENGINE][START_STEP_ASYNC]")
         # these are cached outputs from previous iterations. None if on first
         # iteration
         cached_outputs = self.cached_scheduler_outputs[virtual_engine]
@@ -355,7 +362,8 @@ class _AsyncLLMEngine(LLMEngine):
 
             # Execute the model.
             outputs = await self.model_executor.execute_model_async(
-                execute_model_req)
+                execute_model_req,
+                execution_counter)
 
             # we need to do this here so that last step's sampled_token_ids can
             # be passed to the next iteration for PP.
@@ -409,6 +417,7 @@ class _AsyncLLMEngine(LLMEngine):
 
         else:
             # Multi-step case
+            log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={virtual_engine}][ENGINE][END_01_STEP_ASYNC]")
             return ctx.request_outputs
 
         if not self.has_unfinished_requests():
@@ -417,6 +426,7 @@ class _AsyncLLMEngine(LLMEngine):
                 self._process_model_outputs(ctx=ctx)
             assert len(ctx.output_queue) == 0
 
+        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={virtual_engine}][ENGINE][END_02_STEP_ASYNC]")
         return ctx.request_outputs
 
     async def stop_remote_worker_execution_loop_async(self) -> None:
@@ -770,10 +780,12 @@ class AsyncLLMEngine(EngineClient):
             self._background_loop_unshielded = None
         self.background_loop = None
 
-    async def engine_step(self, virtual_engine: int) -> bool:
+    async def engine_step(self, virtual_engine: int, execution_counter: int) -> bool:
         """Kick the engine to process the waiting requests.
 
         Returns True if there are in-progress requests."""
+
+        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={virtual_engine}][ENGINE][START_ENGINE_STEP]")
 
         new_requests, aborted_requests = (
             self._request_tracker.get_new_and_aborted_requests())
@@ -793,7 +805,7 @@ class AsyncLLMEngine(EngineClient):
         if aborted_requests:
             await self._engine_abort(aborted_requests)
 
-        request_outputs = await self.engine.step_async(virtual_engine)
+        request_outputs = await self.engine.step_async(virtual_engine, execution_counter)
 
         # Put the outputs into the corresponding streams.
         # If used as a callback, then already invoked inside
@@ -805,6 +817,8 @@ class AsyncLLMEngine(EngineClient):
             # requests are finished
             all_finished = all(request_output.finished
                                for request_output in request_outputs)
+            
+        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={virtual_engine}][ENGINE][END_ENGINE_STEP]")
 
         return not all_finished
 
@@ -855,9 +869,10 @@ class AsyncLLMEngine(EngineClient):
                     return
                 logger.debug("Got new requests!")
                 requests_in_progress = [
-                    asyncio.create_task(engine.engine_step(ve))
+                    asyncio.create_task(engine.engine_step(ve, engine.engine.execution_counter + ve))
                     for ve in range(pipeline_parallel_size)
                 ]
+                engine.engine.execution_counter += pipeline_parallel_size
                 has_requests_in_progress = [True] * pipeline_parallel_size
 
             # Abort if iteration takes too long due to unrecoverable errors
@@ -877,9 +892,10 @@ class AsyncLLMEngine(EngineClient):
                         has_unfinished_requests_for_virtual_engine(
                             virtual_engine))
                     if result or has_unfinished_requests:
+                        engine.engine.execution_counter += 1
                         requests_in_progress[virtual_engine] = (
                             asyncio.create_task(
-                                engine.engine_step(virtual_engine)))
+                                engine.engine_step(virtual_engine, engine.engine.execution_counter)))
                         has_requests_in_progress[virtual_engine] = True
                     else:
                         has_requests_in_progress[virtual_engine] = False

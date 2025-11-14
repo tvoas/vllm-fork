@@ -7,7 +7,7 @@ from typing import Any, Callable, List, Optional, Union
 
 import cloudpickle
 
-from vllm.executor.executor_base import DistributedExecutorBase
+from vllm.executor.executor_base import DistributedExecutorBase, log_message
 from vllm.executor.multiproc_worker_utils import (
     ProcessWorkerWrapper, ResultHandler, WorkerMonitor,
     set_multiprocessing_worker_envs)
@@ -208,10 +208,15 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
 
     async def _driver_execute_model_async(
         self,
-        execute_model_req: Optional[ExecuteModelRequest] = None
+        execute_model_req: Optional[ExecuteModelRequest] = None,
+        execution_counter: Optional[int] = None,
     ) -> List[SamplerOutput]:
         if not self.tp_driver_workers:
             return await self.driver_exec_model(execute_model_req)
+
+        VE = None if execute_model_req is None else execute_model_req.virtual_engine
+
+        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][PREP]")
 
         if self.pp_locks is None:
             # This locks each pipeline parallel stage so multiple virtual
@@ -223,10 +228,12 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                 for _ in range(self.parallel_config.pipeline_parallel_size)
             ]
 
+        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][START]")
+
         tasks = [
             asyncio.create_task(
                 _run_task_with_lock(self.driver_exec_model, self.pp_locks[0],
-                                    execute_model_req))
+                                    (execute_model_req, execution_counter)))
         ]
         for pp_rank, driver_worker in enumerate(self.tp_driver_workers,
                                                 start=1):
@@ -234,8 +241,10 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                 asyncio.create_task(
                     _run_task_with_lock(driver_worker.execute_method_async,
                                         self.pp_locks[pp_rank],
-                                        "execute_model", execute_model_req)))
+                                        "execute_model", (execute_model_req, execution_counter))))
+        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][GATHER]")
         results = await asyncio.gather(*tasks)
+        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][END]")
 
         # Only the last PP stage has the final results.
         return results[-1]

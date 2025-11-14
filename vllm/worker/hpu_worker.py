@@ -21,7 +21,7 @@ from vllm_hpu_extension.profiler import HabanaMemoryProfiler, format_bytes
 
 import vllm.envs as envs
 from vllm.config import VllmConfig
-from vllm.distributed import (ensure_model_parallel_initialized, get_pp_group,
+from vllm.distributed import (ensure_model_parallel_initialized, get_pp_group, get_world_group,
                               init_distributed_environment)
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
 from vllm.logger import init_logger
@@ -41,6 +41,15 @@ from vllm.worker.worker_base import (LocalOrDistributedWorkerBase, WorkerBase,
 
 logger = init_logger(__name__)
 
+def log_message(message: str, cache={}):
+    if "VLLM_TIME_LOG_DIRECTORY" not in cache:
+        cache["VLLM_TIME_LOG_DIRECTORY"] = os.environ.get("VLLM_TIME_LOG_DIRECTORY", "default_logs").rstrip("/") + "/"
+    if not os.path.exists(cache["VLLM_TIME_LOG_DIRECTORY"]):
+        os.makedirs(cache["VLLM_TIME_LOG_DIRECTORY"], exist_ok=True)
+    now = time.perf_counter()
+    with open(f"{cache['VLLM_TIME_LOG_DIRECTORY']}rank{get_world_group().rank_in_group}_log.txt", "a", encoding="utf-8") as f:
+        f.write(f"[TIME={now}]{message}\n")
+    logger.info(f"[TIME={now}]{message}")
 
 class HPUWorker(LocalOrDistributedWorkerBase):
     """A worker class that executes (a partition of) the model on a HPU.
@@ -236,10 +245,13 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         self,
         execute_model_req: Optional[ExecuteModelRequest] = None,
     ) -> Optional[List[SamplerOutput]]:
+        execute_model_req, execution_counter = execute_model_req
+        virtual_engine = None if execute_model_req is None else execute_model_req.virtual_engine
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION     - will log graph compilations per engine step, only when there was any - highly recommended to use alongside PT_HPU_METRICS_GC_DETAILS! # noqa:E501
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL - will log graph compilations per engine step, always, even if there were none # noqa:E501
         # VLLM_HPU_LOG_STEP_CPU_FALLBACKS         - will log cpu fallbacks per engine step, only when there was any # noqa:E501
         # VLLM_HPU_LOG_STEP_CPU_FALLBACKS_ALL     - will log cpu fallbacks per engine step, always, even if there were none # noqa:E501
+        log_message(f"[WORKER{get_world_group().rank_in_group}][WR={get_world_group().rank_in_group}][EXEC={execution_counter}][VE={virtual_engine}][WORKER][START_HPU_EXECUTE_MODEL]")
         log_graph_compilation_all = os.environ.get(
             'VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL', '0') != '0'
         log_graph_compilation = os.environ.get(
@@ -299,11 +311,10 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 msg = ("VLLM_HPU_STEP_CPU_FALLBACK: "
                        f"{cpu_fallback_local_metric.stats()}, {input_stats}")
                 logger.warning(msg)
-
-            return output
-
-        output = LocalOrDistributedWorkerBase.execute_model(
-            self, execute_model_req)
+        else:
+            output = LocalOrDistributedWorkerBase.execute_model(
+                self, execute_model_req)
+        log_message(f"[WORKER{get_world_group().rank_in_group}][WR={get_world_group().rank_in_group}][EXEC={execution_counter}][VE={virtual_engine}][WORKER][END_HPU_EXECUTE_MODEL]")
         return output
 
     @torch.inference_mode()
