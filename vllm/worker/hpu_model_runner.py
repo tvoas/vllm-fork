@@ -1968,7 +1968,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
 
         _, pad_seq_len, pad_ctx = self.bucketing_manager.find_prompt_bucket(
             bs, target_query_len, ctx)
-        assert pad_ctx == ctx and pad_seq_len >= target_query_len
+        assert pad_ctx == ctx, f"pad_ctx {pad_ctx} != ctx {ctx}"
+        assert pad_seq_len >= target_query_len, f"pad_seq_len {pad_seq_len} < target_query_len {target_query_len}"
         max_prompt_len = max(pad_seq_len, self.block_size)
 
         if self.dp_awared_padding and\
