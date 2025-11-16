@@ -260,13 +260,14 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                                         "execute_model", execute_model_req)))
         log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][GATHER]")
         results = await asyncio.gather(*tasks)
-        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][END]")
+        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][RESTORING]")
 
         if current_platform.is_hpu() and envs.VLLM_CHUNK_PREFILL_STRAT > 0:
             self.restore_chunked_execute_model_req(
                 original_execute_model_req,
             )
 
+        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][END]")
         # Only the last PP stage has the final results.
         return results[-1]
 

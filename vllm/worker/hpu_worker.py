@@ -544,7 +544,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             ) if log_cpu_fallbacks else contextlib.nullcontext()
             with gc_ctx as gc_local_metric, \
                 cpu_fallback_ctx as cpu_fallback_local_metric:
-                output = self._execute_model(execute_model_req)
+                output = self._execute_model(execute_model_req, virtual_engine, execution_counter)
             if (log_graph_compilation and gc_local_metric.stats()[0][1]
                     > 0) or log_graph_compilation_all:
                 msg = ("VLLM_HPU_STEP_GRAPH_COMPILATION: "
@@ -556,7 +556,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                        f"{cpu_fallback_local_metric.stats()}, {input_stats}")
                 logger.warning(msg)
         else:
-            output = self._execute_model(execute_model_req)
+            output = self._execute_model(execute_model_req, virtual_engine, execution_counter)
         if execute_model_req is not None:
             if envs.VLLM_CHUNK_PREFILL_STRAT == 1:
                 self._remove_chunk_padding(execute_model_req)
@@ -568,10 +568,13 @@ class HPUWorker(LocalOrDistributedWorkerBase):
     def _execute_model(
         self,
         execute_model_req: Optional[ExecuteModelRequest] = None,
+        virtual_engine: Optional[int] = None,
+        execution_counter: Optional[int] = None,
     ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
         with self.lock:
+            log_message(f"[WORKER{get_world_group().rank_in_group}][WR={get_world_group().rank_in_group}][EXEC={execution_counter}][VE={virtual_engine}][WORKER][HAS_LOCK]")
             inputs = self.prepare_input(execute_model_req)
             if inputs is None:
                 return None
