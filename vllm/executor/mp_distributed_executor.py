@@ -242,10 +242,13 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
 
         if current_platform.is_hpu():
             original_execute_model_req = execute_model_req
+            orig_len = len(str(original_execute_model_req))
             execute_model_req, loop_idx = await self.prepare_execute_model_req_patch(
                 execute_model_req, execution_counter)
 
-        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][START]")
+            log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][START] ratio={None if original_execute_model_req is None else len(str(execute_model_req)) / orig_len}")
+        else:
+            log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][START]")
         tasks = [
             asyncio.create_task(
                 _run_task_with_lock(self.driver_exec_model, self.pp_locks[0],

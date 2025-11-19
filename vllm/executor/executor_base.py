@@ -351,9 +351,7 @@ class DistributedExecutorBase(ExecutorBase):
         # This is non-None when the execute model loop is running
         # in the parallel workers. It's a coroutine in the AsyncLLMEngine case.
         self.parallel_worker_tasks: Optional[Union[Any, Awaitable[Any]]] = None
-        # Per-VE base ExecuteModelRequest hash and per-seq cache of tracked attrs.
-        # {ve: (base_hash: str, cache_by_seq: {seq_id: {attr: value}})}
-        self.cached_execute_model_reqs: Dict[int, Tuple[str, Dict[Hashable, Dict[str, Any]]]] = {}
+        self.cached_execute_model_reqs: Dict[int, ExecuteModelRequest] = {}
         # Tracks per-seq prefill chunk step (1-based).
         self._prefill_chunk_steps: Dict[Hashable, int] = {}
         # Remainders beyond current transmitted truncation:
@@ -371,9 +369,6 @@ class DistributedExecutorBase(ExecutorBase):
         self._current_loop_idx: Dict[int, int] = {}
         # Decode gating: loop idx allowed to run decode per virtual engine.
         self._decode_valid_loop_idx: Dict[int, Dict[int, List[int]]] = {}
-        # Per-VE per-sequence staleness counters for driver-side cache cleanup.
-        # {ve: {seq_id: steps_not_seen}}
-        self._driver_seq_staleness: Dict[int, Dict[Hashable, int]] = {}
         super().__init__(*args, **kwargs)
 
     def execute_model(
@@ -801,10 +796,6 @@ class DistributedExecutorBase(ExecutorBase):
             for seq_id, state in self.seq_id_state_machines[ve].items():
                 assert state != 1, f"Prefill update reached with locked seq_id {seq_id} on VE{ve}"
         remaining = self.compute_remaining_prefill_steps(execute_model_req)
-
-        if ve not in self._decode_valid_loop_idx:
-            self._decode_valid_loop_idx[ve] = {}
-
         for sg in execute_model_req.seq_group_metadata_list:
             for seq_id, seq in sg.seq_data.items():
                 if seq_id not in self.prefill_steps_remaining:
@@ -814,8 +805,6 @@ class DistributedExecutorBase(ExecutorBase):
                     self.prefill_steps_remaining[seq_id] -= 1
                 if self.prefill_steps_remaining[seq_id] == 0:
                     loop_idx = self._current_loop_idx[ve]
-                    if loop_idx not in self._decode_valid_loop_idx[ve]:
-                        self._decode_valid_loop_idx[ve][loop_idx] = []
                     # Gate decode on this loop idx from now on.
                     self._decode_valid_loop_idx[ve][loop_idx].append(seq_id)
                     #TVOAS-DEBUG-LOG# logger.info(f"Set decode valid for seq_id={seq_id} to loop idx {loop_idx} of VE{ve}")
@@ -906,22 +895,20 @@ class DistributedExecutorBase(ExecutorBase):
         """Produce an incremental patch and optionally reuse a cached
         base request.
 
-        Driver-side logic:
+        Computes a patch containing only the changes since the last request,
+        updates the internal cache with newly observed data, strips mutable
+        fields from the current request, and decides if the previous base
+        request can be reused (based on a content hash).
 
-        1. Receives a pristine, complete ExecuteModelRequest.
-        2. Computes a per-seq patch vs cached per-seq state (per VE),
-           while *not* mutating the pristine request yet.
-        3. Strips mutable per-seq/group fields from the request to form
-           a lean "base" request.
-        4. Hashes the stripped base and compares with previous hash for
-           this VE:
-             - If equal: send (virtual_engine, patch, use_cached=True,...)
-             - If different: update base hash/cache and send the full base.
-        5. Applies per-seq staleness-based pruning on the driver cache to
-           bound memory, while allowing a seq_id to be absent for a few
-           steps and then reappear.
+        Args:
+            execute_model_req: Current execute-model request or None.
 
-        The wire format and patch layout remain compatible with the worker.
+        Returns:
+            A tuple of:
+            - Either the virtual_engine (if reusing cached base) or
+              the request.
+            - The computed patch dict keyed by sequence key.
+            - A boolean indicating whether the base request was reused.
         """
         tracked_attrs: List[str] = [
             "_cached_all_token_ids",
@@ -936,200 +923,113 @@ class DistributedExecutorBase(ExecutorBase):
             "_prompt_token_ids",
             "_prompt_token_ids_tuple",
         ]
-        original_prompt_sizes: Dict[Hashable, Tuple[int, int, int]] = {}
+        original_prompt_sizes = {}
         execute_model_req_patch: Dict[Hashable, Dict[str, Any]] = {}
         use_cached_base_req = False
-        loop_idx: Optional[int] = None
-        base_or_ve: Any = execute_model_req
-
-        if execute_model_req is None:
-            # No request: nothing to patch.
-            return (
-                None,
-                execute_model_req_patch,
-                use_cached_base_req,
-                original_prompt_sizes,
-                execution_counter,
-            ), loop_idx
-
-        virtual_engine = execute_model_req.virtual_engine
-        if virtual_engine not in self.lock_update_req:
-            self.lock_update_req[virtual_engine] = threading.Lock()
-            #TVOAS-DEBUG-LOG# logger.info(f"DistributedExecutorBase.prepare_execute_model_req_patch has no VE{virtual_engine} in lock_update_req. Creating")
-        with self.lock_update_req[virtual_engine]:
-            loop_idx = self._current_loop_idx[virtual_engine]
-
-            # Debug logging (unchanged semantics).
-            for idx, m in enumerate(execute_model_req.seq_group_metadata_list):
-                seq_entries = []
-                for seq_id, seq_data in m.seq_data.items():
-                    # Safe access for computed tokens (may be method).
-                    computed = getattr(seq_data, "get_num_computed_tokens", None)
-                    if callable(computed):
-                        try:
-                            computed = computed()
-                        except Exception:
-                            computed = getattr(seq_data, "_num_computed_tokens", None)
-                    entry = {
-                        "seq_id": seq_id,
-                        "prompt_tokens": len(
-                            getattr(seq_data, "prompt_token_ids", [])
-                        ),
-                        "output_tokens": len(
-                            getattr(seq_data, "output_token_ids", [])
-                        ),
-                        "total_computed_tokens": computed,
+        loop_idx = None
+        if execute_model_req is not None:
+            virtual_engine = execute_model_req.virtual_engine
+            if virtual_engine not in self.lock_update_req:
+                self.lock_update_req[virtual_engine] = threading.Lock()
+                #TVOAS-DEBUG-LOG# logger.info(f"DistributedExecutorBase.prepare_execute_model_req_patch has no VE{virtual_engine} in lock_update_req. Creating")
+            with self.lock_update_req[virtual_engine]:
+                loop_idx = self._current_loop_idx[virtual_engine]
+                for idx, m in enumerate(execute_model_req.seq_group_metadata_list):
+                    seq_entries = []
+                    for seq_id, seq_data in m.seq_data.items():
+                        # Safe access for computed tokens (may be method).
+                        computed = getattr(seq_data, "get_num_computed_tokens", None)
+                        if callable(computed):
+                            try:
+                                computed = computed()
+                            except Exception:
+                                computed = getattr(seq_data, "_num_computed_tokens", None)
+                        entry = {
+                            "seq_id": seq_id,
+                            "prompt_tokens": len(getattr(seq_data, "prompt_token_ids", [])),
+                            "output_tokens": len(getattr(seq_data, "output_token_ids", [])),
+                            "total_computed_tokens": computed,
+                        }
+                        seq_entries.append(entry)
+                    group_details = {
+                        "is_prompt": m.is_prompt,
+                        "token_chunk_size": getattr(m, "token_chunk_size", None),
+                        "seqs": seq_entries,
                     }
-                    seq_entries.append(entry)
-                group_details = {
-                    "is_prompt": m.is_prompt,
-                    "token_chunk_size": getattr(m, "token_chunk_size", None),
-                    "seqs": seq_entries,
-                }
-                log_message(
-                    f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={virtual_engine}]"
-                    f"[EXECUTOR][INFO] pre-fixup loop_idx={loop_idx} group[{idx}]={group_details}"
-                )
-
-            # Prefill fixup updates token_chunk_size and _num_computed_tokens
-            # but does not strip per-seq fields.
-            self._fixup_execute_model_req_prefill(execute_model_req)
-
-            for idx, m in enumerate(execute_model_req.seq_group_metadata_list):
-                seq_entries = []
-                for seq_id, seq_data in m.seq_data.items():
-                    # Safe access for computed tokens (may be method).
-                    computed = getattr(seq_data, "get_num_computed_tokens", None)
-                    if callable(computed):
-                        try:
-                            computed = computed()
-                        except Exception:
-                            computed = getattr(seq_data, "_num_computed_tokens", None)
-                    entry = {
-                        "seq_id": seq_id,
-                        "prompt_tokens": len(
-                            getattr(seq_data, "prompt_token_ids", [])
-                        ),
-                        "output_tokens": len(
-                            getattr(seq_data, "output_token_ids", [])
-                        ),
-                        "total_computed_tokens": computed,
+                    log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={virtual_engine}][EXECUTOR][INFO] pre-fixup loop_idx={loop_idx} group[{idx}]={group_details}")
+                self._fixup_execute_model_req_prefill(execute_model_req)
+                for idx, m in enumerate(execute_model_req.seq_group_metadata_list):
+                    seq_entries = []
+                    for seq_id, seq_data in m.seq_data.items():
+                        # Safe access for computed tokens (may be method).
+                        computed = getattr(seq_data, "get_num_computed_tokens", None)
+                        if callable(computed):
+                            try:
+                                computed = computed()
+                            except Exception:
+                                computed = getattr(seq_data, "_num_computed_tokens", None)
+                        entry = {
+                            "seq_id": seq_id,
+                            "prompt_tokens": len(getattr(seq_data, "prompt_token_ids", [])),
+                            "output_tokens": len(getattr(seq_data, "output_token_ids", [])),
+                            "total_computed_tokens": computed,
+                        }
+                        seq_entries.append(entry)
+                    group_details = {
+                        "is_prompt": m.is_prompt,
+                        "token_chunk_size": getattr(m, "token_chunk_size", None),
+                        "seqs": seq_entries,
                     }
-                    seq_entries.append(entry)
-                group_details = {
-                    "is_prompt": m.is_prompt,
-                    "token_chunk_size": getattr(m, "token_chunk_size", None),
-                    "seqs": seq_entries,
-                }
-                log_message(
-                    f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={virtual_engine}]"
-                    f"[EXECUTOR][INFO] post-fixup loop_idx={loop_idx} group[{idx}]={group_details}"
-                )
-            #TVOAS-DEBUG-LOG# log_execute_model_req(execute_model_req)
-            # Prefill/decode bookkeeping (unchanged).
-            self.update_prefill_steps(execute_model_req)
-            self.lock_seq_id_state_machines(execute_model_req)
+                    log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={virtual_engine}][EXECUTOR][INFO] post-fixup loop_idx={loop_idx} group[{idx}]={group_details}")
+                #TVOAS-DEBUG-LOG# log_execute_model_req(execute_model_req)
+                self.update_prefill_steps(execute_model_req)
+                self.lock_seq_id_state_machines(execute_model_req)
             #TVOAS-DEBUG-LOG# logger.info(f"Preparing execute_model_req patch for VE{virtual_engine} with remaining prefills {self.prefill_steps_remaining} and states {self.seq_id_state_machines[virtual_engine]}")
-        # Prepare per-seq prefill chunk step tracking and original prompt sizes.
-        for seq_group in execute_model_req.seq_group_metadata_list:
-            for seq_key, seq_data in seq_group.seq_data.items():
-                if not seq_group.is_prompt:
-                    self._prefill_chunk_steps.pop(seq_key, None)
-                    continue
-                step = self._prefill_chunk_steps.get(seq_key, 0)
-                self._prefill_chunk_steps[seq_key] = step + 1
-                original_prompt_sizes[seq_key] = len(seq_data._prompt_token_ids)
-
-        chunk_sizes = self._get_chunked_prefill_limits(execute_model_req)
-        for seq_group in execute_model_req.seq_group_metadata_list:
-            for seq_key, seq_data in seq_group.seq_data.items():
-                lo, hi = chunk_sizes.get(seq_key, (0, 0))
-                original_prompt_sizes[seq_key] = (
-                    original_prompt_sizes.get(seq_key, 0),
-                    lo,
-                    hi,
-                )
-
-        # Apply driver-side truncation for chunked prefill if enabled.
-        if envs.VLLM_CHUNK_PREFILL_STRAT > 0:
-            self._chunk_execute_model_req(
-                execute_model_req, original_prompt_sizes, chunkable_attrs
-            )
-
-        # Prepare driver-side per-VE, per-seq cache and staleness map.
-        with self._master_cache_lock:
-            if execute_model_req.virtual_engine not in self._cache_lock:
-                self._cache_lock[execute_model_req.virtual_engine] = threading.Lock()
-        if virtual_engine not in self._driver_seq_staleness:
-            self._driver_seq_staleness[virtual_engine] = {}
-        staleness_map = self._driver_seq_staleness[virtual_engine]
-
-        with self._cache_lock[virtual_engine]:
             if virtual_engine in self.cached_execute_model_reqs:
-                prev_base_hash, cached_by_seq = self.cached_execute_model_reqs[
-                    virtual_engine
-                ]
+                prev_execute_model_req_hash, cached_execute_model_req = (
+                    self.cached_execute_model_reqs[virtual_engine])
             else:
-                prev_base_hash, cached_by_seq = "", {}
+                prev_execute_model_req_hash, cached_execute_model_req = "", {}
 
-            # -------------------------------
-            # 1. Compute per-seq incremental patch vs cached_by_seq.
-            # -------------------------------
-            execute_model_req_patch = self._compute_execute_model_req_patch(
-                cached_by_seq, execute_model_req, tracked_attrs
-            )
-
-            # -------------------------------
-            # 2. Update cached_by_seq with latest values (append or overwrite).
-            # -------------------------------
-            cached_by_seq = self._update_cache_with_new_tokens(
-                cached_by_seq, execute_model_req, tracked_attrs
-            )
-
-            # -------------------------------
-            # 3. Apply staleness-based pruning on driver-side seq cache.
-            # -------------------------------
-            STALE_STEPS = 8
-            active_keys: Set[Hashable] = set()
             for seq_group in execute_model_req.seq_group_metadata_list:
-                for seq_key in seq_group.seq_data.keys():
-                    active_keys.add(seq_key)
+                for seq_key, seq_data in seq_group.seq_data.items():
+                    # If sequence already decoding, clear any stale counter.
+                    if not seq_group.is_prompt:
+                        self._prefill_chunk_steps.pop(seq_key, None)
+                        continue
+                    # Initialize step if new.
+                    step = self._prefill_chunk_steps.get(seq_key, 0)
+                    self._prefill_chunk_steps[seq_key] = step + 1
+                    original_prompt_sizes[seq_key] = len(seq_data._prompt_token_ids)
 
-            for key in list(cached_by_seq.keys()):
-                if key in active_keys:
-                    staleness_map[key] = 0
-                    continue
-                staleness_map[key] = staleness_map.get(key, 0) + 1
-                if staleness_map[key] >= STALE_STEPS:
-                    cached_by_seq.pop(key, None)
-                    staleness_map.pop(key, None)
+            chunk_sizes = self._get_chunked_prefill_limits(execute_model_req)
+            for seq_group in execute_model_req.seq_group_metadata_list:
+                for seq_key, seq_data in seq_group.seq_data.items():
+                    chunk_size = chunk_sizes.get(seq_key, (0, 0))
+                    original_prompt_sizes[seq_key] = (original_prompt_sizes.get(seq_key, 0), chunk_size[0], chunk_size[1])
 
-            # -------------------------------
-            # 4. Strip mutable per-seq fields from the *current* request
-            #    to form the lean base ExecuteModelRequest.
-            # -------------------------------
-            self._strip_patch_data_from_execute_model_req(execute_model_req)
+            if envs.VLLM_CHUNK_PREFILL_STRAT > 0:
+                self._chunk_execute_model_req(execute_model_req, original_prompt_sizes, chunkable_attrs)
+            with self._master_cache_lock:
+                if execute_model_req.virtual_engine not in self._cache_lock:
+                    self._cache_lock[execute_model_req.virtual_engine] = threading.Lock()
+            with self._cache_lock[virtual_engine]:
+                execute_model_req_patch = self._compute_execute_model_req_patch(
+                    cached_execute_model_req, execute_model_req, tracked_attrs)
+                self.cached_execute_model_reqs[
+                    virtual_engine] = self._update_cache_with_new_tokens(
+                        cached_execute_model_req, execute_model_req, tracked_attrs)
+                self._strip_patch_data_from_execute_model_req(execute_model_req)
 
-            # -------------------------------
-            # 5. Hash stripped base and decide reuse vs resend.
-            # -------------------------------
-            new_base_hash = sha256(execute_model_req)
-            self.cached_execute_model_reqs[virtual_engine] = (
-                new_base_hash,
-                cached_by_seq,
-            )
-
-            if prev_base_hash and prev_base_hash == new_base_hash:
-                # Base unchanged: send VE id and patch only.
-                use_cached_base_req = True
-                base_or_ve = virtual_engine
-            else:
-                # Base changed: send new full base request once.
-                use_cached_base_req = False
-                base_or_ve = execute_model_req
-
+                new_execute_model_req_hash = sha256(execute_model_req)
+                self.cached_execute_model_reqs[virtual_engine] = (
+                    new_execute_model_req_hash,
+                    self.cached_execute_model_reqs[virtual_engine],
+                )
+                if prev_execute_model_req_hash == new_execute_model_req_hash:
+                    use_cached_base_req = True
         return (
-            base_or_ve,
+            virtual_engine if use_cached_base_req else execute_model_req,
             execute_model_req_patch,
             use_cached_base_req,
             original_prompt_sizes,
