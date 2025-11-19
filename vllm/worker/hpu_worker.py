@@ -11,6 +11,7 @@ import gzip
 import json
 import os
 import queue
+import threading
 import time
 from typing import List, Optional, Set, Tuple, Type
 
@@ -127,6 +128,8 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 on_trace_ready=fn(torch_profiler_trace_dir, use_gzip=True))
         else:
             self.profiler = None
+
+        self.lock = threading.Lock()
 
     def full_trace_handler(self, dir_name, use_gzip=False):
 
@@ -311,58 +314,59 @@ class HPUWorker(LocalOrDistributedWorkerBase):
     ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
-        inputs = self.prepare_input(execute_model_req)
+        with self.lock:
+            inputs = self.prepare_input(execute_model_req)
 
-        # Need to keep worker running when executing dummy batch under DP
-        # scenario
-        if self.is_driver_worker:
-            if self.do_metadata_broadcast:
-                is_dummy_batch = execute_model_req and\
-                    execute_model_req.is_dummy_batch
-                broadcast_tensor_dict({"is_dummy_batch": is_dummy_batch},
-                                      src=0)
-        else:
-            broadcast_data = broadcast_tensor_dict(src=0)
-            if "is_dummy_batch" in broadcast_data and broadcast_data[
-                    "is_dummy_batch"]:
-                return SamplerOutput(outputs=[], sampled_token_ids=None)
+            # Need to keep worker running when executing dummy batch under DP
+            # scenario
+            if self.is_driver_worker:
+                if self.do_metadata_broadcast:
+                    is_dummy_batch = execute_model_req and\
+                        execute_model_req.is_dummy_batch
+                    broadcast_tensor_dict({"is_dummy_batch": is_dummy_batch},
+                                        src=0)
+            else:
+                broadcast_data = broadcast_tensor_dict(src=0)
+                if "is_dummy_batch" in broadcast_data and broadcast_data[
+                        "is_dummy_batch"]:
+                    return SamplerOutput(outputs=[], sampled_token_ids=None)
 
-        if inputs is None:
-            return None
+            if inputs is None:
+                return None
 
-        model_input, worker_input, kwargs = inputs
+            model_input, worker_input, kwargs = inputs
 
-        num_steps = worker_input.num_steps
-        if (execute_model_req is not None
-                and execute_model_req.spec_step_idx):
-            kwargs["spec_step_idx"] = execute_model_req.spec_step_idx
+            num_steps = worker_input.num_steps
+            if (execute_model_req is not None
+                    and execute_model_req.spec_step_idx):
+                kwargs["spec_step_idx"] = execute_model_req.spec_step_idx
 
-        self.execute_worker(worker_input)
+            self.execute_worker(worker_input)
 
-        # If there is no input, we don't need to execute the model.
-        if worker_input.num_seq_groups == 0:
-            return []
+            # If there is no input, we don't need to execute the model.
+            if worker_input.num_seq_groups == 0:
+                return []
 
-        intermediate_tensors = None
-        if not get_pp_group().is_first_rank:
-            intermediate_tensors = get_pp_group().recv_tensor_dict(
-                all_gather_group=get_tp_group(), deferred=True)
+            intermediate_tensors = None
+            if not get_pp_group().is_first_rank:
+                intermediate_tensors = get_pp_group().recv_tensor_dict(
+                    all_gather_group=get_tp_group(), deferred=True)
 
-        output = self.model_runner.execute_model(
-            model_input=model_input,
-            kv_caches=self.kv_cache[worker_input.virtual_engine]
-            if self.kv_cache is not None else None,
-            intermediate_tensors=intermediate_tensors,
-            num_steps=num_steps,
-            **kwargs,
-        )
+            output = self.model_runner.execute_model(
+                model_input=model_input,
+                kv_caches=self.kv_cache[worker_input.virtual_engine]
+                if self.kv_cache is not None else None,
+                intermediate_tensors=intermediate_tensors,
+                num_steps=num_steps,
+                **kwargs,
+            )
 
-        if not get_pp_group().is_last_rank:
-            # output is IntermediateTensors
-            assert isinstance(output, IntermediateTensors)
-            get_pp_group().send_tensor_dict(
-                output.tensors, all_gather_group=get_tp_group())
-            return [None]
+            if not get_pp_group().is_last_rank:
+                # output is IntermediateTensors
+                assert isinstance(output, IntermediateTensors)
+                get_pp_group().send_tensor_dict(
+                    output.tensors, all_gather_group=get_tp_group())
+                return [None]
 
         # output is List[SamplerOutput]
         return output
