@@ -517,6 +517,7 @@ class Scheduler:
         # simple and NOT fair. It can lead to starvation of some
         # LoRAs. This should be improved in the future.
         self.lora_config = lora_config
+        self.max_num_mixed_seqs = int(os.getenv("VLLM_MAX_NUM_MIXED_SEQS", 0))
 
         version = "selfattn"
         if (self.scheduler_config.runner_type == "pooling"
@@ -880,8 +881,14 @@ class Scheduler:
                     decode_seq_groups.append(scheduled_seq_group)
                     ret.decode_seq_groups_list.append(seq_group)
 
-                budget.add_num_batched_tokens(seq_group.request_id,
-                                              num_running_tokens)
+                # Only count prefill tokens toward batched token budget when enforcing prefill cap.
+                count_tokens = (is_prefill or
+                                not (self.scheduler_config.chunked_prefill_enabled and
+                                     self.scheduler_config.max_num_prefill_seqs is not None and
+                                     enable_chunking))
+                if count_tokens:
+                    budget.add_num_batched_tokens(seq_group.request_id,
+                                                  num_running_tokens)
                 # OPTIMIZATION:  Note that get_max_num_running_seqs is
                 # expensive. For the default scheduling chase where
                 # enable_chunking is False, num_seqs are updated before running
@@ -996,11 +1003,16 @@ class Scheduler:
             else:
                 decode_seq_groups.append(
                     ScheduledSequenceGroup(seq_group, token_chunk_size=1))
-            budget.add_num_batched_tokens(
-                seq_group.request_id,
-                num_batched_tokens=num_new_tokens_uncached,
-                num_cached_tokens=num_new_tokens_cached,
-            )
+            # Skip counting decode tokens toward prefill token budget.
+            if (is_prefill or
+                not (self.scheduler_config.chunked_prefill_enabled and
+                     self.scheduler_config.max_num_prefill_seqs is not None and
+                     enable_chunking)):
+                budget.add_num_batched_tokens(
+                    seq_group.request_id,
+                    num_batched_tokens=num_new_tokens_uncached,
+                    num_cached_tokens=num_new_tokens_cached,
+                )
             budget.add_num_seqs(seq_group.request_id, num_new_seqs)
 
         swapped_queue.extendleft(leftover_swapped)
@@ -1114,6 +1126,7 @@ class Scheduler:
         curr_loras: Optional[Set[int]],
         enable_chunking: bool = False,
         partial_prefill_metadata: Optional[PartialPrefillMetadata] = None,
+        max_new_prefills: Optional[int] = None,
     ) -> SchedulerPrefillOutputs:
         """Schedule sequence groups that are in prefill stage.
 
@@ -1155,7 +1168,11 @@ class Scheduler:
         waiting_queue = self.waiting
 
         leftover_waiting_sequences: Deque[SequenceGroup] = deque()
+        new_prefill_seq_count = 0
         while self._passed_delay(time.time()) and waiting_queue:
+            if max_new_prefills is not None and new_prefill_seq_count >= max_new_prefills:
+                # Reached externally imposed cap on new prefills.
+                break
             seq_group = waiting_queue[0]
 
             waiting_seqs = seq_group.get_seqs(status=SequenceStatus.WAITING)
@@ -1240,7 +1257,7 @@ class Scheduler:
                     leftover_waiting_sequences.appendleft(seq_group)
                     waiting_queue.popleft()
                     continue
-
+            # Enforce prefill token budget strictly (decode tokens excluded separately).
             if (budget.num_batched_tokens
                     >= self.scheduler_config.max_num_batched_tokens):
                 # We've reached the budget limit - since there might be
@@ -1294,6 +1311,7 @@ class Scheduler:
             seq_groups.append(
                 ScheduledSequenceGroup(seq_group=seq_group,
                                        token_chunk_size=num_new_tokens))
+            new_prefill_seq_count += num_new_seqs
             budget.add_num_batched_tokens(
                 seq_group.request_id,
                 num_batched_tokens=num_new_tokens_uncached,
@@ -1346,6 +1364,73 @@ class Scheduler:
         curr_loras = (set(
             seq_group.lora_int_id for seq_group in self.running
             if seq_group.lora_int_id > 0) if self.lora_enabled else None)
+        
+        # Non padding-aware: schedule prefills first (up to max_num_prefill_seqs),
+        # then schedule decodes to fill remaining sequence capacity.
+        if not self.scheduler_config.use_padding_aware_scheduling:
+            prefills = SchedulerPrefillOutputs.create_empty()
+            cfg_limit = self.scheduler_config.max_num_prefill_seqs
+            if cfg_limit is not None and cfg_limit > 0:
+                prefills = self._schedule_prefills(
+                    budget,
+                    curr_loras,
+                    enable_chunking=False,
+                    max_new_prefills=cfg_limit,
+                )
+                if len(prefills.seq_groups) > 0:
+                    # Newly scheduled prefills become RUNNING.
+                    self.running.extend([s.seq_group for s in prefills.seq_groups])
+            else:
+                prefills = self._schedule_prefills(
+                    budget,
+                    curr_loras,
+                    enable_chunking=False,
+                )
+                if len(prefills.seq_groups) > 0:
+                    self.running.extend([s.seq_group for s in prefills.seq_groups])
+
+            # After prefills, schedule decodes (running + swapped) under remaining budget.
+            running_scheduled = self._schedule_running(
+                budget,
+                curr_loras,
+                enable_chunking=False,
+            )
+            swapped_in = SchedulerSwappedInOutputs.create_empty()
+            if (len(running_scheduled.preempted) +
+                    len(running_scheduled.swapped_out) == 0):
+                swapped_in = self._schedule_swapped(budget, curr_loras, enable_chunking=False)
+
+            assert budget.num_batched_tokens <= self.scheduler_config.max_num_batched_tokens
+            assert budget.num_curr_seqs <= self.scheduler_config.max_num_seqs
+
+            # Update waiting/swapped queues post scheduling.
+            self.waiting.extendleft(running_scheduled.preempted)
+            self.swapped.extend(running_scheduled.swapped_out)
+
+            num_prefill_groups = len(prefills.seq_groups)
+            scheduled_seq_groups = (
+                prefills.seq_groups +
+                running_scheduled.decode_seq_groups +
+                swapped_in.decode_seq_groups
+            )
+            blocks_to_copy = running_scheduled.blocks_to_copy + swapped_in.blocks_to_copy
+            ignored_seq_groups = (
+                prefills.ignored_seq_groups +
+                swapped_in.infeasible_seq_groups
+            )
+
+            return SchedulerOutputs(
+                scheduled_seq_groups=scheduled_seq_groups,
+                num_prefill_groups=num_prefill_groups,
+                num_batched_tokens=budget.num_batched_tokens + budget.num_cached_tokens,
+                blocks_to_swap_in=swapped_in.blocks_to_swap_in,
+                blocks_to_swap_out=running_scheduled.blocks_to_swap_out,
+                blocks_to_copy=blocks_to_copy,
+                ignored_seq_groups=ignored_seq_groups,
+                num_lookahead_slots=running_scheduled.num_lookahead_slots,
+                running_queue_size=len(self.running),
+                preempted=len(running_scheduled.preempted) + len(running_scheduled.swapped_out),
+            )
 
         prefills = SchedulerPrefillOutputs.create_empty()
         running_scheduled = SchedulerRunningOutputs.create_empty()
@@ -1467,6 +1552,7 @@ class Scheduler:
         inter token latency because decodes requests don't need to be blocked
         by prefill requests.
         """
+        # Token budget counts only prefill tokens; decode tokens are excluded elsewhere.
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
             max_num_seqs=self.scheduler_config.max_num_seqs,
@@ -1476,6 +1562,126 @@ class Scheduler:
         prefills = SchedulerPrefillOutputs.create_empty()
         swapped_in = SchedulerSwappedInOutputs.create_empty()
 
+        # -------- Prefill-only microbatch enforcement (no mixing) --------
+        # If any prefill work exists (waiting or running in prefill stage),
+        # build a microbatch containing ONLY prefills (continuing + new).
+        prefill_waiting = any(
+            (sg.first_seq.data.stage == SequenceStage.PREFILL) for sg in self.waiting
+        )
+        prefill_running_existing = any(sg.is_prefill() for sg in self.running)
+        prefill_swapped_existing = any(sg.is_prefill() for sg in self.swapped)
+        prefill_mode = prefill_waiting or prefill_running_existing or prefill_swapped_existing
+        # Skip prefill-only path entirely if we already have max_num_seqs worth of decoding.
+        if prefill_mode:
+            decoding_running = [sg for sg in self.running if not sg.is_prefill()]
+            if (self.scheduler_config.max_num_seqs is not None
+                and len(decoding_running) >= self.scheduler_config.max_num_seqs):
+                prefill_mode = False
+        if prefill_mode and self.scheduler_config.max_num_prefill_seqs is not None:
+            # Temporarily restrict running/swapped queues to prefills (+ limited decodes).
+            original_running = self.running
+            original_swapped = self.swapped
+            # Allow some decode groups to remain to fill up to max_num_seqs.
+            allowed_decode_capacity = max(
+                0,
+                min(self.max_num_mixed_seqs, self.scheduler_config.max_num_seqs)
+                - (self.scheduler_config.max_num_prefill_seqs or 0),
+            )
+            #logger.info(f"Scheduler._schedule_chunked_prefill.allowed_decode_capacity "
+            #            f"allowed_decode_capacity={allowed_decode_capacity}")
+            prefill_running_subset = [sg for sg in original_running if sg.is_prefill()]
+            if allowed_decode_capacity == 0:
+                decode_running_subset = []
+            else:    
+                decode_running_subset = [
+                    sg for sg in original_running if not sg.is_prefill()
+                ][:allowed_decode_capacity]
+            self.running = deque(prefill_running_subset + decode_running_subset)
+            self.swapped = deque([sg for sg in original_swapped if sg.is_prefill()])
+
+            # Partial prefill metadata only over prefills.
+            partial_prefill_metadata = PartialPrefillMetadata.from_queues(
+                running=self.running,
+                waiting=self.waiting,
+                scheduler_config=self.scheduler_config,
+            )
+            running_scheduled = self._schedule_running(
+                budget,
+                curr_loras,
+                enable_chunking=True,
+                partial_prefill_metadata=partial_prefill_metadata,
+            )
+            if len(running_scheduled.preempted) + len(running_scheduled.swapped_out) == 0:
+                swapped_in = self._schedule_swapped(budget, curr_loras, enable_chunking=True)
+
+            # Enforce microbatch sequence cap = max_num_prefill_seqs (continuing + new only).
+            cfg_limit = self.scheduler_config.max_num_prefill_seqs
+            continuing_seq_count = (
+                sum(s.seq_group.get_max_num_running_seqs() for s in running_scheduled.prefill_seq_groups)
+                + sum(s.seq_group.get_max_num_running_seqs() for s in swapped_in.prefill_seq_groups)
+            )
+            remaining_capacity = cfg_limit - continuing_seq_count
+            if remaining_capacity > 0:
+                prefills = self._schedule_prefills(
+                    budget,
+                    curr_loras,
+                    enable_chunking=True,
+                    partial_prefill_metadata=partial_prefill_metadata,
+                    max_new_prefills=remaining_capacity,
+                )
+
+
+            scheduled_seq_groups = (
+                running_scheduled.prefill_seq_groups
+                + swapped_in.prefill_seq_groups
+                + prefills.seq_groups
+                + running_scheduled.decode_seq_groups
+                + swapped_in.decode_seq_groups
+            )
+            num_prefill_groups = (
+                len(running_scheduled.prefill_seq_groups)
+                + len(swapped_in.prefill_seq_groups)
+                + len(prefills.seq_groups)
+            )
+
+            # Restore original queues & update state:
+            # Put back original running (decodes + prefills), then add newly created prefills.
+            self.running = original_running
+            # Add new prefills' seq_groups to running queue.
+            self.running.extend([s.seq_group for s in prefills.seq_groups])
+            # Remove any swapped-in prefills from original_swapped; add newly swapped_out.
+            swapped_in_ids = {s.seq_group.request_id for s in swapped_in.prefill_seq_groups}
+            self.swapped = deque(
+                [sg for sg in original_swapped if sg.request_id not in swapped_in_ids]
+            )
+            self.swapped.extend(running_scheduled.swapped_out)
+            # Return preempted prefills to waiting.
+            self.waiting.extendleft(running_scheduled.preempted)
+
+            assert budget.num_batched_tokens <= self.scheduler_config.max_num_batched_tokens
+            assert budget.num_curr_seqs <= self.scheduler_config.max_num_seqs
+
+            all_prefills = True
+            num_lookahead_slots = (
+                0
+                if (all_prefills and not self.scheduler_config.is_multi_step)
+                else running_scheduled.num_lookahead_slots
+            )
+            preempted = len(running_scheduled.preempted) + len(running_scheduled.swapped_out)
+            return SchedulerOutputs(
+                scheduled_seq_groups=scheduled_seq_groups,
+                num_prefill_groups=num_prefill_groups,
+                num_batched_tokens=budget.num_batched_tokens + budget.num_cached_tokens,
+                blocks_to_swap_in=swapped_in.blocks_to_swap_in,
+                blocks_to_swap_out=running_scheduled.blocks_to_swap_out,
+                blocks_to_copy=running_scheduled.blocks_to_copy + swapped_in.blocks_to_copy,
+                ignored_seq_groups=prefills.ignored_seq_groups + swapped_in.infeasible_seq_groups,
+                num_lookahead_slots=num_lookahead_slots,
+                running_queue_size=len(self.running),
+                preempted=preempted,
+            )
+        # -------- End prefill-only microbatch path --------
+ 
         # Create partial prefill metadata
         partial_prefill_metadata = PartialPrefillMetadata.from_queues(
             running=self.running,
@@ -1622,7 +1828,7 @@ class Scheduler:
         return no_single_seq
 
     def schedule(
-            self
+            self,
     ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs, bool]:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
