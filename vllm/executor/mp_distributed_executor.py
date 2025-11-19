@@ -242,7 +242,7 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
 
         if current_platform.is_hpu():
             original_execute_model_req = execute_model_req
-            execute_model_req = await self.prepare_execute_model_req_patch(
+            execute_model_req, loop_idx = await self.prepare_execute_model_req_patch(
                 execute_model_req, execution_counter)
 
         log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][START]")
@@ -275,7 +275,7 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                 if in_progress[i]:
                     log_message(f"[DRIVER][WR={i * self.parallel_config.tensor_parallel_size}][EXEC={execution_counter}][VE={VE}][EXECUTOR][UNLOCK]")
                 if i == 0 and in_progress[i] and original_execute_model_req is not None:  # First PP rank
-                    log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][END]")
+                    log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][RESTORING]")
                     if current_platform.is_hpu() and envs.VLLM_CHUNK_PREFILL_STRAT > 0:
                         await self.restore_chunked_execute_model_req(
                             original_execute_model_req,
@@ -285,16 +285,12 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                         for seq_id, seq in getattr(sg, "seq_data", {}).items():
                             self.seq_id_state_machines[original_execute_model_req.virtual_engine][seq_id] = 0  # Unlock
                             #TVOAS-DEBUG-LOG# logger.info(f"mp_executor._driver_execute_model_async free state for VE{original_execute_model_req.virtual_engine}.SID{seq_id}")
+                            log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][FREE_SEQ_ID_{seq_id}]")
                     self.extended_critical[original_execute_model_req.virtual_engine] = False
                 in_progress[i] = False
 
         # Only the last PP stage has the final results.
-        #TVOAS-DEBUG-LOG# if original_execute_model_req is not None:
-            #TVOAS-DEBUG-LOG# ids = [list(m.seq_data.keys()) for m in original_execute_model_req.seq_group_metadata_list]
-            #TVOAS-DEBUG-LOG# prompts = [m.is_prompt for m in original_execute_model_req.seq_group_metadata_list]
-            #TVOAS-DEBUG-LOG# logger.info(f"mp_executor._driver_execute_model_async done for VE{original_execute_model_req.virtual_engine} with IDs={ids} prompts={prompts} result={results[-1]}")
-            #TVOAS-DEBUG-LOG# log_execute_model_req(original_execute_model_req, "PostExecuteModelReq")
-        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][END]")
+        log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={VE}][EXECUTOR][END] results={results[-1]}")
         return results[-1]
 
     async def _start_worker_execution_loop(self):

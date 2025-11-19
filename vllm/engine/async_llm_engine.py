@@ -315,6 +315,7 @@ class _AsyncLLMEngine(LLMEngine):
             #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: set current loop idx")
             decode_id_filter = self.model_executor._get_valid_decode_id(virtual_engine)
             #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: decode_id_filter={decode_id_filter}, prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
+            logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: decode_id_filter={decode_id_filter}, prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
         #TVOAS-DEBUG-LOG# logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: released lock")
 
         # skip the scheduler if there are any remaining steps in the seq groups.

@@ -808,6 +808,7 @@ class DistributedExecutorBase(ExecutorBase):
                     # Gate decode on this loop idx from now on.
                     self._decode_valid_loop_idx[ve][loop_idx].append(seq_id)
                     #TVOAS-DEBUG-LOG# logger.info(f"Set decode valid for seq_id={seq_id} to loop idx {loop_idx} of VE{ve}")
+                    logger.info(f"Set decode valid for seq_id={seq_id} to loop idx {loop_idx} of VE{ve}")
         return self.prefill_steps_remaining
     
     def lock_seq_id_state_machines(self, execute_model_req):
@@ -925,17 +926,72 @@ class DistributedExecutorBase(ExecutorBase):
         original_prompt_sizes = {}
         execute_model_req_patch: Dict[Hashable, Dict[str, Any]] = {}
         use_cached_base_req = False
+        loop_idx = None
         if execute_model_req is not None:
             virtual_engine = execute_model_req.virtual_engine
             if virtual_engine not in self.lock_update_req:
                 self.lock_update_req[virtual_engine] = threading.Lock()
                 #TVOAS-DEBUG-LOG# logger.info(f"DistributedExecutorBase.prepare_execute_model_req_patch has no VE{virtual_engine} in lock_update_req. Creating")
             with self.lock_update_req[virtual_engine]:
+                loop_idx = self._current_loop_idx[virtual_engine]
+                for idx, m in enumerate(execute_model_req.seq_group_metadata_list):
+                    seq_entries = []
+                    for seq_id, seq_data in m.seq_data.items():
+                        # Safe access for computed tokens (may be method).
+                        computed = getattr(seq_data, "get_num_computed_tokens", None)
+                        if callable(computed):
+                            try:
+                                computed = computed()
+                            except Exception:
+                                computed = getattr(seq_data, "_num_computed_tokens", None)
+                        entry = {
+                            "seq_id": seq_id,
+                            "prompt_tokens": len(getattr(seq_data, "prompt_token_ids", [])),
+                            "output_tokens": len(getattr(seq_data, "output_token_ids", [])),
+                            "total_computed_tokens": computed,
+                        }
+                        seq_entries.append(entry)
+                    group_details = {
+                        "is_prompt": m.is_prompt,
+                        "token_chunk_size": getattr(m, "token_chunk_size", None),
+                        "seqs": seq_entries,
+                    }
+                    log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={virtual_engine}][EXECUTOR][INFO] pre-fixup loop_idx={loop_idx} group[{idx}]={group_details}")
                 self._fixup_execute_model_req_prefill(execute_model_req)
+                for idx, m in enumerate(execute_model_req.seq_group_metadata_list):
+                    seq_entries = []
+                    for seq_id, seq_data in m.seq_data.items():
+                        # Safe access for computed tokens (may be method).
+                        computed = getattr(seq_data, "get_num_computed_tokens", None)
+                        if callable(computed):
+                            try:
+                                computed = computed()
+                            except Exception:
+                                computed = getattr(seq_data, "_num_computed_tokens", None)
+                        entry = {
+                            "seq_id": seq_id,
+                            "prompt_tokens": len(getattr(seq_data, "prompt_token_ids", [])),
+                            "output_tokens": len(getattr(seq_data, "output_token_ids", [])),
+                            "total_computed_tokens": computed,
+                        }
+                        seq_entries.append(entry)
+                    group_details = {
+                        "is_prompt": m.is_prompt,
+                        "token_chunk_size": getattr(m, "token_chunk_size", None),
+                        "seqs": seq_entries,
+                    }
+                    log_message(f"[DRIVER][WR=ALL][EXEC={execution_counter}][VE={virtual_engine}][EXECUTOR][INFO] post-fixup loop_idx={loop_idx} group[{idx}]={group_details}")
                 #TVOAS-DEBUG-LOG# log_execute_model_req(execute_model_req)
                 self.update_prefill_steps(execute_model_req)
                 self.lock_seq_id_state_machines(execute_model_req)
             #TVOAS-DEBUG-LOG# logger.info(f"Preparing execute_model_req patch for VE{virtual_engine} with remaining prefills {self.prefill_steps_remaining} and states {self.seq_id_state_machines[virtual_engine]}")
+            return (
+                execute_model_req,
+                execute_model_req_patch,
+                False,
+                original_prompt_sizes,
+                execution_counter,
+            ), loop_idx
             if virtual_engine in self.cached_execute_model_reqs:
                 prev_execute_model_req_hash, cached_execute_model_req = (
                     self.cached_execute_model_reqs[virtual_engine])
@@ -985,4 +1041,4 @@ class DistributedExecutorBase(ExecutorBase):
             use_cached_base_req,
             original_prompt_sizes,
             execution_counter,
-        )
+        ), loop_idx

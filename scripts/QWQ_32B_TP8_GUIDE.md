@@ -19,7 +19,7 @@ sudo hl-smi --format csv -Q bus_id,module_id,index | awk -F',' 'NR>1 {gsub(/ /,"
 ```bash
 export BUILT_IMAGE="vllm-hpu-env"
 export CONTAINER_NAME="vllm-node"
-export MAPPED_MODEL_PATHS="/mnt/disk1/models/"
+export MAPPED_MODEL_PATHS="/mnt/disk1/hf_models/"
 export no_proxy="localhost,127.0.0.1,10.239.129.9"
 export http_proxy="http://proxy.ims.intel.com:911"
 export https_proxy="http://proxy.ims.intel.com:911"
@@ -48,6 +48,7 @@ rm -rf vllm-fork
 git clone -b "dev/aice/v1.22.0/pp_tvoas" https://github.com/tvoas/vllm-fork.git
 cd vllm-fork
 git clone  -b "aice/v1.22.0" https://github.com/HabanaAI/vllm-hpu-extension.git
+git fetch origin; git reset --hard  de21efbdc0ba74828e48cab7d0820278070d83db; git checkout origin/dev/aice/v1.22.0/pp_tvoas_chunk_debug scripts/start_gaudi_vllm_server.sh scripts/utils.sh
 sudo docker build -f docker/Dockerfile.hpu \
   --build-arg http_proxy=${http_proxy} \
   --build-arg https_proxy=${https_proxy} \
@@ -124,8 +125,8 @@ rm -rf /tmp/libfabric
 export LD_LIBRARY_PATH=$LIBFABRIC_ROOT/lib:$LD_LIBRARY_PATH
 
 # Install libfabric utilities
-apt update && apt install -y libfabric-bin
-fi_info --version
+#apt update && apt install -y libfabric-bin
+#fi_info --version
 
 # Clone and build HCCL OFI wrapper
 git clone https://github.com/HabanaAI/hccl_ofi_wrapper.git
@@ -365,15 +366,16 @@ Run the following command to evaluate accuracy using lm-eval. This runs full hum
 
 ```bash
 clear
-export HF_ALLOW_CODE_EVAL=1
-export LM_ADDR=127.0.0.1
-export LM_PORT=8688
-export LM_MODEL=/root/.cache/huggingface/GLM-4.5-FP8/
-export LM_BATCH_SIZE=1
-export LM_LIMIT=8
-export LM_CONCURRENCY=2
-python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 32 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,99
-lm_eval --model local-completions \
+
+echo "/root/.cache/huggingface/garb_g2d_1220_271_tv_new_loop_1ve_glm45air_no_inc_warmup_lazy_2048_1pref0mix_chunk/"
+export HF_ALLOW_CODE_EVAL=1; export LM_ADDR=127.0.0.1; export LM_PORT=8688; export LM_MODEL=/root/.cache/huggingface/GLM-4.5-Air-FP8-G2; export LM_BATCH_SIZE=1; export LM_LIMIT=16
+export LM_CONCURRENCY=1; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 8 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
+sleep 60
+export LM_CONCURRENCY=2; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 16 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
+sleep 60
+export LM_CONCURRENCY=4; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 32 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
+sleep 60
+export LM_CONCURRENCY=4; lm_eval --model local-completions \
   --tasks gsm8k,humaneval \
   --model_args model=$LM_MODEL,base_url=http://$LM_ADDR:$LM_PORT/v1/completions,num_concurrent=$LM_CONCURRENCY,trust_remote_code=True \
   --batch_size $LM_BATCH_SIZE \
@@ -381,6 +383,29 @@ lm_eval --model local-completions \
   --log_samples \
   --limit $LM_LIMIT \
   --output_path lm_eval_results.json
+
+
+export HF_ALLOW_CODE_EVAL=1; export LM_ADDR=127.0.0.1; export LM_PORT=8688; export LM_MODEL=/root/.cache/huggingface/GLM-4.5-Air-FP8-G2; export LM_BATCH_SIZE=1; export LM_LIMIT=16
+export LM_CONCURRENCY=4; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 8 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
+sleep 60
+export LM_CONCURRENCY=2; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 16 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
+sleep 60
+export LM_CONCURRENCY=4; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 32 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
+sleep 60
+export LM_CONCURRENCY=4; lm_eval --model local-completions \
+  --tasks gsm8k,humaneval \
+  --model_args model=$LM_MODEL,base_url=http://$LM_ADDR:$LM_PORT/v1/completions,num_concurrent=$LM_CONCURRENCY,trust_remote_code=True \
+  --batch_size $LM_BATCH_SIZE \
+  --confirm_run_unsafe_code \
+  --log_samples \
+  --limit $LM_LIMIT \
+  --output_path lm_eval_results.json
+
+
+export HF_ALLOW_CODE_EVAL=1; export LM_ADDR=127.0.0.1; export LM_PORT=8688; export LM_MODEL=/root/.cache/huggingface/GLM-4.5-FP8; export LM_BATCH_SIZE=1; export LM_LIMIT=16
+export LM_CONCURRENCY=1; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 10000 --random-output-len 8 --random-range-ratio 0.8 --num-prompts 2 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
+
+
 export LM_CONCURRENCY=4
 python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts ${LM_CONCURRENCY}0 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,99
 lm_eval --model local-completions \
