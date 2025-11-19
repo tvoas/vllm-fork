@@ -1963,11 +1963,10 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                  seq_group_metadata.sampling_params.prompt_logprobs else 1))
 
         if any(context_lens):
-            assert not self.scheduler_config.chunked_prefill_enabled
             assert self.scheduler_config.max_num_prefill_seqs == 1
             assert bs == 1, (
                 "Prefix caching with multiple sequences is not supported yet.")
-            # prefix caching
+            # prefix caching or chunked prefill
 
             max_num_block = max(len(bt) for bt in prefix_block_tables)
             prefix_block_list = list(
@@ -1976,6 +1975,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                     ([_PAD_BLOCK_ID] * (max_num_block - len(bt)))
                     for bt in prefix_block_tables))
 
+            if self.scheduler_config.chunked_prefill_enabled:
+                if max_prompt_len < max_num_block * self.block_size:
+                    max_prompt_len = max_num_block * self.block_size
             pad_len = len(prefix_block_list)
             prefix_block_list = pad_list(prefix_block_list, pad_len,
                                          _PAD_BLOCK_ID)
@@ -3170,6 +3172,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             logger_msg = "Multimodal bucket : " + str(self.multimodal_buckets)
             logger.info(logger_msg)
 
+        if max_batch_size < 1:
+            max_batch_size = 1
+            max_seq_len = self.max_num_batched_tokens
         logger.info("Profile run with bs=%s, seq_len=%s", \
                     max_batch_size, max_seq_len)
 
@@ -3452,6 +3457,8 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             # Graph memory usage is proportional to seq dimension in a batch
             phase = f"Graph/{'prompt' if is_prompt else 'decode'}"
             if is_prompt:
+                if batch_size > self.max_num_prefill_seqs:
+                    continue
                 seq_len = query_len + ctx * self.block_size
                 batch_seq = batch_size * seq_len
             else:
