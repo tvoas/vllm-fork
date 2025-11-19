@@ -714,6 +714,11 @@ class RayDistributedExecutor(DistributedExecutorBase):
                 for _ in range(self.parallel_config.pipeline_parallel_size)
             ]
 
+        if current_platform.is_hpu():
+            original_execute_model_req = execute_model_req
+            execute_model_req, loop_idx = await self.prepare_execute_model_req_patch(
+                execute_model_req)
+
         tasks = [
             asyncio.create_task(
                 _run_task_with_lock(self.driver_exec_method, self.pp_locks[0],
@@ -727,7 +732,25 @@ class RayDistributedExecutor(DistributedExecutorBase):
                                         self.pp_locks[pp_rank],
                                         "execute_model", execute_model_req)))
 
-        results = await asyncio.gather(*tasks)
+        results = [None] * len(tasks)
+        in_progress = [True] * len(tasks)
+        while any(in_progress):
+            running_tasks = [task for i, task in enumerate(tasks) if in_progress[i]]
+            running_indexes = [i for i, task in enumerate(tasks) if in_progress[i]]
+            done, _ = await asyncio.wait(
+                running_tasks,
+                return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                i = running_tasks.index(task)
+                i = running_indexes[i]
+                results[i] = task.result()
+                if i == 0 and in_progress[i] and original_execute_model_req is not None:  # First PP rank
+                    self._advance_prefill_progress(original_execute_model_req)
+                    for sg in original_execute_model_req.seq_group_metadata_list:
+                        for seq_id, seq in getattr(sg, "seq_data", {}).items():
+                            self.seq_id_state_machines[original_execute_model_req.virtual_engine][seq_id] = 0  # Unlock
+                    self.extended_critical[original_execute_model_req.virtual_engine] = False
+                in_progress[i] = False
 
         # Only the last PP stage has the final results.
         return results[-1]

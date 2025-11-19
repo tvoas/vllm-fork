@@ -3,20 +3,23 @@
 
 import asyncio
 import time
+import os
 from abc import ABC, abstractmethod
-from typing import (Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple,
-                    Union)
+from typing import (Any, Awaitable, Callable, Dict, Hashable, List, Optional,
+                    Set, Tuple, Union)
 
 import torch.nn as nn
+import threading
 from typing_extensions import TypeVar
 
+import vllm.envs as envs
 import vllm.platforms
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.sequence import ExecuteModelRequest, PoolerOutput
+from vllm.sequence import ExecuteModelRequest, PoolerOutput, SequenceStage
 from vllm.utils import make_async
 from vllm.worker.worker_base import WorkerBase
 
@@ -283,7 +286,15 @@ class DistributedExecutorBase(ExecutorBase):
         # This is non-None when the execute model loop is running
         # in the parallel workers. It's a coroutine in the AsyncLLMEngine case.
         self.parallel_worker_tasks: Optional[Union[Any, Awaitable[Any]]] = None
-
+        self.seq_id_state_machines: Dict[int, Dict[int, int]] = {}
+        self.lock_update_req: Dict[int, threading.Lock] = {}
+        self.prefill_steps_remaining = {}
+        self.extended_critical: Dict[int, bool] = {}
+        self._prefill_progress = {}
+        # Loop index tracking per virtual engine (only while in extended critical).
+        self._current_loop_idx: Dict[int, int] = {}
+        # Decode gating: loop idx allowed to run decode per virtual engine.
+        self._decode_valid_loop_idx: Dict[int, Dict[int, List[int]]] = {}
         super().__init__(*args, **kwargs)
 
     def execute_model(
@@ -398,3 +409,169 @@ class DistributedExecutorBase(ExecutorBase):
         `stop_remote_worker_execution_loop`.
         The API is idempotent (guarantee only 1 loop run at any moment)."""
         raise NotImplementedError
+    
+    async def _wait_for_sg_locks(self, virtual_engine: int):
+        wait_ms = 10
+        log_spins = 200
+        if virtual_engine not in self.seq_id_state_machines:
+            self.seq_id_state_machines[virtual_engine] = {}
+        spins = 0
+        start_t = time.perf_counter()
+        # Wait while any seq locked OR extended critical section active.
+        while any(state == 1 for state in self.seq_id_state_machines[virtual_engine].values()) \
+              or self.extended_critical.get(virtual_engine, False):
+            spins += 1
+            if spins % log_spins == 0:
+                elapsed = (time.perf_counter() - start_t) * 1000.0
+                logger.info("VE%s still locked after %d spins (%.1f ms)", virtual_engine, spins, elapsed)
+            await asyncio.sleep(wait_ms / 1000.0)
+        elapsed = (time.perf_counter() - start_t) * 1000.0
+        self.extended_critical[virtual_engine] = True
+
+    def _set_current_loop_idx(self, virtual_engine: int, loop_idx: int) -> None:
+        assert self.extended_critical[virtual_engine], f"VE{virtual_engine} must be in extended critical to set loop idx."
+        self._current_loop_idx[virtual_engine] = loop_idx
+
+    def _unset_current_loop_idx(self, virtual_engine: int, loop_idx: int) -> None:
+        if self.extended_critical[virtual_engine]:
+            if self._current_loop_idx[virtual_engine] == loop_idx:
+                del self._current_loop_idx[virtual_engine]
+                self.extended_critical[virtual_engine] = False
+
+    def _get_valid_decode_id(self, virtual_engine: int) -> Optional[int]:
+        assert self.extended_critical[virtual_engine], f"VE{virtual_engine} must be in extended critical to get valid decode loop idx."
+        if virtual_engine not in self._decode_valid_loop_idx:
+            self._decode_valid_loop_idx[virtual_engine] = {}
+        if self._current_loop_idx[virtual_engine] not in self._decode_valid_loop_idx[virtual_engine]:
+            self._decode_valid_loop_idx[virtual_engine][self._current_loop_idx[virtual_engine]] = []
+        return self._decode_valid_loop_idx[virtual_engine][self._current_loop_idx[virtual_engine]]
+    
+    def compute_remaining_prefill_steps(self, execute_model_req):
+        r = {}
+        for sg in execute_model_req.seq_group_metadata_list:
+            c = sg.token_chunk_size
+            for seq_id, seq in sg.seq_data.items():
+                if not sg.is_prompt:
+                    r[seq_id] = 0
+                    continue
+                total = len(seq.prompt_token_ids)
+                comp = seq.get_num_computed_tokens()
+                rem = total - comp
+                if rem <= 0 or c <= 0:
+                    r[seq_id] = 0
+                else:
+                    steps = rem // c
+                    if rem % c != 0:
+                        steps += 1
+                    if steps < 0:
+                        steps = 0
+                    r[seq_id] = steps
+        return r
+
+    def update_prefill_steps(self, execute_model_req):
+        ve = execute_model_req.virtual_engine
+        if ve in self.seq_id_state_machines:
+            for seq_id, state in self.seq_id_state_machines[ve].items():
+                assert state != 1, f"Prefill update reached with locked seq_id {seq_id} on VE{ve}"
+        remaining = self.compute_remaining_prefill_steps(execute_model_req)
+        for sg in execute_model_req.seq_group_metadata_list:
+            for seq_id, seq in sg.seq_data.items():
+                if seq_id not in self.prefill_steps_remaining:
+                    self.prefill_steps_remaining[seq_id] = remaining[seq_id] - 1
+                else:
+                    self.prefill_steps_remaining[seq_id] -= 1
+                if self.prefill_steps_remaining[seq_id] == 0:
+                    loop_idx = self._current_loop_idx[ve]
+                    # Gate decode on this loop idx from now on.
+                    self._decode_valid_loop_idx[ve][loop_idx].append(seq_id)
+                    logger.info(f"Set decode valid for seq_id={seq_id} to loop idx {loop_idx} of VE{ve}")
+        return self.prefill_steps_remaining
+    
+    def lock_seq_id_state_machines(self, execute_model_req):
+        ve = execute_model_req.virtual_engine
+        if ve not in self.seq_id_state_machines:
+            self.seq_id_state_machines[ve] = {}
+        ve_map = self.seq_id_state_machines[ve]
+        for sg in execute_model_req.seq_group_metadata_list:
+            for seq_id in sg.seq_data.keys():
+                ve_map[seq_id] = 1
+
+    def _fixup_execute_model_req_prefill(self, execute_model_req: Any) -> None:
+        if execute_model_req is None:
+            return
+        cfg = getattr(self, "scheduler_config", None)
+        max_num_batched_tokens = getattr(cfg, "max_num_batched_tokens", 0)
+        orig_chunks = {}
+        orig_computed = {}
+        new_chunks = {}
+        new_computed = {}
+        for sg in execute_model_req.seq_group_metadata_list:
+            if not sg.is_prompt:
+                continue
+            is_first_seq = True
+            orig_token_chunk_size = sg.token_chunk_size
+            for seq_id, seq_data in sg.seq_data.items():
+                full_prompt = len(getattr(seq_data, "prompt_token_ids", ()))
+                # Initialize tracking if missing
+                if seq_id not in self._prefill_progress:
+                    self._prefill_progress[seq_id] = (0, 0)
+                _, progress = self._prefill_progress[seq_id]
+                # Determine base chunk size (first seen)
+                chunk_size = max(1, min(max_num_batched_tokens, full_prompt - progress))
+                orig_chunks[seq_id] = orig_token_chunk_size
+                orig_computed[seq_id] = seq_data._num_computed_tokens
+                if is_first_seq:
+                    sg.token_chunk_size = chunk_size
+                else:
+                    sg.token_chunk_size = min(chunk_size, sg.token_chunk_size)
+                # Reflect progress into sequence data object
+                seq_data._num_computed_tokens = progress
+                new_chunks[seq_id] = sg.token_chunk_size
+                new_computed[seq_id] = seq_data._num_computed_tokens
+                self._prefill_progress[seq_id] = (sg.token_chunk_size, seq_data._num_computed_tokens)
+            for seq_id, seq_data in sg.seq_data.items():
+                if seq_data._num_computed_tokens + sg.token_chunk_size >= len(seq_data.prompt_token_ids):
+                    sg.do_sample = True
+
+    def _advance_prefill_progress(self, execute_model_req: Any) -> None:
+        """
+        Update stored progress after a prefill chunk execution.
+        Must be called AFTER the chunk has run.
+        """
+        for sg in execute_model_req.seq_group_metadata_list:
+            if not sg.is_prompt:
+                continue
+            for seq_id, seq_data in sg.seq_data.items():
+                full_prompt = len(getattr(seq_data, "prompt_token_ids", ()))
+                chunk_size, prev = self._prefill_progress.get(seq_id, (0, 0))
+                new_progress = min(full_prompt, prev + chunk_size)
+                self._prefill_progress[seq_id] = (0, new_progress)
+
+                # If full prompt consumed and prefill tracker says no steps remain, switch to decode
+                remaining_steps = self.prefill_steps_remaining.get(seq_id)
+                if remaining_steps == 0:
+                    assert new_progress == full_prompt, f"Inconsistent prefill state for seq_id {seq_id}: remaining_steps=0 but new_progress={new_progress} != full_prompt={full_prompt}"
+                    seq_data._num_computed_tokens = full_prompt
+                    seq_data._stage = SequenceStage.DECODE
+                    #sg.is_prompt = False
+                    #sg.do_sample = True
+                    #sg.token_chunk_size = 1
+        # TODO: Cleanup prefill_steps_remaining entries now in decode
+
+    async def prepare_execute_model_req_patch(
+        self,
+        execute_model_req: Optional[Any],
+        execution_counter: Optional[int] = None,
+    ) -> Tuple[Any, Dict[Hashable, Dict[str, Any]], bool]:
+        loop_idx = None
+        if execute_model_req is not None:
+            virtual_engine = execute_model_req.virtual_engine
+            if virtual_engine not in self.lock_update_req:
+                self.lock_update_req[virtual_engine] = threading.Lock()
+            with self.lock_update_req[virtual_engine]:
+                loop_idx = self._current_loop_idx[virtual_engine]
+                self._fixup_execute_model_req_prefill(execute_model_req)
+                self.update_prefill_steps(execute_model_req)
+                self.lock_seq_id_state_machines(execute_model_req)
+
+        return execute_model_req, loop_idx

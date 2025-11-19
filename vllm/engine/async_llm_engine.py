@@ -3,11 +3,13 @@
 
 import asyncio
 import copy
+import os
 import time
 import weakref
 from functools import partial
 from typing import (Any, AsyncGenerator, Callable, Coroutine, Dict, Iterable,
                     List, Mapping, Optional, Set, Tuple, Type, Union, overload)
+import threading
 from weakref import ReferenceType
 
 from typing_extensions import deprecated
@@ -265,10 +267,12 @@ class _AsyncLLMEngine(LLMEngine):
     """Extension of LLMEngine to add async methods."""
 
     def __init__(self, *args, **kwargs):
+        self.lock_update_req = {}
         super().__init__(*args, **kwargs)
 
     async def step_async(
-        self, virtual_engine: int
+        self, virtual_engine: int,
+        loop_idx: int,
     ) -> List[Union[RequestOutput, PoolingRequestOutput]]:
         """Performs one decoding iteration and returns newly generated results.
         The workers are ran asynchronously if possible.
@@ -291,6 +295,14 @@ class _AsyncLLMEngine(LLMEngine):
         # Clear outputs for each new scheduler iteration
         ctx.request_outputs.clear()
 
+        if virtual_engine not in self.lock_update_req:
+            self.lock_update_req[virtual_engine] = threading.Lock()
+        with self.lock_update_req[virtual_engine]:
+            await self.model_executor._wait_for_sg_locks(virtual_engine)
+            self.model_executor._set_current_loop_idx(virtual_engine, loop_idx)
+            decode_id_filter = self.model_executor._get_valid_decode_id(virtual_engine)
+            logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: decode_id_filter={decode_id_filter}, prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
+
         # skip the scheduler if there are any remaining steps in the seq groups.
         # This ensures that the scheduler is only called again when the current
         # batch has completed.
@@ -299,7 +311,7 @@ class _AsyncLLMEngine(LLMEngine):
             # Schedule iteration
             (seq_group_metadata_list, scheduler_outputs,
              allow_async_output_proc
-             ) = self.scheduler[virtual_engine].schedule()
+             ) = self.scheduler[virtual_engine].schedule(decode_id_filter=decode_id_filter)
 
             ctx.seq_group_metadata_list = seq_group_metadata_list
             ctx.scheduler_outputs = scheduler_outputs
@@ -328,7 +340,6 @@ class _AsyncLLMEngine(LLMEngine):
         assert scheduler_outputs is not None
 
         if not scheduler_outputs.is_empty():
-
             # Check if we have a cached last_output from the previous iteration.
             # For supporting PP this is probably the best way to pass the
             # sampled_token_ids, as a separate broadcast over all the PP stages
@@ -409,6 +420,7 @@ class _AsyncLLMEngine(LLMEngine):
 
         else:
             # Multi-step case
+            self.model_executor._unset_current_loop_idx(virtual_engine, loop_idx)
             return ctx.request_outputs
 
         if not self.has_unfinished_requests():
@@ -416,7 +428,7 @@ class _AsyncLLMEngine(LLMEngine):
             if len(ctx.output_queue) > 0:
                 self._process_model_outputs(ctx=ctx)
             assert len(ctx.output_queue) == 0
-
+        self.model_executor._unset_current_loop_idx(virtual_engine, loop_idx)
         return ctx.request_outputs
 
     async def stop_remote_worker_execution_loop_async(self) -> None:
@@ -770,7 +782,7 @@ class AsyncLLMEngine(EngineClient):
             self._background_loop_unshielded = None
         self.background_loop = None
 
-    async def engine_step(self, virtual_engine: int) -> bool:
+    async def engine_step(self, virtual_engine: int, loop_idx: int) -> bool:
         """Kick the engine to process the waiting requests.
 
         Returns True if there are in-progress requests."""
@@ -793,7 +805,7 @@ class AsyncLLMEngine(EngineClient):
         if aborted_requests:
             await self._engine_abort(aborted_requests)
 
-        request_outputs = await self.engine.step_async(virtual_engine)
+        request_outputs = await self.engine.step_async(virtual_engine, loop_idx)
 
         # Put the outputs into the corresponding streams.
         # If used as a callback, then already invoked inside
@@ -832,9 +844,17 @@ class AsyncLLMEngine(EngineClient):
         pipeline_parallel_size = \
                 engine.engine.parallel_config.pipeline_parallel_size
         ve_true_count = pipeline_parallel_size + envs.VLLM_PP_BONUS_VE
-        has_requests_in_progress = [False] * (ve_true_count)
+        ve_look_a_head = int(os.getenv("VLLM_INTERLEAVE_MODE", "0"))
+        ve_interleave_count = ve_true_count * (1 + ve_look_a_head)
+        loops_per_ve = (1 + ve_look_a_head)
+        has_requests_in_progress = [False] * (ve_interleave_count)
 
         POLL_TIME_S = 0.02
+
+        # Ordered loop scheduling (prevent a VE loop from rescheduling out of round-robin order).
+        ordered_loops_enabled = os.getenv("VLLM_ORDERED_VE_LOOPS", "1").lower() not in ("0", "false", "no")
+        # For each VE track next loop_idx to be rescheduled.
+        next_loop_idx_per_ve = [0] * ve_true_count
 
         while True:
             request_tracker = engine._request_tracker
@@ -859,16 +879,30 @@ class AsyncLLMEngine(EngineClient):
                 if not engine:
                     return
                 logger.debug("Got new requests!")
-                requests_in_progress = [
-                    asyncio.create_task(engine.engine_step(ve))
-                    for ve in range(ve_true_count)
-                ]
-                has_requests_in_progress = [True] * ve_true_count
+                requests_in_progress = []
+                for i in range(ve_interleave_count):
+                    ve = i % ve_true_count
+                    loop_idx = i // ve_true_count
+                    # Always launch initial set (all loops) so ordering only affects reschedules.
+                    requests_in_progress.append(asyncio.create_task(engine.engine_step(ve, loop_idx)))
+                if ordered_loops_enabled:
+                    next_loop_idx_per_ve = [0] * ve_true_count
+                has_requests_in_progress = [True] * ve_interleave_count
             elif not all(has_requests_in_progress) and request_tracker.has_new_requests():
-                for ve, active in enumerate(has_requests_in_progress):
-                    if not active:
-                        requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
-                        has_requests_in_progress[ve] = True
+                for idx, active in enumerate(has_requests_in_progress):
+                    if active:
+                        continue
+                    ve = idx % ve_true_count
+                    loop_idx = idx // ve_true_count
+                    if ordered_loops_enabled:
+                        # Only spawn if this loop_idx is the next expected and no pending completion blocking.
+                        if loop_idx != next_loop_idx_per_ve[ve]:
+                            # Yield to event loop (balance across VEs / RPC tasks).
+                            await asyncio.sleep(0)
+                            continue
+                        next_loop_idx_per_ve[ve] = (next_loop_idx_per_ve[ve] + 1) % loops_per_ve
+                    requests_in_progress[idx] = asyncio.create_task(engine.engine_step(ve, loop_idx))
+                    has_requests_in_progress[idx] = True
 
             # Abort if iteration takes too long due to unrecoverable errors
             # (eg. NCCL timeouts).
@@ -880,31 +914,51 @@ class AsyncLLMEngine(EngineClient):
                         return_when=asyncio.FIRST_COMPLETED)
 
                     # Yield to event loop (balance across VEs / RPC tasks).
-                    for _ in range(ve_true_count):
+                    for _ in range(ve_interleave_count):
                         await asyncio.sleep(0)
 
                 # Process finished tasks.
                 for task in done:
-                    virtual_engine = requests_in_progress.index(task)
+                    idx = requests_in_progress.index(task)
+                    ve = idx % ve_true_count
+                    loop_idx = idx // ve_true_count
                     result = task.result()
                     has_unfinished_requests = (
                         engine.engine.
                         has_unfinished_requests_for_virtual_engine(
-                            virtual_engine))
+                            ve))
                     if result or has_unfinished_requests:
-                        requests_in_progress[virtual_engine] = (
+                        if ordered_loops_enabled:
+                            # Only spawn if this loop_idx is the next expected and no pending completion blocking.
+                            if loop_idx != next_loop_idx_per_ve[ve]:
+                                has_requests_in_progress[idx] = False
+                                # Yield to event loop (balance across VEs / RPC tasks).
+                                await asyncio.sleep(0)
+                                continue
+                            next_loop_idx_per_ve[ve] = (next_loop_idx_per_ve[ve] + 1) % loops_per_ve
+                        requests_in_progress[idx] = (
                             asyncio.create_task(
-                                engine.engine_step(virtual_engine)))
-                        has_requests_in_progress[virtual_engine] = True
+                                engine.engine_step(ve, loop_idx)))
+                        has_requests_in_progress[idx] = True
                     else:
-                        has_requests_in_progress[virtual_engine] = False
+                        has_requests_in_progress[idx] = False
 
                 # After processing completions, if new requests arrived and idle VEs exist, launch them immediately.
                 if request_tracker.has_new_requests():
-                    for ve, active in enumerate(has_requests_in_progress):
-                        if not active:
-                            requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
-                            has_requests_in_progress[ve] = True
+                    for idx, active in enumerate(has_requests_in_progress):
+                        if active:
+                            continue
+                        ve = idx % ve_true_count
+                        loop_idx = idx // ve_true_count
+                        if ordered_loops_enabled:
+                            # Only spawn if this loop_idx is the next expected and no pending completion blocking.
+                            if loop_idx != next_loop_idx_per_ve[ve]:
+                                # Yield to event loop (balance across VEs / RPC tasks).
+                                await asyncio.sleep(0)
+                                continue
+                            next_loop_idx_per_ve[ve] = (next_loop_idx_per_ve[ve] + 1) % loops_per_ve
+                        requests_in_progress[idx] = asyncio.create_task(engine.engine_step(ve, loop_idx))
+                        has_requests_in_progress[idx] = True
             except asyncio.TimeoutError as exc:
                 logger.error(
                     "Engine iteration timed out. This should never happen!")
