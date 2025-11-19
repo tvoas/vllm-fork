@@ -319,6 +319,9 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
         self.all_cached_seq_data: Dict[int, dict] = {}
         self.cached_execute_model_req: Dict[int, ExecuteModelRequest] = {}
+        # Per-VE per-sequence staleness counters for decode pruning.
+        # {virtual_engine: {seq_key: steps_not_seen}}
+        self._seq_staleness: Dict[int, Dict[int, int]] = {}
         self._unpadded_lengths = {}
         self.lock = threading.Lock()
         self._master_cache_lock = threading.Lock()
@@ -482,10 +485,11 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         active_keys = set()  # keys seen in this request; used for pruning
         # Prune only during decode (is_prompt=False). On some ranks is_prompt
         # can be None; treat explicit False as decode.
-        should_prune = any(
+        is_decode_step = all(
             getattr(seq_group, "is_prompt", None) is False
-            for seq_group in new_execute_model_req.seq_group_metadata_list)
-        
+            for seq_group in new_execute_model_req.seq_group_metadata_list
+        )
+
         chunkable_attrs: List[str] = [
             "_cached_all_token_ids",
             "_prompt_token_ids",
@@ -513,7 +517,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 }
                 cached_data = cached_seq_data.setdefault(key, initial_data)
 
-                # Get patch data
+                # Patch for this seq (may be empty).
                 patch_data = execute_model_req_patch.get(key, {})
 
                 for attr_key in initial_data:
@@ -579,12 +583,18 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 if isinstance(seq_data._stage, int):
                     seq_data._stage = SequenceStage(seq_data._stage)
 
-        # Prune only during decode steps to prevent unbounded growth while
-        # preserving prompt-batch data across prefill micro-batches.
-        if should_prune:
+        # Decode-time staleness-based pruning to bound memory usage, while
+        # allowing sequences to disappear for a few steps and come back.
+        if is_decode_step:
+            STALE_DECODE_STEPS = 8
             for key in list(cached_seq_data.keys()):
-                if key not in active_keys:
+                if key in active_keys:
+                    self._seq_staleness[key] = 0
+                    continue
+                self._seq_staleness[key] = self._seq_staleness.get(key, 0) + 1
+                if self._seq_staleness[key] >= STALE_DECODE_STEPS:
                     cached_seq_data.pop(key, None)
+                    self._seq_staleness.pop(key, None)
 
         return cached_seq_data
 
@@ -735,16 +745,18 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 logger.warning(msg)
         else:
             output = self._execute_model(execute_model_req, virtual_engine, execution_counter)
+
         if execute_model_req is not None:
             if envs.VLLM_CHUNK_PREFILL_STRAT == 1:
                 self._remove_chunk_padding(execute_model_req)
-            self.cached_execute_model_req[
-                execute_model_req.virtual_engine] = execute_model_req
-        #TVOAS-DEBUG-LOG# if execute_model_req is not None and get_tp_group().is_first_rank:
-            #TVOAS-DEBUG-LOG# ids = [list(seq.seq_data.keys()) for seq in execute_model_req.seq_group_metadata_list]
-            #TVOAS-DEBUG-LOG# prompts = [seq.is_prompt for seq in execute_model_req.seq_group_metadata_list]
-            #TVOAS-DEBUG-LOG# logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model end for VE{execute_model_req.virtual_engine} with IDs={ids} and prompts={prompts}")
-        log_message(f"[WORKER{get_world_group().rank_in_group}][WR={get_world_group().rank_in_group}][EXEC={execution_counter}][VE={virtual_engine}][WORKER][END_HPU_EXECUTE_MODEL]")
+            ve = execute_model_req.virtual_engine
+            self.cached_execute_model_req[ve] = execute_model_req
+        log_message(
+            f"[WORKER{get_world_group().rank_in_group}]"
+            f"[WR={get_world_group().rank_in_group}]"
+            f"[EXEC={execution_counter}][VE={virtual_engine}]"
+            "[WORKER][END_HPU_EXECUTE_MODEL]"
+        )
         return output
 
     def _execute_model(
