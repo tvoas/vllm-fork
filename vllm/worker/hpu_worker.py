@@ -21,15 +21,17 @@ from vllm_hpu_extension.profiler import HabanaMemoryProfiler, format_bytes
 
 import vllm.envs as envs
 from vllm.config import VllmConfig
-from vllm.distributed import (ensure_model_parallel_initialized, get_pp_group,
-                              init_distributed_environment)
+from vllm.distributed import (ensure_model_parallel_initialized, broadcast_tensor_dict,
+                              get_pp_group, get_world_group,
+                              get_tp_group, init_distributed_environment)
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor import set_random_seed
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.sequence import ExecuteModelRequest
+from vllm.sequence import (ExecuteModelRequest, IntermediateTensors,
+                           SequenceStage, CompletionSequenceGroupOutput)
 from vllm.utils import (bind_kv_cache, hpu_backend_string, hpu_device_string,
                         is_fake_hpu)
 from vllm.worker.cache_engine import CacheEngine
@@ -287,8 +289,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             ) if log_cpu_fallbacks else contextlib.nullcontext()
             with gc_ctx as gc_local_metric, \
                 cpu_fallback_ctx as cpu_fallback_local_metric:
-                output = LocalOrDistributedWorkerBase.execute_model(
-                    self, execute_model_req)
+                output = self._execute_model(execute_model_req)
             if (log_graph_compilation and gc_local_metric.stats()[0][1]
                     > 0) or log_graph_compilation_all:
                 msg = ("VLLM_HPU_STEP_GRAPH_COMPILATION: "
@@ -299,11 +300,71 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 msg = ("VLLM_HPU_STEP_CPU_FALLBACK: "
                        f"{cpu_fallback_local_metric.stats()}, {input_stats}")
                 logger.warning(msg)
+        else:
+            output = self._execute_model(execute_model_req)
 
             return output
 
-        output = LocalOrDistributedWorkerBase.execute_model(
-            self, execute_model_req)
+    def _execute_model(
+        self,
+        execute_model_req: Optional[ExecuteModelRequest] = None,
+    ) -> Optional[List[SamplerOutput]]:
+        """Executes at least one model step on the given sequences, unless no
+        sequences are provided."""
+        inputs = self.prepare_input(execute_model_req)
+
+        # Need to keep worker running when executing dummy batch under DP
+        # scenario
+        if self.is_driver_worker:
+            if self.do_metadata_broadcast:
+                is_dummy_batch = execute_model_req and\
+                    execute_model_req.is_dummy_batch
+                broadcast_tensor_dict({"is_dummy_batch": is_dummy_batch},
+                                      src=0)
+        else:
+            broadcast_data = broadcast_tensor_dict(src=0)
+            if "is_dummy_batch" in broadcast_data and broadcast_data[
+                    "is_dummy_batch"]:
+                return SamplerOutput(outputs=[], sampled_token_ids=None)
+
+        if inputs is None:
+            return None
+
+        model_input, worker_input, kwargs = inputs
+
+        num_steps = worker_input.num_steps
+        if (execute_model_req is not None
+                and execute_model_req.spec_step_idx):
+            kwargs["spec_step_idx"] = execute_model_req.spec_step_idx
+
+        self.execute_worker(worker_input)
+
+        # If there is no input, we don't need to execute the model.
+        if worker_input.num_seq_groups == 0:
+            return []
+
+        intermediate_tensors = None
+        if not get_pp_group().is_first_rank:
+            intermediate_tensors = get_pp_group().recv_tensor_dict(
+                all_gather_group=get_tp_group(), deferred=True)
+
+        output = self.model_runner.execute_model(
+            model_input=model_input,
+            kv_caches=self.kv_cache[worker_input.virtual_engine]
+            if self.kv_cache is not None else None,
+            intermediate_tensors=intermediate_tensors,
+            num_steps=num_steps,
+            **kwargs,
+        )
+
+        if not get_pp_group().is_last_rank:
+            # output is IntermediateTensors
+            assert isinstance(output, IntermediateTensors)
+            get_pp_group().send_tensor_dict(
+                output.tensors, all_gather_group=get_tp_group())
+            return [None]
+
+        # output is List[SamplerOutput]
         return output
 
     @torch.inference_mode()
@@ -383,11 +444,14 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             num_gpu_blocks, self.cache_config.block_size,
             self.model_config.max_model_len,
             self.parallel_config.pipeline_parallel_size)
+        target_gpu_blocks = int(
+            num_gpu_blocks // (self.parallel_config.pipeline_parallel_size))
+        target_cpu_blocks = int(
+            num_cpu_blocks // (self.parallel_config.pipeline_parallel_size))
+        self.cache_config.num_gpu_blocks = target_gpu_blocks * (self.parallel_config.pipeline_parallel_size)
+        self.cache_config.num_cpu_blocks = target_cpu_blocks * (self.parallel_config.pipeline_parallel_size)
 
-        self.cache_config.num_gpu_blocks = num_gpu_blocks
-        self.cache_config.num_cpu_blocks = num_cpu_blocks
-        self.model_runner.bucketing_manager.num_hpu_blocks = (
-            num_gpu_blocks // self.parallel_config.pipeline_parallel_size)
+        self.model_runner.bucketing_manager.num_hpu_blocks = target_gpu_blocks
         self.model_runner.bucketing_manager.generate_prompt_buckets()
         if not self.model_runner.is_pooler:
             self.model_runner.bucketing_manager.generate_decode_buckets()
@@ -544,8 +608,9 @@ def init_worker_distributed_environment(
     ensure_model_parallel_initialized(parallel_config.tensor_parallel_size,
                                       parallel_config.pipeline_parallel_size)
 
-    if parallel_config.pipeline_parallel_size > 1:
-        # torch-ccl xpu need a collective API warm up
+    if parallel_config.pipeline_parallel_size > 1 and \
+        not envs.VLLM_PP_USE_CPU_COMS:
+        # torch-ccl hpu need a collective API warm up
         # before calling send/recv API
         get_pp_group().all_reduce(torch.zeros(1).to('hpu'))
     if torch.distributed.is_initialized():
@@ -574,9 +639,13 @@ def init_worker_distributed_environment(
     # A small all_reduce for warmup & checking conformance.
     device = hpu_device_string()
     dummy_tensor_hpu = torch.ones(1).to(device)
-    torch.distributed.all_reduce(dummy_tensor_hpu)
-    assert dummy_tensor_hpu.item(
-    ) == parallel_config.world_size * parallel_config.data_parallel_size
+    if not envs.VLLM_PP_USE_CPU_COMS:
+        torch.distributed.all_reduce(dummy_tensor_hpu)
+        assert dummy_tensor_hpu.item(
+        ) == parallel_config.world_size * parallel_config.data_parallel_size
+    else:
+        get_tp_group().all_reduce(dummy_tensor_hpu)
+        assert dummy_tensor_hpu.item() == parallel_config.tensor_parallel_size
     ensure_model_parallel_initialized(parallel_config.tensor_parallel_size,
                                       parallel_config.pipeline_parallel_size)
     ensure_kv_transfer_initialized(vllm_config)
@@ -588,7 +657,7 @@ def raise_if_cache_size_invalid(num_gpu_blocks, block_size, max_model_len,
         raise ValueError("No available memory for the cache blocks. "
                          "Try increasing `gpu_memory_utilization` when "
                          "initializing the engine.")
-    max_seq_len = block_size * (num_gpu_blocks // pipeline_parallel_size)
+    max_seq_len = block_size * (num_gpu_blocks // (pipeline_parallel_size))
     if max_model_len > max_seq_len:
         raise ValueError(
             f"The model's max seq len ({max_model_len}) "

@@ -13,152 +13,153 @@ export LM_CONCURRENCY=1; lm_eval --model local-completions \
   --log_samples \
   --limit $LM_LIMIT \
   --output_path lm_eval_results.json
-INFO 11-19 05:35:50 [__init__.py:254] Automatically detected platform hpu.
+INFO 11-19 07:04:04 [__init__.py:254] Automatically detected platform hpu.
 Namespace(backend='vllm', base_url=None, host='127.0.0.1', port=8688, endpoint='/v1/completions', dataset_name='random', dataset_path=None, max_concurrency=1, model='/root/.cache/huggingface/GLM-4.5-Air-FP8-G2', tokenizer=None, use_beam_search=False, num_prompts=8, logprobs=None, request_rate=inf, burstiness=1.0, seed=0, trust_remote_code=True, disable_tqdm=False, profile=False, save_result=False, save_detailed=False, append_result=False, metadata=None, result_dir=None, result_filename=None, ignore_eos=True, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='10,90,99', goodput=None, custom_output_len=256, custom_skip_chat_template=False, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, random_input_len=30151, random_output_len=230, random_range_ratio=0.8, random_prefix_len=0, random_image_width=1280, random_image_height=720, bench_single_image_path=None, hf_subset=None, hf_split=None, hf_output_len=None, top_p=None, top_k=None, min_p=None, temperature=None, tokenizer_mode='auto', served_model_name=None, lora_modules=None)
 Starting initial single prompt test run...
 Initial test run completed. Starting main benchmark run...
 Traffic request rate: inf
 Burstiness factor: 1.0 (Poisson process)
 Maximum request concurrency: 1
-100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 8/8 [03:39<00:00, 27.46s/it]
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 8/8 [02:40<00:00, 20.03s/it]
 ============ Serving Benchmark Result ============
 Successful requests:                     8
-Benchmark duration (s):                  219.71
+Benchmark duration (s):                  160.22
 Total input tokens:                      219866
 Total generated tokens:                  1637
-Request throughput (req/s):              0.04
-Output token throughput (tok/s):         7.45
-Total Token throughput (tok/s):          1008.16
+Request throughput (req/s):              0.05
+Output token throughput (tok/s):         10.22
+Total Token throughput (tok/s):          1382.45
 ---------------Time to First Token----------------
-Mean TTFT (ms):                          12209.53
-Median TTFT (ms):                        9688.38
-P10 TTFT (ms):                           8743.06
-P90 TTFT (ms):                           20177.91
-P99 TTFT (ms):                           21763.63
+Mean TTFT (ms):                          7647.83
+Median TTFT (ms):                        6923.15
+P10 TTFT (ms):                           4945.81
+P90 TTFT (ms):                           10853.11
+P99 TTFT (ms):                           13319.94
 -----Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          74.86
-Median TPOT (ms):                        61.02
-P10 TPOT (ms):                           52.06
-P90 TPOT (ms):                           116.35
-P99 TPOT (ms):                           130.71
+Mean TPOT (ms):                          61.06
+Median TPOT (ms):                        59.46
+P10 TPOT (ms):                           26.61
+P90 TPOT (ms):                           93.25
+P99 TPOT (ms):                           133.61
 ---------------Inter-token Latency----------------
-Mean ITL (ms):                           74.91
-Median ITL (ms):                         60.23
-P10 ITL (ms):                            46.08
-P90 ITL (ms):                            135.81
-P99 ITL (ms):                            227.87
+Mean ITL (ms):                           60.79
+Median ITL (ms):                         50.48
+P10 ITL (ms):                            25.97
+P90 ITL (ms):                            98.56
+P99 ITL (ms):                            269.53
 ----------------End-to-end Latency----------------
-Mean E2EL (ms):                          27462.52
-Median E2EL (ms):                        22519.19
-P10 E2EL (ms):                           19202.22
-P90 E2EL (ms):                           43759.55
-P99 E2EL (ms):                           48413.67
+Mean E2EL (ms):                          20026.71
+Median E2EL (ms):                        21562.85
+P10 E2EL (ms):                           10866.31
+P90 E2EL (ms):                           27650.06
+P99 E2EL (ms):                           30646.59
 ==================================================
-INFO 11-19 05:41:02 [__init__.py:254] Automatically detected platform hpu.
+INFO 11-19 07:08:16 [__init__.py:254] Automatically detected platform hpu.
 Namespace(backend='vllm', base_url=None, host='127.0.0.1', port=8688, endpoint='/v1/completions', dataset_name='random', dataset_path=None, max_concurrency=2, model='/root/.cache/huggingface/GLM-4.5-Air-FP8-G2', tokenizer=None, use_beam_search=False, num_prompts=16, logprobs=None, request_rate=inf, burstiness=1.0, seed=0, trust_remote_code=True, disable_tqdm=False, profile=False, save_result=False, save_detailed=False, append_result=False, metadata=None, result_dir=None, result_filename=None, ignore_eos=True, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='10,90,99', goodput=None, custom_output_len=256, custom_skip_chat_template=False, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, random_input_len=30151, random_output_len=230, random_range_ratio=0.8, random_prefix_len=0, random_image_width=1280, random_image_height=720, bench_single_image_path=None, hf_subset=None, hf_split=None, hf_output_len=None, top_p=None, top_k=None, min_p=None, temperature=None, tokenizer_mode='auto', served_model_name=None, lora_modules=None)
 Starting initial single prompt test run...
 Initial test run completed. Starting main benchmark run...
 Traffic request rate: inf
 Burstiness factor: 1.0 (Poisson process)
 Maximum request concurrency: 2
-100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [02:22<00:00,  8.90s/it]
+100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [02:51<00:00, 10.74s/it]
 ============ Serving Benchmark Result ============
 Successful requests:                     16
-Benchmark duration (s):                  142.42
+Benchmark duration (s):                  171.87
 Total input tokens:                      440126
 Total generated tokens:                  3239
-Request throughput (req/s):              0.11
-Output token throughput (tok/s):         22.74
-Total Token throughput (tok/s):          3113.05
+Request throughput (req/s):              0.09
+Output token throughput (tok/s):         18.85
+Total Token throughput (tok/s):          2579.61
 ---------------Time to First Token----------------
-Mean TTFT (ms):                          6890.93
-Median TTFT (ms):                        5364.18
-P10 TTFT (ms):                           4060.87
-P90 TTFT (ms):                           12085.38
-P99 TTFT (ms):                           13629.35
+Mean TTFT (ms):                          10890.16
+Median TTFT (ms):                        5411.12
+P10 TTFT (ms):                           4123.83
+P90 TTFT (ms):                           23051.32
+P99 TTFT (ms):                           26695.27
 -----Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          52.10
-Median TPOT (ms):                        52.25
-P10 TPOT (ms):                           32.11
-P90 TPOT (ms):                           77.37
-P99 TPOT (ms):                           78.99
+Mean TPOT (ms):                          51.25
+Median TPOT (ms):                        51.12
+P10 TPOT (ms):                           31.89
+P90 TPOT (ms):                           77.50
+P99 TPOT (ms):                           79.72
 ---------------Inter-token Latency----------------
-Mean ITL (ms):                           52.47
-Median ITL (ms):                         32.02
-P10 ITL (ms):                            30.54
-P90 ITL (ms):                            33.16
-P99 ITL (ms):                            150.60
+Mean ITL (ms):                           51.59
+Median ITL (ms):                         31.63
+P10 ITL (ms):                            29.62
+P90 ITL (ms):                            32.88
+P99 ITL (ms):                            95.63
 ----------------End-to-end Latency----------------
-Mean E2EL (ms):                          17460.56
-Median E2EL (ms):                        16903.29
-P10 E2EL (ms):                           11689.48
-P90 E2EL (ms):                           23124.04
-P99 E2EL (ms):                           24574.11
+Mean E2EL (ms):                          21282.13
+Median E2EL (ms):                        16919.31
+P10 E2EL (ms):                           11732.39
+P90 E2EL (ms):                           33510.77
+P99 E2EL (ms):                           38182.08
 ==================================================
-INFO 11-19 05:44:56 [__init__.py:254] Automatically detected platform hpu.
+INFO 11-19 07:13:06 [__init__.py:254] Automatically detected platform hpu.
 Namespace(backend='vllm', base_url=None, host='127.0.0.1', port=8688, endpoint='/v1/completions', dataset_name='random', dataset_path=None, max_concurrency=4, model='/root/.cache/huggingface/GLM-4.5-Air-FP8-G2', tokenizer=None, use_beam_search=False, num_prompts=32, logprobs=None, request_rate=inf, burstiness=1.0, seed=0, trust_remote_code=True, disable_tqdm=False, profile=False, save_result=False, save_detailed=False, append_result=False, metadata=None, result_dir=None, result_filename=None, ignore_eos=True, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='10,90,99', goodput=None, custom_output_len=256, custom_skip_chat_template=False, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, random_input_len=30151, random_output_len=230, random_range_ratio=0.8, random_prefix_len=0, random_image_width=1280, random_image_height=720, bench_single_image_path=None, hf_subset=None, hf_split=None, hf_output_len=None, top_p=None, top_k=None, min_p=None, temperature=None, tokenizer_mode='auto', served_model_name=None, lora_modules=None)
 Starting initial single prompt test run...
 Initial test run completed. Starting main benchmark run...
 Traffic request rate: inf
 Burstiness factor: 1.0 (Poisson process)
 Maximum request concurrency: 4
-100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 32/32 [03:57<00:00,  7.43s/it]
+100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 32/32 [04:01<00:00,  7.55s/it]
 ============ Serving Benchmark Result ============
 Successful requests:                     32
-Benchmark duration (s):                  237.66
+Benchmark duration (s):                  241.67
 Total input tokens:                      860110
 Total generated tokens:                  6622
 Request throughput (req/s):              0.13
-Output token throughput (tok/s):         27.86
-Total Token throughput (tok/s):          3646.88
+Output token throughput (tok/s):         27.40
+Total Token throughput (tok/s):          3586.47
 ---------------Time to First Token----------------
-Mean TTFT (ms):                          6472.11
-Median TTFT (ms):                        5211.63
-P10 TTFT (ms):                           4012.41
-P90 TTFT (ms):                           11663.38
-P99 TTFT (ms):                           22728.78
+Mean TTFT (ms):                          6983.33
+Median TTFT (ms):                        5214.62
+P10 TTFT (ms):                           4013.03
+P90 TTFT (ms):                           15276.88
+P99 TTFT (ms):                           26797.80
 -----Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          110.44
-Median TPOT (ms):                        112.52
-P10 TPOT (ms):                           91.15
-P90 TPOT (ms):                           130.99
-P99 TPOT (ms):                           168.80
+Mean TPOT (ms):                          110.13
+Median TPOT (ms):                        108.49
+P10 TPOT (ms):                           88.60
+P90 TPOT (ms):                           130.27
+P99 TPOT (ms):                           169.60
 ---------------Inter-token Latency----------------
-Mean ITL (ms):                           110.88
-Median ITL (ms):                         49.84
-P10 ITL (ms):                            45.29
-P90 ITL (ms):                            52.49
-P99 ITL (ms):                            3989.14
+Mean ITL (ms):                           110.49
+Median ITL (ms):                         48.94
+P10 ITL (ms):                            44.73
+P90 ITL (ms):                            51.93
+P99 ITL (ms):                            3991.22
 ----------------End-to-end Latency----------------
-Mean E2EL (ms):                          29306.18
-Median E2EL (ms):                        28052.14
-P10 E2EL (ms):                           22058.50
-P90 E2EL (ms):                           35809.46
-P99 E2EL (ms):                           50721.22
+Mean E2EL (ms):                          29736.71
+Median E2EL (ms):                        28057.16
+P10 E2EL (ms):                           21581.68
+P90 E2EL (ms):                           38164.29
+P99 E2EL (ms):                           55133.66
 ==================================================
-INFO 11-19 05:50:34 [__init__.py:254] Automatically detected platform hpu.
-2025-11-19:05:50:38 WARNING  [__main__:368]  --limit SHOULD ONLY BE USED FOR TESTING.REAL METRICS SHOULD NOT BE COMPUTED USING LIMIT.
-2025-11-19:05:50:38 INFO     [__main__:440] Selected Tasks: ['gsm8k', 'humaneval']
-2025-11-19:05:50:38 INFO     [evaluator:189] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
-2025-11-19:05:50:38 INFO     [evaluator:227] Initializing local-completions model, with arguments: {'model': '/root/.cache/huggingface/GLM-4.5-Air-FP8-G2', 'base_url': 'http://127.0.0.1:8688/v1/completions', 'num_concurrent': 1, 'trust_remote_code': True}
-2025-11-19:05:50:38 INFO     [models.api_models:168] Using max length 2048 - 1
-2025-11-19:05:50:38 INFO     [models.api_models:171] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
-2025-11-19:05:50:38 INFO     [models.api_models:187] Using tokenizer huggingface
-2025-11-19:05:51:07 INFO     [evaluator:290] humaneval: Using gen_kwargs: {'until': ['\nclass', '\ndef', '\n#', '\nif', '\nprint'], 'max_gen_toks': 1024, 'do_sample': False}
-2025-11-19:05:51:07 INFO     [evaluator:290] gsm8k: Using gen_kwargs: {'until': ['Question:', '</s>', '<|im_end|>'], 'do_sample': False, 'temperature': 0.0}
-2025-11-19:05:51:07 INFO     [api.task:434] Building contexts for humaneval on rank 0...
-100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [00:00<00:00, 3810.19it/s]
-2025-11-19:05:51:07 INFO     [api.task:434] Building contexts for gsm8k on rank 0...
-100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [00:00<00:00, 366.11it/s]
-2025-11-19:05:51:07 INFO     [evaluator:559] Running generate_until requests
-Requesting API: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 32/32 [04:58<00:00,  9.32s/it]
+INFO 11-19 06:33:28 [__init__.py:254] Automatically detected platform hpu.
+2025-11-19:06:33:32 WARNING  [__main__:368]  --limit SHOULD ONLY BE USED FOR TESTING.REAL METRICS SHOULD NOT BE COMPUTED USING LIMIT.
+2025-11-19:06:33:32 INFO     [__main__:440] Selected Tasks: ['gsm8k', 'humaneval']
+2025-11-19:06:33:32 INFO     [evaluator:189] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2025-11-19:06:33:32 INFO     [evaluator:227] Initializing local-completions model, with arguments: {'model': '/root/.cache/huggingface/GLM-4.5-Air-FP8-G2', 'base_url': 'http://127.0.0.1:8688/v1/completions', 'num_concurrent': 1, 'trust_remote_code': True}
+2025-11-19:06:33:32 INFO     [models.api_models:168] Using max length 2048 - 1
+2025-11-19:06:33:32 INFO     [models.api_models:171] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
+2025-11-19:06:33:32 INFO     [models.api_models:187] Using tokenizer huggingface
+2025-11-19:06:34:01 INFO     [evaluator:290] humaneval: Using gen_kwargs: {'until': ['\nclass', '\ndef', '\n#', '\nif', '\nprint'], 'max_gen_toks': 1024, 'do_sample': False}
+2025-11-19:06:34:01 INFO     [evaluator:290] gsm8k: Using gen_kwargs: {'until': ['Question:', '</s>', '<|im_end|>'], 'do_sample': False, 'temperature': 0.0}
+2025-11-19:07:20:56 INFO     [api.task:434] Building contexts for humaneval on rank 0...
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [00:00<00:00, 3996.48it/s]
+2025-11-19:07:20:56 INFO     [api.task:434] Building contexts for gsm8k on rank 0...
+100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [00:00<00:00, 366.56it/s]
+2025-11-19:07:20:57 INFO     [evaluator:559] Running generate_until requests
+Requesting API: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 32/32 [05:56<00:00, 11.16s/it]
 fatal: not a git repository (or any of the parent directories): .git
-2025-11-19:05:56:07 INFO     [loggers.evaluation_tracker:209] Saving results aggregated
-2025-11-19:05:56:07 INFO     [loggers.evaluation_tracker:298] Saving per-sample results for: gsm8k
-2025-11-19:05:56:07 INFO     [loggers.evaluation_tracker:298] Saving per-sample results for: humaneval
+2025-11-19:07:26:55 INFO     [loggers.evaluation_tracker:209] Saving results aggregated
+2025-11-19:07:26:55 INFO     [loggers.evaluation_tracker:298] Saving per-sample results for: gsm8k
+2025-11-19:07:26:55 INFO     [loggers.evaluation_tracker:298] Saving per-sample results for: humaneval
 local-completions (model=/root/.cache/huggingface/GLM-4.5-Air-FP8-G2,base_url=http://127.0.0.1:8688/v1/completions,num_concurrent=1,trust_remote_code=True), gen_kwargs: (None), limit: 16.0, num_fewshot: None, batch_size: 1
 |  Tasks  |Version|     Filter     |n-shot|  Metric   |   |Value |   |Stderr|
 |---------|------:|----------------|-----:|-----------|---|-----:|---|-----:|
 |gsm8k    |      3|flexible-extract|     5|exact_match|↑  |0.8125|±  |0.1008|
 |         |       |strict-match    |     5|exact_match|↑  |0.8750|±  |0.0854|
 |humaneval|      1|create_test     |     0|pass@1     |   |1.0000|±  |0.0000|
+
