@@ -9,7 +9,6 @@ from typing import (Any, Awaitable, Callable, Dict, Hashable, List, Optional,
                     Set, Tuple, Union)
 
 import torch.nn as nn
-import threading
 from typing_extensions import TypeVar
 
 import vllm.envs as envs
@@ -287,7 +286,7 @@ class DistributedExecutorBase(ExecutorBase):
         # in the parallel workers. It's a coroutine in the AsyncLLMEngine case.
         self.parallel_worker_tasks: Optional[Union[Any, Awaitable[Any]]] = None
         self.seq_id_state_machines: Dict[int, Dict[int, int]] = {}
-        self.lock_update_req: Dict[int, threading.Lock] = {}
+        self.lock_update_req: Dict[int, asyncio.Lock] = {}
         self.prefill_steps_remaining = {}
         self.extended_critical: Dict[int, bool] = {}
         self._prefill_progress = {}
@@ -413,7 +412,7 @@ class DistributedExecutorBase(ExecutorBase):
     async def _wait_for_sg_locks(self, virtual_engine: int, loop_idx: int):
         logger.info(f"DistributedExecutorBase._wait_for_sg_locks start for VE{virtual_engine} and loop {loop_idx}")
         wait_ms = 10
-        log_spins = 1
+        log_spins = 100
         if virtual_engine not in self.seq_id_state_machines:
             logger.info(f"DistributedExecutorBase._wait_for_sg_locks has no VE{virtual_engine} and loop {loop_idx} in seq_id_state_machines. Creating")
             self.seq_id_state_machines[virtual_engine] = {}
@@ -583,7 +582,7 @@ class DistributedExecutorBase(ExecutorBase):
                 if virtual_engine not in self.lock_update_req:
                     self.lock_update_req[virtual_engine] = asyncio.Lock()
                 logger.info(f"DistributedExecutorBase.prepare_execute_model_req_patch has no VE{virtual_engine} in lock_update_req. Creating")
-                with self.lock_update_req[virtual_engine]:
+                async with self.lock_update_req[virtual_engine]:
                     loop_idx = self._current_loop_idx[virtual_engine]
                     self._fixup_execute_model_req_prefill(execute_model_req)
                     self.update_prefill_steps(execute_model_req)
