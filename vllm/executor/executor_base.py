@@ -581,7 +581,7 @@ class DistributedExecutorBase(ExecutorBase):
             virtual_engine = execute_model_req.virtual_engine
             if self.scheduler_config.chunked_prefill_enabled:
                 if virtual_engine not in self.lock_update_req:
-                    self.lock_update_req[virtual_engine] = threading.Lock()
+                    self.lock_update_req[virtual_engine] = asyncio.Lock()
                 logger.info(f"DistributedExecutorBase.prepare_execute_model_req_patch has no VE{virtual_engine} in lock_update_req. Creating")
                 with self.lock_update_req[virtual_engine]:
                     loop_idx = self._current_loop_idx[virtual_engine]
