@@ -3528,22 +3528,33 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                     broadcast_tensor_dict(src=0)
             if self._is_fla_model():
                 self.add_fla_dummy_data(inputs)
+            deferred_sampling = \
+                self.parallel_config.pipeline_parallel_size > 1 \
+                and get_pp_group().is_last_rank \
+                and self.vllm_config.scheduler_config.num_scheduler_steps == 1 
+            intermediate_tensors = None
+            if not get_pp_group().is_first_rank:
+                intermediate_tensors = \
+                    self.model.make_empty_intermediate_tensors(
+                        batch_size=batch_size,
+                        context_size=seq_len if is_prompt else 1,
+                        dtype=self.model_config.dtype,
+                        device=self.device)
             if is_prompt or self.is_single_step:
-                intermediate_tensors = None
-                if not get_pp_group().is_first_rank:
-                    intermediate_tensors = \
-                        self.model.make_empty_intermediate_tensors(
-                            batch_size=batch_size,
-                            context_size=seq_len if is_prompt else 1,
-                            dtype=self.model_config.dtype,
-                            device=self.device)
-                self.execute_model(inputs,
-                                   kv_caches,
-                                   intermediate_tensors=intermediate_tensors,
-                                   warmup_mode=True,
-                                   ctx_blocks=ctx,
-                                   is_dummy_run=is_dummy_run,
-                                   is_pt_profiler_run=is_pt_profiler_run)
+                output = self.execute_model(
+                    inputs,
+                    kv_caches,
+                    intermediate_tensors=intermediate_tensors,
+                    warmup_mode=True,
+                    ctx_blocks=ctx,
+                    is_dummy_run=is_dummy_run,
+                    is_pt_profiler_run=is_pt_profiler_run)
+                if deferred_sampling:
+                    self.execute_sample(
+                        hidden_states=output,
+                        model_input=inputs,
+                        num_steps=1,
+                    )
             else:  # decode with multi-step
                 inputs = dataclasses.replace(inputs,
                                              is_first_multi_step=True,
@@ -3747,6 +3758,16 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                    f'({100 * len(mm_graphed) / num_candidates:.1f}%) '
                    f'buckets:{sorted(list(mm_graphed))}')
             logger.info(msg)
+
+    def execute_sample(
+        self,
+        hidden_states: torch.Tensor,
+        model_input: TModelInputForHPU,
+        num_steps: int = 1,
+    ) -> List[SamplerOutput]:
+        raise NotImplementedError(
+            "execute_sample must be implemented by subclasses "
+            "that perform sampling")
 
     @torch.inference_mode()
     def warmup_model(self, kv_caches: List[torch.Tensor]) -> None:
@@ -4600,6 +4621,12 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     # of logits depends on the sampled results
                     # we obtain the actual sampled results in advance
                     self._patch_prev_output()
+
+                if self.parallel_config.pipeline_parallel_size > 1:
+                    # NOTE(Tanner): defer sampling so we can
+                    # release the PP lock.
+                    return hidden_states
+
                 # Compute the logits.
                 with self.profiler.record_event('internal',
                                                 ('compute_logits_'
@@ -4765,6 +4792,66 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             else:
                 return []
         return output if type(output) is list else [output]
+
+    def execute_sample(
+        self,
+        hidden_states: torch.Tensor,
+        model_input: ModelInputForHPUWithSamplingMetadata,
+        num_steps: int = 1,
+    ) -> List[SamplerOutput]:
+        """Sample tokens on the driver after a PP forward pass.
+
+        This path is only used when pipeline parallelism (PP) > 1. It assumes
+        no multi-step scheduling, no delayed sampling, and no async callbacks.
+        Computes logits for the most recent token, performs sampling on the
+        driver rank, and optionally attaches hidden states for the latest token.
+
+        Args:
+            hidden_states: Activations for the most recent token(s) 
+                           on this PP stage.
+            model_input: Batched model input and sampling context.
+            num_steps: Must be 1 for the PP-only path.
+
+        Returns:
+            - On the driver worker: [SamplerOutput] containing the 
+                                    sampled token(s).
+            - On non-driver workers: [].
+        """
+        # PP-only path: no multi-step, no delayed sampling, no async callback.
+        assert self.parallel_config.pipeline_parallel_size > 1
+        assert num_steps == 1
+
+        sampling_metadata = model_input.sampling_metadata
+        attn_metadata = model_input.attn_metadata
+        real_batch_size = model_input.real_batch_size
+
+        assert sampling_metadata is not None
+        assert attn_metadata is not None
+        assert attn_metadata.is_prompt is not None
+
+        # Compute logits for the most recent token on this PP stage.
+        sampling_metadata.selected_token_indices = None
+        logits = self.model.compute_logits(hidden_states, sampling_metadata)
+        htorch.core.mark_step()
+
+        # Only the driver performs sampling.
+        if not self.is_driver_worker:
+            return []
+
+        output = self.sampler(
+            logits=logits,
+            sampling_metadata=sampling_metadata,
+        )
+        htorch.core.mark_step()
+
+        if self.return_hidden_states and isinstance(output, SamplerOutput):
+            # we only need to pass hidden states of most recent token
+            hidden_states = hidden_states[:real_batch_size]
+            if model_input.is_prompt:
+                output.prefill_hidden_states = hidden_states
+            output.hidden_states = hidden_states
+
+        return [output]
 
     def _delayed_sampler_outputs(self, model_input):
         next_token_ids = [[DUMMY_TOKEN_ID]] * len(
