@@ -484,7 +484,6 @@ class DistributedExecutorBase(ExecutorBase):
                     loop_idx = self._current_loop_idx[ve]
                     # Gate decode on this loop idx from now on.
                     self._decode_valid_loop_idx[ve][loop_idx].append(seq_id)
-                    logger.info(f"Set decode valid for seq_id={seq_id} to loop idx {loop_idx} of VE{ve}")
         return self.prefill_steps_remaining
     
     def lock_seq_id_state_machines(self, execute_model_req):
@@ -566,12 +565,13 @@ class DistributedExecutorBase(ExecutorBase):
         loop_idx = None
         if execute_model_req is not None:
             virtual_engine = execute_model_req.virtual_engine
-            if virtual_engine not in self.lock_update_req:
-                self.lock_update_req[virtual_engine] = threading.Lock()
-            with self.lock_update_req[virtual_engine]:
-                loop_idx = self._current_loop_idx[virtual_engine]
-                self._fixup_execute_model_req_prefill(execute_model_req)
-                self.update_prefill_steps(execute_model_req)
-                self.lock_seq_id_state_machines(execute_model_req)
+            if self.scheduler_config.chunked_prefill_enabled:
+                if virtual_engine not in self.lock_update_req:
+                    self.lock_update_req[virtual_engine] = threading.Lock()
+                with self.lock_update_req[virtual_engine]:
+                    loop_idx = self._current_loop_idx[virtual_engine]
+                    self._fixup_execute_model_req_prefill(execute_model_req)
+                    self.update_prefill_steps(execute_model_req)
+                    self.lock_seq_id_state_machines(execute_model_req)
 
         return execute_model_req, loop_idx
