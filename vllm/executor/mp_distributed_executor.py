@@ -267,7 +267,7 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                     i = running_tasks.index(task)
                     i = running_indexes[i]
                     results[i] = task.result()
-                    logger.info(f"mp_executor._driver_execute_model_async finished worker {i} for VE{original_execute_model_req.virtual_engine}.SID{seq_id}")
+                    logger.info(f"mp_executor._driver_execute_model_async finished worker {i} for VE{original_execute_model_req.virtual_engine}")
                     if i == 0 and in_progress[i] and original_execute_model_req is not None:  # First PP rank
                         self._advance_prefill_progress(original_execute_model_req)
                         for sg in original_execute_model_req.seq_group_metadata_list:
