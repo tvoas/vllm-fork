@@ -295,19 +295,27 @@ class _AsyncLLMEngine(LLMEngine):
         # Clear outputs for each new scheduler iteration
         ctx.request_outputs.clear()
 
+        logger.info(f"_AsyncLLMEngine.step_async.log_01[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
         decode_id_filter = None
         if self.scheduler_config.chunked_prefill_enabled:
             if virtual_engine not in self.lock_update_req:
                 self.lock_update_req[virtual_engine] = threading.Lock()
+                logger.info(f"_AsyncLLMEngine.step_async has no VE{virtual_engine} in lock_update_req. Creating")
             with self.lock_update_req[virtual_engine]:
+                logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: has lock")
                 await self.model_executor._wait_for_sg_locks(virtual_engine)
+                logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: waited for sg lock")
                 self.model_executor._set_current_loop_idx(virtual_engine, loop_idx)
+                logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: set current loop idx")
                 decode_id_filter = self.model_executor._get_valid_decode_id(virtual_engine)
+                logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: decode_id_filter={decode_id_filter}, prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
+            logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: released lock")
 
         # skip the scheduler if there are any remaining steps in the seq groups.
         # This ensures that the scheduler is only called again when the current
         # batch has completed.
         if not self._has_remaining_steps(seq_group_metadata_list):
+            logger.info(f"_AsyncLLMEngine.step_async.log_02[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
 
             # Schedule iteration
             (seq_group_metadata_list, scheduler_outputs,
@@ -318,6 +326,7 @@ class _AsyncLLMEngine(LLMEngine):
             ctx.scheduler_outputs = scheduler_outputs
 
             if not scheduler_outputs.is_empty():
+                logger.info(f"_AsyncLLMEngine.step_async.log_03[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 # this will cause mamba_cache/minimax_cache failed
                 # to release finished_requests_ids of the last steps
                 finished_requests_ids = self.scheduler[
@@ -325,23 +334,26 @@ class _AsyncLLMEngine(LLMEngine):
 
             # Maybe switch from async mode to sync mode
             if not allow_async_output_proc and len(ctx.output_queue) > 0:
+                logger.info(f"_AsyncLLMEngine.step_async.log_04[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 self._process_model_outputs(ctx=ctx)
 
             if (self.scheduler_config.is_multi_step
                     and scheduler_outputs.num_lookahead_slots > 0):
+                logger.info(f"_AsyncLLMEngine.step_async.log_05[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 # cache the scheduler outputs for the next iteration if we have
                 # lookahead slots
                 self._cache_scheduler_outputs_for_multi_step(
                     virtual_engine, seq_group_metadata_list, scheduler_outputs,
                     allow_async_output_proc)
         else:
+            logger.info(f"_AsyncLLMEngine.step_async.log_06[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             finished_requests_ids = list()
 
         assert seq_group_metadata_list is not None
         assert scheduler_outputs is not None
 
         if not scheduler_outputs.is_empty():
-
+            logger.info(f"_AsyncLLMEngine.step_async.log_07[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             # Check if we have a cached last_output from the previous iteration.
             # For supporting PP this is probably the best way to pass the
             # sampled_token_ids, as a separate broadcast over all the PP stages
@@ -363,6 +375,7 @@ class _AsyncLLMEngine(LLMEngine):
                 last_sampled_token_ids=last_sampled_token_ids)
 
             if allow_async_output_proc:
+                logger.info(f"_AsyncLLMEngine.step_async.log_08[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 execute_model_req.async_callback = self.async_callbacks[
                     virtual_engine]
 
@@ -373,20 +386,26 @@ class _AsyncLLMEngine(LLMEngine):
             # we need to do this here so that last step's sampled_token_ids can
             # be passed to the next iteration for PP.
             if self.scheduler_config.is_multi_step:
+                logger.info(f"_AsyncLLMEngine.step_async.log_09[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 self._update_cached_scheduler_output(virtual_engine, outputs)
         else:
+            logger.info(f"_AsyncLLMEngine.step_async.log_10[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             if len(ctx.output_queue) > 0:
+                logger.info(f"_AsyncLLMEngine.step_async.log_11[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 self._process_model_outputs(ctx=ctx)
             outputs = []
 
         # Finish the current step for all the sequence groups.
         if self.scheduler_config.is_multi_step:
+            logger.info(f"_AsyncLLMEngine.step_async.log_12[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             for seq_group in seq_group_metadata_list:
                 seq_group.finish_step()
 
         if not self._has_remaining_steps(seq_group_metadata_list):
+            logger.info(f"_AsyncLLMEngine.step_async.log_13[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             # Clear the cache if we have finished all the steps
             if self.scheduler_config.is_multi_step:
+                logger.info(f"_AsyncLLMEngine.step_async.log_14[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 self.cached_scheduler_outputs[
                     virtual_engine] = SchedulerOutputState()
 
@@ -404,6 +423,7 @@ class _AsyncLLMEngine(LLMEngine):
                               is_first_step_output=is_first_step_output)
 
             if outputs and allow_async_output_proc:
+                logger.info(f"_AsyncLLMEngine.step_async.log_15[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 assert len(
                     outputs
                 ) == 1, "Async postprocessor expects only a single output set"
@@ -412,6 +432,7 @@ class _AsyncLLMEngine(LLMEngine):
                     scheduler_outputs.scheduled_seq_groups)
 
             if not allow_async_output_proc:
+                logger.info(f"_AsyncLLMEngine.step_async.log_16[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 self._process_model_outputs(ctx=ctx)
 
                 # Log stats.
@@ -421,18 +442,22 @@ class _AsyncLLMEngine(LLMEngine):
                 self.do_tracing(scheduler_outputs)
 
         else:
+            logger.info(f"_AsyncLLMEngine.step_async.log_17[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             # Multi-step case
             if self.scheduler_config.chunked_prefill_enabled:
                 self.model_executor._unset_current_loop_idx(virtual_engine, loop_idx)
             return ctx.request_outputs
 
         if not self.has_unfinished_requests():
+            logger.info(f"_AsyncLLMEngine.step_async.log_18[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
             # Drain async postprocessor (if exists)
             if len(ctx.output_queue) > 0:
+                logger.info(f"_AsyncLLMEngine.step_async.log_19[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
                 self._process_model_outputs(ctx=ctx)
             assert len(ctx.output_queue) == 0
         if self.scheduler_config.chunked_prefill_enabled:
             self.model_executor._unset_current_loop_idx(virtual_engine, loop_idx)
+        logger.info(f"_AsyncLLMEngine.step_async.log_20[VE={virtual_engine}][LP={loop_idx}]: prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
         return ctx.request_outputs
 
     async def stop_remote_worker_execution_loop_async(self) -> None:
@@ -849,7 +874,7 @@ class AsyncLLMEngine(EngineClient):
                 engine.engine.parallel_config.pipeline_parallel_size
         ve_true_count = pipeline_parallel_size + envs.VLLM_PP_BONUS_VE
         if engine.engine.scheduler_config.chunked_prefill_enabled:
-            ve_look_a_head = int(os.getenv("VLLM_CHUNK_INTERLEAVE_MODE", "0" if ve_true_count != 1 else pipeline_parallel_size))
+            ve_look_a_head = int(os.getenv("VLLM_CHUNK_INTERLEAVE_MODE", "0" if ve_true_count != 1 else (pipeline_parallel_size - 1)))
         else:
             ve_look_a_head = 0
         ve_interleave_count = ve_true_count * (1 + ve_look_a_head)
@@ -886,6 +911,7 @@ class AsyncLLMEngine(EngineClient):
                 if not engine:
                     return
                 logger.debug("Got new requests!")
+                logger.info(f"async_llm_engine.run_engine_loop start 1 for VE in {[i % ve_true_count for i in range(ve_interleave_count)]}")
                 requests_in_progress = []
                 for i in range(ve_interleave_count):
                     ve = i % ve_true_count
@@ -908,6 +934,7 @@ class AsyncLLMEngine(EngineClient):
                             await asyncio.sleep(0)
                             continue
                         next_loop_idx_per_ve[ve] = (next_loop_idx_per_ve[ve] + 1) % loops_per_ve
+                    logger.info(f"Spawning engine_step for VE {ve} and loop {loop_idx} due to newly arrived requests during polling.")
                     requests_in_progress[idx] = asyncio.create_task(engine.engine_step(ve, loop_idx))
                     has_requests_in_progress[idx] = True
 
@@ -943,6 +970,7 @@ class AsyncLLMEngine(EngineClient):
                                 await asyncio.sleep(0)
                                 continue
                             next_loop_idx_per_ve[ve] = (next_loop_idx_per_ve[ve] + 1) % loops_per_ve
+                        logger.info(f"async_llm_engine.run_engine_loop start for VE{ve} and loop {loop_idx}")
                         requests_in_progress[idx] = (
                             asyncio.create_task(
                                 engine.engine_step(ve, loop_idx)))
@@ -964,6 +992,7 @@ class AsyncLLMEngine(EngineClient):
                                 await asyncio.sleep(0)
                                 continue
                             next_loop_idx_per_ve[ve] = (next_loop_idx_per_ve[ve] + 1) % loops_per_ve
+                        logger.info(f"Spawning engine_step for VE {ve} and loop {loop_idx} due to newly arrived requests during polling.")
                         requests_in_progress[idx] = asyncio.create_task(engine.engine_step(ve, loop_idx))
                         has_requests_in_progress[idx] = True
             except asyncio.TimeoutError as exc:

@@ -1,12 +1,9 @@
 VEs 2
 
-export HF_ALLOW_CODE_EVAL=1; export LM_ADDR=127.0.0.1; export LM_PORT=8688; export LM_MODEL=/root/.cache/huggingface/GLM-4.5-Air-FP8-G2; export LM_BATCH_SIZE=1; export LM_LIMIT=16
-export LM_CONCURRENCY=1; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 8 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
-sleep 60
-export LM_CONCURRENCY=2; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 16 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
-sleep 60
-export LM_CONCURRENCY=4; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 32 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
-sleep 60
+export HF_ALLOW_CODE_EVAL=1; export LM_ADDR=127.0.0.1; export LM_PORT=8688; export LM_MODEL=/root/.cache/huggingface/GLM-4.5-FP8; export LM_BATCH_SIZE=1; export LM_LIMIT=32
+export LM_CONCURRENCY=1; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 16 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
+export LM_CONCURRENCY=2; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 32 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
+export LM_CONCURRENCY=4; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 64 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
 export LM_CONCURRENCY=1; lm_eval --model local-completions \
   --tasks gsm8k,humaneval \
   --model_args model=$LM_MODEL,base_url=http://$LM_ADDR:$LM_PORT/v1/completions,num_concurrent=$LM_CONCURRENCY,trust_remote_code=True \
@@ -15,324 +12,132 @@ export LM_CONCURRENCY=1; lm_eval --model local-completions \
   --log_samples \
   --limit $LM_LIMIT \
   --output_path lm_eval_results.json
-INFO 11-19 15:42:43 [__init__.py:254] Automatically detected platform hpu.
-Namespace(backend='vllm', base_url=None, host='127.0.0.1', port=8688, endpoint='/v1/completions', dataset_name='random', dataset_path=None, max_concurrency=1, model='/root/.cache/huggingface/GLM-4.5-Air-FP8-G2', tokenizer=None, use_beam_search=False, num_prompts=8, logprobs=None, request_rate=inf, burstiness=1.0, seed=0, trust_remote_code=True, disable_tqdm=False, profile=False, save_result=False, save_detailed=False, append_result=False, metadata=None, result_dir=None, result_filename=None, ignore_eos=True, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='10,90,99', goodput=None, custom_output_len=256, custom_skip_chat_template=False, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, random_input_len=30151, random_output_len=230, random_range_ratio=0.8, random_prefix_len=0, random_image_width=1280, random_image_height=720, bench_single_image_path=None, hf_subset=None, hf_split=None, hf_output_len=None, top_p=None, top_k=None, min_p=None, temperature=None, tokenizer_mode='auto', served_model_name=None, lora_modules=None)
+INFO 11-20 08:03:58 [__init__.py:254] Automatically detected platform hpu.
+Namespace(backend='vllm', base_url=None, host='127.0.0.1', port=8688, endpoint='/v1/completions', dataset_name='random', dataset_path=None, max_concurrency=1, model='/root/.cache/huggingface/GLM-4.5-FP8', tokenizer=None, use_beam_search=False, num_prompts=16, logprobs=None, request_rate=inf, burstiness=1.0, seed=0, trust_remote_code=True, disable_tqdm=False, profile=False, save_result=False, save_detailed=False, append_result=False, metadata=None, result_dir=None, result_filename=None, ignore_eos=True, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='10,90,99', goodput=None, custom_output_len=256, custom_skip_chat_template=False, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, random_input_len=30151, random_output_len=230, random_range_ratio=0.8, random_prefix_len=0, random_image_width=1280, random_image_height=720, bench_single_image_path=None, hf_subset=None, hf_split=None, hf_output_len=None, top_p=None, top_k=None, min_p=None, temperature=None, tokenizer_mode='auto', served_model_name=None, lora_modules=None)
 Starting initial single prompt test run...
 Initial test run completed. Starting main benchmark run...
 Traffic request rate: inf
 Burstiness factor: 1.0 (Poisson process)
 Maximum request concurrency: 1
-100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 8/8 [01:24<00:00, 10.59s/it]
+100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [21:18<00:00, 79.91s/it]
 ============ Serving Benchmark Result ============
-Successful requests:                     8
-Benchmark duration (s):                  84.70
-Total input tokens:                      219866
-Total generated tokens:                  1637
-Request throughput (req/s):              0.09
-Output token throughput (tok/s):         19.33
-Total Token throughput (tok/s):          2615.25
+Successful requests:                     16
+Benchmark duration (s):                  1278.59
+Total input tokens:                      440126
+Total generated tokens:                  3239
+Request throughput (req/s):              0.01
+Output token throughput (tok/s):         2.53
+Total Token throughput (tok/s):          346.76
 ---------------Time to First Token----------------
-Mean TTFT (ms):                          5125.58
-Median TTFT (ms):                        5294.46
-P10 TTFT (ms):                           4716.93
-P90 TTFT (ms):                           5404.17
-P99 TTFT (ms):                           5435.39
+Mean TTFT (ms):                          24470.15
+Median TTFT (ms):                        23564.32
+P10 TTFT (ms):                           15507.92
+P90 TTFT (ms):                           34069.66
+P99 TTFT (ms):                           35588.77
 -----Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          26.82
-Median TPOT (ms):                        26.82
-P10 TPOT (ms):                           26.33
-P90 TPOT (ms):                           27.38
-P99 TPOT (ms):                           27.60
+Mean TPOT (ms):                          275.53
+Median TPOT (ms):                        269.65
+P10 TPOT (ms):                           183.75
+P90 TPOT (ms):                           362.86
+P99 TPOT (ms):                           416.81
 ---------------Inter-token Latency----------------
-Mean ITL (ms):                           26.82
-Median ITL (ms):                         26.66
-P10 ITL (ms):                            25.17
-P90 ITL (ms):                            28.49
-P99 ITL (ms):                            31.29
+Mean ITL (ms):                           275.22
+Median ITL (ms):                         249.65
+P10 ITL (ms):                            104.88
+P90 ITL (ms):                            483.85
+P99 ITL (ms):                            670.55
 ----------------End-to-end Latency----------------
-Mean E2EL (ms):                          10586.08
-Median E2EL (ms):                        10754.64
-P10 E2EL (ms):                           10071.83
-P90 E2EL (ms):                           10954.34
-P99 E2EL (ms):                           11070.99
+Mean E2EL (ms):                          79910.56
+Median E2EL (ms):                        73751.59
+P10 E2EL (ms):                           53952.02
+P90 E2EL (ms):                           106019.00
+P99 E2EL (ms):                           115339.21
 ==================================================
-INFO 11-19 15:45:28 [__init__.py:254] Automatically detected platform hpu.
-Namespace(backend='vllm', base_url=None, host='127.0.0.1', port=8688, endpoint='/v1/completions', dataset_name='random', dataset_path=None, max_concurrency=2, model='/root/.cache/huggingface/GLM-4.5-Air-FP8-G2', tokenizer=None, use_beam_search=False, num_prompts=16, logprobs=None, request_rate=inf, burstiness=1.0, seed=0, trust_remote_code=True, disable_tqdm=False, profile=False, save_result=False, save_detailed=False, append_result=False, metadata=None, result_dir=None, result_filename=None, ignore_eos=True, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='10,90,99', goodput=None, custom_output_len=256, custom_skip_chat_template=False, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, random_input_len=30151, random_output_len=230, random_range_ratio=0.8, random_prefix_len=0, random_image_width=1280, random_image_height=720, bench_single_image_path=None, hf_subset=None, hf_split=None, hf_output_len=None, top_p=None, top_k=None, min_p=None, temperature=None, tokenizer_mode='auto', served_model_name=None, lora_modules=None)
+INFO 11-20 08:26:30 [__init__.py:254] Automatically detected platform hpu.
+Namespace(backend='vllm', base_url=None, host='127.0.0.1', port=8688, endpoint='/v1/completions', dataset_name='random', dataset_path=None, max_concurrency=2, model='/root/.cache/huggingface/GLM-4.5-FP8', tokenizer=None, use_beam_search=False, num_prompts=32, logprobs=None, request_rate=inf, burstiness=1.0, seed=0, trust_remote_code=True, disable_tqdm=False, profile=False, save_result=False, save_detailed=False, append_result=False, metadata=None, result_dir=None, result_filename=None, ignore_eos=True, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='10,90,99', goodput=None, custom_output_len=256, custom_skip_chat_template=False, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, random_input_len=30151, random_output_len=230, random_range_ratio=0.8, random_prefix_len=0, random_image_width=1280, random_image_height=720, bench_single_image_path=None, hf_subset=None, hf_split=None, hf_output_len=None, top_p=None, top_k=None, min_p=None, temperature=None, tokenizer_mode='auto', served_model_name=None, lora_modules=None)
 Starting initial single prompt test run...
 Initial test run completed. Starting main benchmark run...
 Traffic request rate: inf
 Burstiness factor: 1.0 (Poisson process)
 Maximum request concurrency: 2
-100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [01:54<00:00,  7.18s/it]
+100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 32/32 [07:13<00:00, 13.54s/it]
 ============ Serving Benchmark Result ============
-Successful requests:                     16
-Benchmark duration (s):                  114.81
-Total input tokens:                      440126
-Total generated tokens:                  3239
-Request throughput (req/s):              0.14
-Output token throughput (tok/s):         28.21
-Total Token throughput (tok/s):          3861.59
+Successful requests:                     32
+Benchmark duration (s):                  433.27
+Total input tokens:                      860110
+Total generated tokens:                  6622
+Request throughput (req/s):              0.07
+Output token throughput (tok/s):         15.28
+Total Token throughput (tok/s):          2000.46
 ---------------Time to First Token----------------
-Mean TTFT (ms):                          5428.39
-Median TTFT (ms):                        5321.95
-P10 TTFT (ms):                           4038.48
-P90 TTFT (ms):                           7534.50
-P99 TTFT (ms):                           7885.70
+Mean TTFT (ms):                          8449.41
+Median TTFT (ms):                        8272.26
+P10 TTFT (ms):                           6826.56
+P90 TTFT (ms):                           9894.66
+P99 TTFT (ms):                           12895.72
 -----Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          43.62
-Median TPOT (ms):                        45.56
-P10 TPOT (ms):                           26.89
-P90 TPOT (ms):                           59.82
-P99 TPOT (ms):                           71.88
+Mean TPOT (ms):                          90.08
+Median TPOT (ms):                        89.89
+P10 TPOT (ms):                           81.35
+P90 TPOT (ms):                           101.72
+P99 TPOT (ms):                           129.25
 ---------------Inter-token Latency----------------
-Mean ITL (ms):                           43.95
-Median ITL (ms):                         26.86
-P10 ITL (ms):                            26.63
-P90 ITL (ms):                            27.27
-P99 ITL (ms):                            31.62
+Mean ITL (ms):                           90.15
+Median ITL (ms):                         52.07
+P10 ITL (ms):                            49.33
+P90 ITL (ms):                            54.62
+P99 ITL (ms):                            63.11
 ----------------End-to-end Latency----------------
-Mean E2EL (ms):                          14282.41
-Median E2EL (ms):                        14024.36
-P10 E2EL (ms):                           10465.23
-P90 E2EL (ms):                           17816.05
-P99 E2EL (ms):                           19952.04
+Mean E2EL (ms):                          27015.65
+Median E2EL (ms):                        27152.89
+P10 E2EL (ms):                           23553.70
+P90 E2EL (ms):                           30395.38
+P99 E2EL (ms):                           35911.40
 ==================================================
-INFO 11-19 15:48:42 [__init__.py:254] Automatically detected platform hpu.
-Namespace(backend='vllm', base_url=None, host='127.0.0.1', port=8688, endpoint='/v1/completions', dataset_name='random', dataset_path=None, max_concurrency=4, model='/root/.cache/huggingface/GLM-4.5-Air-FP8-G2', tokenizer=None, use_beam_search=False, num_prompts=32, logprobs=None, request_rate=inf, burstiness=1.0, seed=0, trust_remote_code=True, disable_tqdm=False, profile=False, save_result=False, save_detailed=False, append_result=False, metadata=None, result_dir=None, result_filename=None, ignore_eos=True, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='10,90,99', goodput=None, custom_output_len=256, custom_skip_chat_template=False, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, random_input_len=30151, random_output_len=230, random_range_ratio=0.8, random_prefix_len=0, random_image_width=1280, random_image_height=720, bench_single_image_path=None, hf_subset=None, hf_split=None, hf_output_len=None, top_p=None, top_k=None, min_p=None, temperature=None, tokenizer_mode='auto', served_model_name=None, lora_modules=None)
+INFO 11-20 08:34:49 [__init__.py:254] Automatically detected platform hpu.
+Namespace(backend='vllm', base_url=None, host='127.0.0.1', port=8688, endpoint='/v1/completions', dataset_name='random', dataset_path=None, max_concurrency=4, model='/root/.cache/huggingface/GLM-4.5-FP8', tokenizer=None, use_beam_search=False, num_prompts=64, logprobs=None, request_rate=inf, burstiness=1.0, seed=0, trust_remote_code=True, disable_tqdm=False, profile=False, save_result=False, save_detailed=False, append_result=False, metadata=None, result_dir=None, result_filename=None, ignore_eos=True, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='10,90,99', goodput=None, custom_output_len=256, custom_skip_chat_template=False, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, random_input_len=30151, random_output_len=230, random_range_ratio=0.8, random_prefix_len=0, random_image_width=1280, random_image_height=720, bench_single_image_path=None, hf_subset=None, hf_split=None, hf_output_len=None, top_p=None, top_k=None, min_p=None, temperature=None, tokenizer_mode='auto', served_model_name=None, lora_modules=None)
 Starting initial single prompt test run...
 Initial test run completed. Starting main benchmark run...
 Traffic request rate: inf
 Burstiness factor: 1.0 (Poisson process)
 Maximum request concurrency: 4
-100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 32/32 [03:25<00:00,  6.43s/it]
+100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 64/64 [11:49<00:00, 11.08s/it]
 ============ Serving Benchmark Result ============
-Successful requests:                     32
-Benchmark duration (s):                  205.91
-Total input tokens:                      860110
-Total generated tokens:                  6622
-Request throughput (req/s):              0.16
-Output token throughput (tok/s):         32.16
-Total Token throughput (tok/s):          4209.36
+Successful requests:                     64
+Benchmark duration (s):                  709.06
+Total input tokens:                      1726426
+Total generated tokens:                  13125
+Request throughput (req/s):              0.09
+Output token throughput (tok/s):         18.51
+Total Token throughput (tok/s):          2453.33
 ---------------Time to First Token----------------
-Mean TTFT (ms):                          5233.92
-Median TTFT (ms):                        5182.73
-P10 TTFT (ms):                           3995.37
-P90 TTFT (ms):                           5889.10
-P99 TTFT (ms):                           12094.21
+Mean TTFT (ms):                          9533.22
+Median TTFT (ms):                        9549.60
+P10 TTFT (ms):                           6833.14
+P90 TTFT (ms):                           12867.30
+P99 TTFT (ms):                           21024.24
 -----Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          98.19
-Median TPOT (ms):                        97.84
-P10 TPOT (ms):                           80.76
-P90 TPOT (ms):                           122.63
-P99 TPOT (ms):                           145.44
+Mean TPOT (ms):                          167.95
+Median TPOT (ms):                        173.46
+P10 TPOT (ms):                           128.06
+P90 TPOT (ms):                           204.86
+P99 TPOT (ms):                           226.29
 ---------------Inter-token Latency----------------
-Mean ITL (ms):                           98.60
-Median ITL (ms):                         39.29
-P10 ITL (ms):                            38.66
-P90 ITL (ms):                            40.81
-P99 ITL (ms):                            3978.18
+Mean ITL (ms):                           168.67
+Median ITL (ms):                         55.06
+P10 ITL (ms):                            53.49
+P90 ITL (ms):                            58.12
+P99 ITL (ms):                            6918.20
 ----------------End-to-end Latency----------------
-Mean E2EL (ms):                          25539.98
-Median E2EL (ms):                        25579.24
-P10 E2EL (ms):                           20374.14
-P90 E2EL (ms):                           33057.04
-P99 E2EL (ms):                           37259.33
+Mean E2EL (ms):                          43954.81
+Median E2EL (ms):                        44798.34
+P10 E2EL (ms):                           32780.56
+P90 E2EL (ms):                           54750.34
+P99 E2EL (ms):                           63922.84
 ==================================================
-INFO 11-19 15:53:28 [__init__.py:254] Automatically detected platform hpu.
-2025-11-19:15:53:32 WARNING  [__main__:368]  --limit SHOULD ONLY BE USED FOR TESTING.REAL METRICS SHOULD NOT BE COMPUTED USING LIMIT.
-2025-11-19:15:53:32 INFO     [__main__:440] Selected Tasks: ['gsm8k', 'humaneval']
-2025-11-19:15:53:32 INFO     [evaluator:189] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
-2025-11-19:15:53:32 INFO     [evaluator:227] Initializing local-completions model, with arguments: {'model': '/root/.cache/huggingface/GLM-4.5-Air-FP8-G2', 'base_url': 'http://127.0.0.1:8688/v1/completions', 'num_concurrent': 1, 'trust_remote_code': True}
-2025-11-19:15:53:32 INFO     [models.api_models:168] Using max length 2048 - 1
-2025-11-19:15:53:32 INFO     [models.api_models:171] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
-2025-11-19:15:53:32 INFO     [models.api_models:187] Using tokenizer huggingface
-2025-11-19:15:54:03 INFO     [evaluator:290] humaneval: Using gen_kwargs: {'until': ['\nclass', '\ndef', '\n#', '\nif', '\nprint'], 'max_gen_toks': 1024, 'do_sample': False}
-2025-11-19:15:54:03 INFO     [evaluator:290] gsm8k: Using gen_kwargs: {'until': ['Question:', '</s>', '<|im_end|>'], 'do_sample': False, 'temperature': 0.0}
-2025-11-19:15:54:03 INFO     [api.task:434] Building contexts for humaneval on rank 0...
-100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [00:00<00:00, 3768.04it/s]
-2025-11-19:15:54:03 INFO     [api.task:434] Building contexts for gsm8k on rank 0...
-100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [00:00<00:00, 354.31it/s]
-2025-11-19:15:54:03 INFO     [evaluator:559] Running generate_until requests
-Requesting API: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 32/32 [01:55<00:00,  3.60s/it]
-fatal: not a git repository (or any of the parent directories): .git
-2025-11-19:15:56:00 INFO     [loggers.evaluation_tracker:209] Saving results aggregated
-2025-11-19:15:56:00 INFO     [loggers.evaluation_tracker:298] Saving per-sample results for: gsm8k
-2025-11-19:15:56:00 INFO     [loggers.evaluation_tracker:298] Saving per-sample results for: humaneval
-local-completions (model=/root/.cache/huggingface/GLM-4.5-Air-FP8-G2,base_url=http://127.0.0.1:8688/v1/completions,num_concurrent=1,trust_remote_code=True), gen_kwargs: (None), limit: 16.0, num_fewshot: None, batch_size: 1
-|  Tasks  |Version|     Filter     |n-shot|  Metric   |   |Value |   |Stderr|
-|---------|------:|----------------|-----:|-----------|---|-----:|---|-----:|
-|gsm8k    |      3|flexible-extract|     5|exact_match|↑  |0.8750|±  |0.0854|
-|         |       |strict-match    |     5|exact_match|↑  |0.9375|±  |0.0625|
-|humaneval|      1|create_test     |     0|pass@1     |   |1.0000|±  |0.0000|
 
 
 VEs 1
-
-export HF_ALLOW_CODE_EVAL=1; export LM_ADDR=127.0.0.1; export LM_PORT=8688; export LM_MODEL=/root/.cache/huggingface/GLM-4.5-Air-FP8-G2; export LM_BATCH_SIZE=1; export LM_LIMIT=16
-export LM_CONCURRENCY=1; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 8 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
-sleep 60
-export LM_CONCURRENCY=2; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 16 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
-sleep 60
-export LM_CONCURRENCY=4; python vllm/benchmarks/benchmark_serving.py --backend vllm --model ${LM_MODEL} --trust-remote-code --host ${LM_ADDR} --port ${LM_PORT} --dataset-name random --random-input-len 30151 --random-output-len 230 --random-range-ratio 0.8 --num-prompts 32 --request-rate inf --seed 0 --ignore_eos --max-concurrency ${LM_CONCURRENCY} --percentile-metrics ttft,tpot,itl,e2el  --metric-percentiles 10,90,99
-sleep 60
-export LM_CONCURRENCY=1; lm_eval --model local-completions \
-  --tasks gsm8k,humaneval \
-  --model_args model=$LM_MODEL,base_url=http://$LM_ADDR:$LM_PORT/v1/completions,num_concurrent=$LM_CONCURRENCY,trust_remote_code=True \
-  --batch_size $LM_BATCH_SIZE \
-  --confirm_run_unsafe_code \
-  --log_samples \
-  --limit $LM_LIMIT \
-  --output_path lm_eval_results.json
-INFO 11-20 00:21:03 [__init__.py:254] Automatically detected platform hpu.
-Namespace(backend='vllm', base_url=None, host='127.0.0.1', port=8688, endpoint='/v1/completions', dataset_name='random', dataset_path=None, max_concurrency=1, model='/root/.cache/huggingface/GLM-4.5-Air-FP8-G2', tokenizer=None, use_beam_search=False, num_prompts=8, logprobs=None, request_rate=inf, burstiness=1.0, seed=0, trust_remote_code=True, disable_tqdm=False, profile=False, save_result=False, save_detailed=False, append_result=False, metadata=None, result_dir=None, result_filename=None, ignore_eos=True, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='10,90,99', goodput=None, custom_output_len=256, custom_skip_chat_template=False, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, random_input_len=30151, random_output_len=230, random_range_ratio=0.8, random_prefix_len=0, random_image_width=1280, random_image_height=720, bench_single_image_path=None, hf_subset=None, hf_split=None, hf_output_len=None, top_p=None, top_k=None, min_p=None, temperature=None, tokenizer_mode='auto', served_model_name=None, lora_modules=None)
-Starting initial single prompt test run...
-Initial test run completed. Starting main benchmark run...
-Traffic request rate: inf
-Burstiness factor: 1.0 (Poisson process)
-Maximum request concurrency: 1
-100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 8/8 [01:19<00:00,  9.97s/it]
-============ Serving Benchmark Result ============
-Successful requests:                     8
-Benchmark duration (s):                  79.77
-Total input tokens:                      219866
-Total generated tokens:                  1637
-Request throughput (req/s):              0.10
-Output token throughput (tok/s):         20.52
-Total Token throughput (tok/s):          2776.70
----------------Time to First Token----------------
-Mean TTFT (ms):                          5066.76
-Median TTFT (ms):                        5201.97
-P10 TTFT (ms):                           4654.99
-P90 TTFT (ms):                           5351.28
-P99 TTFT (ms):                           5375.10
------Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          24.08
-Median TPOT (ms):                        24.30
-P10 TPOT (ms):                           23.43
-P90 TPOT (ms):                           24.56
-P99 TPOT (ms):                           24.61
----------------Inter-token Latency----------------
-Mean ITL (ms):                           24.08
-Median ITL (ms):                         23.87
-P10 ITL (ms):                            22.92
-P90 ITL (ms):                            25.25
-P99 ITL (ms):                            26.61
-----------------End-to-end Latency----------------
-Mean E2EL (ms):                          9970.12
-Median E2EL (ms):                        10152.54
-P10 E2EL (ms):                           9564.93
-P90 E2EL (ms):                           10261.79
-P99 E2EL (ms):                           10271.70
-==================================================
-INFO 11-20 00:23:42 [__init__.py:254] Automatically detected platform hpu.
-Namespace(backend='vllm', base_url=None, host='127.0.0.1', port=8688, endpoint='/v1/completions', dataset_name='random', dataset_path=None, max_concurrency=2, model='/root/.cache/huggingface/GLM-4.5-Air-FP8-G2', tokenizer=None, use_beam_search=False, num_prompts=16, logprobs=None, request_rate=inf, burstiness=1.0, seed=0, trust_remote_code=True, disable_tqdm=False, profile=False, save_result=False, save_detailed=False, append_result=False, metadata=None, result_dir=None, result_filename=None, ignore_eos=True, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='10,90,99', goodput=None, custom_output_len=256, custom_skip_chat_template=False, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, random_input_len=30151, random_output_len=230, random_range_ratio=0.8, random_prefix_len=0, random_image_width=1280, random_image_height=720, bench_single_image_path=None, hf_subset=None, hf_split=None, hf_output_len=None, top_p=None, top_k=None, min_p=None, temperature=None, tokenizer_mode='auto', served_model_name=None, lora_modules=None)
-Starting initial single prompt test run...
-Initial test run completed. Starting main benchmark run...
-Traffic request rate: inf
-Burstiness factor: 1.0 (Poisson process)
-Maximum request concurrency: 2
-100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [02:12<00:00,  8.27s/it]
-============ Serving Benchmark Result ============
-Successful requests:                     16
-Benchmark duration (s):                  132.32
-Total input tokens:                      440126
-Total generated tokens:                  3239
-Request throughput (req/s):              0.12
-Output token throughput (tok/s):         24.48
-Total Token throughput (tok/s):          3350.60
----------------Time to First Token----------------
-Mean TTFT (ms):                          5898.66
-Median TTFT (ms):                        5262.22
-P10 TTFT (ms):                           4044.38
-P90 TTFT (ms):                           10393.48
-P99 TTFT (ms):                           10540.46
------Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          52.40
-Median TPOT (ms):                        51.74
-P10 TPOT (ms):                           32.83
-P90 TPOT (ms):                           80.36
-P99 TPOT (ms):                           87.50
----------------Inter-token Latency----------------
-Mean ITL (ms):                           52.54
-Median ITL (ms):                         32.94
-P10 ITL (ms):                            31.02
-P90 ITL (ms):                            35.24
-P99 ITL (ms):                            36.81
-----------------End-to-end Latency----------------
-Mean E2EL (ms):                          16481.30
-Median E2EL (ms):                        16366.21
-P10 E2EL (ms):                           11990.71
-P90 E2EL (ms):                           21615.74
-P99 E2EL (ms):                           22631.57
-==================================================
-INFO 11-20 00:27:13 [__init__.py:254] Automatically detected platform hpu.
-Namespace(backend='vllm', base_url=None, host='127.0.0.1', port=8688, endpoint='/v1/completions', dataset_name='random', dataset_path=None, max_concurrency=4, model='/root/.cache/huggingface/GLM-4.5-Air-FP8-G2', tokenizer=None, use_beam_search=False, num_prompts=32, logprobs=None, request_rate=inf, burstiness=1.0, seed=0, trust_remote_code=True, disable_tqdm=False, profile=False, save_result=False, save_detailed=False, append_result=False, metadata=None, result_dir=None, result_filename=None, ignore_eos=True, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='10,90,99', goodput=None, custom_output_len=256, custom_skip_chat_template=False, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, random_input_len=30151, random_output_len=230, random_range_ratio=0.8, random_prefix_len=0, random_image_width=1280, random_image_height=720, bench_single_image_path=None, hf_subset=None, hf_split=None, hf_output_len=None, top_p=None, top_k=None, min_p=None, temperature=None, tokenizer_mode='auto', served_model_name=None, lora_modules=None)
-Starting initial single prompt test run...
-Initial test run completed. Starting main benchmark run...
-Traffic request rate: inf
-Burstiness factor: 1.0 (Poisson process)
-Maximum request concurrency: 4
-100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 32/32 [04:00<00:00,  7.51s/it]
-============ Serving Benchmark Result ============
-Successful requests:                     32
-Benchmark duration (s):                  240.28
-Total input tokens:                      860110
-Total generated tokens:                  6622
-Request throughput (req/s):              0.13
-Output token throughput (tok/s):         27.56
-Total Token throughput (tok/s):          3607.15
----------------Time to First Token----------------
-Mean TTFT (ms):                          5713.92
-Median TTFT (ms):                        5228.25
-P10 TTFT (ms):                           4041.88
-P90 TTFT (ms):                           7581.40
-P99 TTFT (ms):                           17861.46
------Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          116.18
-Median TPOT (ms):                        115.34
-P10 TPOT (ms):                           96.28
-P90 TPOT (ms):                           144.09
-P99 TPOT (ms):                           180.45
----------------Inter-token Latency----------------
-Mean ITL (ms):                           116.68
-Median ITL (ms):                         54.29
-P10 ITL (ms):                            52.88
-P90 ITL (ms):                            55.85
-P99 ITL (ms):                            4031.69
-----------------End-to-end Latency----------------
-Mean E2EL (ms):                          29742.87
-Median E2EL (ms):                        29343.74
-P10 E2EL (ms):                           23267.38
-P90 E2EL (ms):                           36791.81
-P99 E2EL (ms):                           46161.02
-==================================================
-INFO 11-20 00:32:33 [__init__.py:254] Automatically detected platform hpu.
-2025-11-20:00:32:37 WARNING  [__main__:368]  --limit SHOULD ONLY BE USED FOR TESTING.REAL METRICS SHOULD NOT BE COMPUTED USING LIMIT.
-2025-11-20:00:32:37 INFO     [__main__:440] Selected Tasks: ['gsm8k', 'humaneval']
-2025-11-20:00:32:37 INFO     [evaluator:189] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
-2025-11-20:00:32:37 INFO     [evaluator:227] Initializing local-completions model, with arguments: {'model': '/root/.cache/huggingface/GLM-4.5-Air-FP8-G2', 'base_url': 'http://127.0.0.1:8688/v1/completions', 'num_concurrent': 1, 'trust_remote_code': True}
-2025-11-20:00:32:37 INFO     [models.api_models:168] Using max length 2048 - 1
-2025-11-20:00:32:37 INFO     [models.api_models:171] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
-2025-11-20:00:32:37 INFO     [models.api_models:187] Using tokenizer huggingface
-2025-11-20:00:33:06 INFO     [evaluator:290] humaneval: Using gen_kwargs: {'until': ['\nclass', '\ndef', '\n#', '\nif', '\nprint'], 'max_gen_toks': 1024, 'do_sample': False}
-2025-11-20:00:33:06 INFO     [evaluator:290] gsm8k: Using gen_kwargs: {'until': ['Question:', '</s>', '<|im_end|>'], 'do_sample': False, 'temperature': 0.0}
-2025-11-20:00:33:06 INFO     [api.task:434] Building contexts for humaneval on rank 0...
-100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [00:00<00:00, 3874.42it/s]
-2025-11-20:00:33:06 INFO     [api.task:434] Building contexts for gsm8k on rank 0...
-100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [00:00<00:00, 363.70it/s]
-2025-11-20:00:33:06 INFO     [evaluator:559] Running generate_until requests
-Requesting API: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 32/32 [01:30<00:00,  2.83s/it]
-fatal: not a git repository (or any of the parent directories): .git
-2025-11-20:00:34:39 INFO     [loggers.evaluation_tracker:209] Saving results aggregated
-2025-11-20:00:34:39 INFO     [loggers.evaluation_tracker:298] Saving per-sample results for: gsm8k
-2025-11-20:00:34:39 INFO     [loggers.evaluation_tracker:298] Saving per-sample results for: humaneval
-local-completions (model=/root/.cache/huggingface/GLM-4.5-Air-FP8-G2,base_url=http://127.0.0.1:8688/v1/completions,num_concurrent=1,trust_remote_code=True), gen_kwargs: (None), limit: 16.0, num_fewshot: None, batch_size: 1
-|  Tasks  |Version|     Filter     |n-shot|  Metric   |   |Value |   |Stderr|
-|---------|------:|----------------|-----:|-----------|---|-----:|---|-----:|
-|gsm8k    |      3|flexible-extract|     5|exact_match|↑  |0.8750|±  |0.0854|
-|         |       |strict-match    |     5|exact_match|↑  |0.9375|±  |0.0625|
-|humaneval|      1|create_test     |     0|pass@1     |   |1.0000|±  |0.0000|
-
 
 VEs 2 - 8192 chunks
 

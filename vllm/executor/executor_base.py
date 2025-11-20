@@ -411,9 +411,11 @@ class DistributedExecutorBase(ExecutorBase):
         raise NotImplementedError
     
     async def _wait_for_sg_locks(self, virtual_engine: int):
+        logger.info(f"DistributedExecutorBase._wait_for_sg_locks start for VE{virtual_engine}")
         wait_ms = 10
         log_spins = 200
         if virtual_engine not in self.seq_id_state_machines:
+            logger.info(f"DistributedExecutorBase._wait_for_sg_locks has no VE{virtual_engine} in seq_id_state_machines. Creating")
             self.seq_id_state_machines[virtual_engine] = {}
         spins = 0
         start_t = time.perf_counter()
@@ -426,6 +428,9 @@ class DistributedExecutorBase(ExecutorBase):
                 logger.info("VE%s still locked after %d spins (%.1f ms)", virtual_engine, spins, elapsed)
             await asyncio.sleep(wait_ms / 1000.0)
         elapsed = (time.perf_counter() - start_t) * 1000.0
+        logger.info("VE%s free after %d spins (%.1f ms)", virtual_engine, spins, elapsed)
+        if virtual_engine not in self.extended_critical:
+            logger.info(f"DistributedExecutorBase._wait_for_sg_locks has no VE{virtual_engine} in extended_critical. Creating")
         self.extended_critical[virtual_engine] = True
 
     def _set_current_loop_idx(self, virtual_engine: int, loop_idx: int) -> None:
@@ -441,8 +446,10 @@ class DistributedExecutorBase(ExecutorBase):
     def _get_valid_decode_id(self, virtual_engine: int) -> Optional[int]:
         assert self.extended_critical[virtual_engine], f"VE{virtual_engine} must be in extended critical to get valid decode loop idx."
         if virtual_engine not in self._decode_valid_loop_idx:
+            logger.info(f"DistributedExecutorBase._get_valid_decode_id has no VE{virtual_engine} in _decode_valid_loop_idx. Creating")
             self._decode_valid_loop_idx[virtual_engine] = {}
         if self._current_loop_idx[virtual_engine] not in self._decode_valid_loop_idx[virtual_engine]:
+            logger.info(f"DistributedExecutorBase._get_valid_decode_id has no VE{virtual_engine}.loop_idx{self._current_loop_idx[virtual_engine]} in _decode_valid_loop_idx. Creating")
             self._decode_valid_loop_idx[virtual_engine][self._current_loop_idx[virtual_engine]] = []
         return self._decode_valid_loop_idx[virtual_engine][self._current_loop_idx[virtual_engine]]
     
@@ -478,21 +485,26 @@ class DistributedExecutorBase(ExecutorBase):
             for seq_id, seq in sg.seq_data.items():
                 if seq_id not in self.prefill_steps_remaining:
                     self.prefill_steps_remaining[seq_id] = remaining[seq_id] - 1
+                    logger.info(f"DistributedExecutorBase.update_prefill_steps has no SID{seq_id} in prefill_steps_remaining. Creating")
                 else:
                     self.prefill_steps_remaining[seq_id] -= 1
                 if self.prefill_steps_remaining[seq_id] == 0:
                     loop_idx = self._current_loop_idx[ve]
                     # Gate decode on this loop idx from now on.
                     self._decode_valid_loop_idx[ve][loop_idx].append(seq_id)
+                    logger.info(f"Set decode valid for seq_id={seq_id} to loop idx {loop_idx} of VE{ve}")
         return self.prefill_steps_remaining
     
     def lock_seq_id_state_machines(self, execute_model_req):
         ve = execute_model_req.virtual_engine
         if ve not in self.seq_id_state_machines:
             self.seq_id_state_machines[ve] = {}
+            logger.info(f"DistributedExecutorBase.lock_seq_id_state_machines has no VE{ve} in seq_id_state_machines. Creating")
         ve_map = self.seq_id_state_machines[ve]
         for sg in execute_model_req.seq_group_metadata_list:
             for seq_id in sg.seq_data.keys():
+                if seq_id not in ve_map:
+                    logger.info(f"DistributedExecutorBase.lock_seq_id_state_machines has no VE{ve}.SID{seq_id} in seq_id_state_machines. Creating")
                 ve_map[seq_id] = 1
 
     def _fixup_execute_model_req_prefill(self, execute_model_req: Any) -> None:
@@ -514,6 +526,7 @@ class DistributedExecutorBase(ExecutorBase):
                 # Initialize tracking if missing
                 if seq_id not in self._prefill_progress:
                     self._prefill_progress[seq_id] = (0, 0)
+                    logger.info(f"DistributedExecutorBase._fixup_execute_model_req_prefill has no VE{execute_model_req.virtual_engine} in _prefill_progress. Creating")
                 _, progress = self._prefill_progress[seq_id]
                 # Determine base chunk size (first seen)
                 chunk_size = max(1, min(max_num_batched_tokens, full_prompt - progress))
@@ -531,6 +544,7 @@ class DistributedExecutorBase(ExecutorBase):
             for seq_id, seq_data in sg.seq_data.items():
                 if seq_data._num_computed_tokens + sg.token_chunk_size >= len(seq_data.prompt_token_ids):
                     sg.do_sample = True
+        logger.info(f"FixupExecuteModelReqPrefill: VE{execute_model_req.virtual_engine} orig_chunks={orig_chunks}, new_chunks={new_chunks}, orig_computed={orig_computed}, new_computed={new_computed}")
 
     def _advance_prefill_progress(self, execute_model_req: Any) -> None:
         """
@@ -568,10 +582,12 @@ class DistributedExecutorBase(ExecutorBase):
             if self.scheduler_config.chunked_prefill_enabled:
                 if virtual_engine not in self.lock_update_req:
                     self.lock_update_req[virtual_engine] = threading.Lock()
+                logger.info(f"DistributedExecutorBase.prepare_execute_model_req_patch has no VE{virtual_engine} in lock_update_req. Creating")
                 with self.lock_update_req[virtual_engine]:
                     loop_idx = self._current_loop_idx[virtual_engine]
                     self._fixup_execute_model_req_prefill(execute_model_req)
                     self.update_prefill_steps(execute_model_req)
                     self.lock_seq_id_state_machines(execute_model_req)
+            logger.info(f"Preparing execute_model_req patch for VE{virtual_engine} with remaining prefills {self.prefill_steps_remaining} and states {self.seq_id_state_machines[virtual_engine]}")
 
         return execute_model_req, loop_idx
