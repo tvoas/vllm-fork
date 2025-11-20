@@ -783,16 +783,15 @@ class Scheduler:
         leftover_running: Deque[SequenceGroup] = deque()
         while running_queue:
             seq_group = running_queue[0]
-            skip_seq_group = False
             if decode_id_filter is not None:
+                skip_seq_group = False
                 for seq in seq_group.seqs:
                     seq_id = seq.seq_id
-                    #TVOAS-DEBUG-LOG# logger.info(f"Scheduler._schedule_running: decode_id_filter checking seq_id={seq_id} -> {seq_id in decode_id_filter}")
                     if seq_id not in decode_id_filter:
                         skip_seq_group = True
-            if skip_seq_group:
-                leftover_running.appendleft(running_queue.popleft())
-                continue
+                if skip_seq_group:
+                    leftover_running.appendleft(running_queue.popleft())
+                    continue
             # We discard the cached tokens info here because we don't need it
             # for running sequence:
             #   1. If a sequence is running with chunked prefill, the cached
@@ -800,7 +799,6 @@ class Scheduler:
             #   2. If a sequence is running with non-chunked prefill, then
             #      there it's a decoding sequence, and the cached tokens info is
             #      irrelevant.
-            is_prefill_group = seq_group.is_prefill()
             num_uncached_new_tokens, _ = \
                 self._get_num_new_uncached_and_cached_tokens(
                 seq_group,
@@ -956,16 +954,15 @@ class Scheduler:
         leftover_swapped: Deque[SequenceGroup] = deque()
         while swapped_queue:
             seq_group = swapped_queue[0]
-            skip_seq_group = False
             if decode_id_filter is not None:
+                skip_seq_group = False
                 for seq in seq_group.seqs:
                     seq_id = seq.seq_id
-                    #TVOAS-DEBUG-LOG# logger.info(f"Scheduler._schedule_swapped: decode_id_filter checking seq_id={seq_id} -> {seq_id in decode_id_filter}")
                     if seq_id in decode_id_filter:
                         skip_seq_group = True
-            if skip_seq_group:
-                leftover_swapped.appendleft(swapped_queue.popleft())
-                continue
+                if skip_seq_group:
+                    leftover_swapped.appendleft(swapped_queue.popleft())
+                    continue
             # If the sequence group cannot be swapped in, stop.
             is_prefill = seq_group.is_prefill()
             alloc_status = self.block_manager.can_swap_in(

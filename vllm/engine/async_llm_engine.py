@@ -295,13 +295,14 @@ class _AsyncLLMEngine(LLMEngine):
         # Clear outputs for each new scheduler iteration
         ctx.request_outputs.clear()
 
-        if virtual_engine not in self.lock_update_req:
-            self.lock_update_req[virtual_engine] = threading.Lock()
-        with self.lock_update_req[virtual_engine]:
-            await self.model_executor._wait_for_sg_locks(virtual_engine)
-            self.model_executor._set_current_loop_idx(virtual_engine, loop_idx)
-            decode_id_filter = self.model_executor._get_valid_decode_id(virtual_engine)
-            logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: decode_id_filter={decode_id_filter}, prefill_steps_remaining={self.model_executor.prefill_steps_remaining}")
+        decode_id_filter = None
+        if self.scheduler_config.chunked_prefill_enabled:
+            if virtual_engine not in self.lock_update_req:
+                self.lock_update_req[virtual_engine] = threading.Lock()
+            with self.lock_update_req[virtual_engine]:
+                await self.model_executor._wait_for_sg_locks(virtual_engine)
+                self.model_executor._set_current_loop_idx(virtual_engine, loop_idx)
+                decode_id_filter = self.model_executor._get_valid_decode_id(virtual_engine)
 
         # skip the scheduler if there are any remaining steps in the seq groups.
         # This ensures that the scheduler is only called again when the current
@@ -340,6 +341,7 @@ class _AsyncLLMEngine(LLMEngine):
         assert scheduler_outputs is not None
 
         if not scheduler_outputs.is_empty():
+
             # Check if we have a cached last_output from the previous iteration.
             # For supporting PP this is probably the best way to pass the
             # sampled_token_ids, as a separate broadcast over all the PP stages
@@ -420,7 +422,8 @@ class _AsyncLLMEngine(LLMEngine):
 
         else:
             # Multi-step case
-            self.model_executor._unset_current_loop_idx(virtual_engine, loop_idx)
+            if self.scheduler_config.chunked_prefill_enabled:
+                self.model_executor._unset_current_loop_idx(virtual_engine, loop_idx)
             return ctx.request_outputs
 
         if not self.has_unfinished_requests():
@@ -428,7 +431,8 @@ class _AsyncLLMEngine(LLMEngine):
             if len(ctx.output_queue) > 0:
                 self._process_model_outputs(ctx=ctx)
             assert len(ctx.output_queue) == 0
-        self.model_executor._unset_current_loop_idx(virtual_engine, loop_idx)
+        if self.scheduler_config.chunked_prefill_enabled:
+            self.model_executor._unset_current_loop_idx(virtual_engine, loop_idx)
         return ctx.request_outputs
 
     async def stop_remote_worker_execution_loop_async(self) -> None:
@@ -844,7 +848,10 @@ class AsyncLLMEngine(EngineClient):
         pipeline_parallel_size = \
                 engine.engine.parallel_config.pipeline_parallel_size
         ve_true_count = pipeline_parallel_size + envs.VLLM_PP_BONUS_VE
-        ve_look_a_head = int(os.getenv("VLLM_INTERLEAVE_MODE", "0"))
+        if engine.engine.scheduler_config.chunked_prefill_enabled:
+            ve_look_a_head = int(os.getenv("VLLM_CHUNK_INTERLEAVE_MODE", "0" if ve_true_count != 1 else pipeline_parallel_size))
+        else:
+            ve_look_a_head = 0
         ve_interleave_count = ve_true_count * (1 + ve_look_a_head)
         loops_per_ve = (1 + ve_look_a_head)
         has_requests_in_progress = [False] * (ve_interleave_count)
