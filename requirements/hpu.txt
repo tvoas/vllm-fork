@@ -7,5 +7,5 @@ ray
 triton==3.1.0
 setuptools>=77.0.3
 setuptools-scm>=8
-vllm-hpu-extension @ git+https://github.com/HabanaAI/vllm-hpu-extension.git@aice/v1.22.0
-neural_compressor_pt @ git+https://github.com/intel/neural-compressor.git@aice/v122
+vllm-hpu-extension @ git+https://github.com/tvoas/vllm-hpu-extension.git@9206e6fee579247551ea3f929c2db418e37e7a81
+neural_compressor_pt @ git+https://github.com/yangulei/neural-compressor.git@7abff40453dba264a1b4d96b5739954ad69cd8a6
