@@ -245,6 +245,9 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL - will log graph compilations per engine step, always, even if there were none # noqa:E501
         # VLLM_HPU_LOG_STEP_CPU_FALLBACKS         - will log cpu fallbacks per engine step, only when there was any # noqa:E501
         # VLLM_HPU_LOG_STEP_CPU_FALLBACKS_ALL     - will log cpu fallbacks per engine step, always, even if there were none # noqa:E501
+        VE = None
+        if execute_model_req is not None:
+            VE = execute_model_req.virtual_engine
         log_graph_compilation_all = os.environ.get(
             'VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL', '0') != '0'
         log_graph_compilation = os.environ.get(
@@ -329,7 +332,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                     cached[-1].append(cache)
                     contexts[-1].append(context)
                     sequences[-1].append(sequence)
-            logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model end for VE{execute_model_req.virtual_engine} with IDs={ids} and prompts={prompts}, cached={cached}, contexts={contexts}, sequences={sequences}, chunk_size={chunks}") 
+            logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model end for VE{VE} with IDs={ids} and prompts={prompts}, cached={cached}, contexts={contexts}, sequences={sequences}, chunk_size={chunks}") 
         return output
 
     def _execute_model(
@@ -338,6 +341,9 @@ class HPUWorker(LocalOrDistributedWorkerBase):
     ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
+        VE = None
+        if execute_model_req is not None:
+            VE = execute_model_req.virtual_engine
         with self.lock:
             if execute_model_req is not None and get_tp_group().is_first_rank:
                 def get_chunk_context_and_len(seq, chunk_size: int) -> tuple[int, int]:
@@ -363,7 +369,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                         cached[-1].append(cache)
                         contexts[-1].append(context)
                         sequences[-1].append(sequence)
-                logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{execute_model_req.virtual_engine} with IDs={ids} and prompts={prompts}, cached={cached}, contexts={contexts}, sequences={sequences}, chunk_size={chunks}") 
+                logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{VE} with IDs={ids} and prompts={prompts}, cached={cached}, contexts={contexts}, sequences={sequences}, chunk_size={chunks}") 
             inputs = self.prepare_input(execute_model_req)
 
             # Need to keep worker running when executing dummy batch under DP
@@ -399,12 +405,14 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             intermediate_tensors = None
             if not get_pp_group().is_first_rank:
                 defer = False
-                logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{execute_model_req.virtual_engine} recv start")
+                if execute_model_req is not None:
+                    logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{VE} recv start")
                 intermediate_tensors = get_pp_group().recv_tensor_dict(
                     all_gather_group=get_tp_group(), deferred=defer)
                 if not defer:
                     intermediate_tensors = IntermediateTensors(intermediate_tensors)
-                logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{execute_model_req.virtual_engine} recv done") 
+                if execute_model_req is not None:
+                    logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{VE} recv done") 
                 
             output = self.model_runner.execute_model(
                 model_input=model_input,
@@ -418,10 +426,12 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             if not get_pp_group().is_last_rank:
                 # output is IntermediateTensors
                 assert isinstance(output, IntermediateTensors)
-                logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{execute_model_req.virtual_engine} send start")
+                if execute_model_req is not None:
+                    logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{VE} send start")
                 get_pp_group().send_tensor_dict(
                     output.tensors, all_gather_group=get_tp_group())
-                logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{execute_model_req.virtual_engine} send done")
+                if execute_model_req is not None:
+                    logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{VE} send done")
                 return [None]
 
         if get_pp_group().is_last_rank and get_pp_group().world_size > 1:
@@ -431,28 +441,28 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 num_steps=num_steps,
             )
 
-        if get_pp_group().is_last_rank and get_tp_group().is_first_rank:
-            # Move sampler outputs to CPU to avoid HPU storage pickling errors when
-            # sending through multiprocessing queues (share_fd only supports CPU).
-            if output:
-                new_output: List[SamplerOutput] = []
-                for so in output:
-                    if isinstance(so, SamplerOutput):
-                        st_ids = so.sampled_token_ids
-                        st_probs = so.sampled_token_probs
-                        if st_ids is not None and hasattr(st_ids, "device") and st_ids.device.type != "cpu":
-                            st_ids = st_ids.cpu()
-                        if st_probs is not None and hasattr(st_probs, "device") and st_probs.device.type != "cpu":
-                            st_probs = st_probs.cpu()
-                        # Reconstruct SamplerOutput (likely a dataclass / NamedTuple)
-                        so = SamplerOutput(
-                            outputs=so.outputs,
-                            sampled_token_probs=st_probs,
-                            sampled_token_ids=st_ids,
-                            spec_decode_worker_metrics=so.spec_decode_worker_metrics,
-                        )
-                    new_output.append(so)
-                output = new_output
+        #if get_pp_group().is_last_rank and get_tp_group().is_first_rank:
+        #    # Move sampler outputs to CPU to avoid HPU storage pickling errors when
+        #    # sending through multiprocessing queues (share_fd only supports CPU).
+        #    if output:
+        #        new_output: List[SamplerOutput] = []
+        #        for so in output:
+        #            if isinstance(so, SamplerOutput):
+        #                st_ids = so.sampled_token_ids
+        #                st_probs = so.sampled_token_probs
+        #                if st_ids is not None and hasattr(st_ids, "device") and st_ids.device.type != "cpu":
+        #                    st_ids = st_ids.cpu()
+        #                if st_probs is not None and hasattr(st_probs, "device") and st_probs.device.type != "cpu":
+        #                    st_probs = st_probs.cpu()
+        #                # Reconstruct SamplerOutput (likely a dataclass / NamedTuple)
+        #                so = SamplerOutput(
+        #                    outputs=so.outputs,
+        #                    sampled_token_probs=st_probs,
+        #                    sampled_token_ids=st_ids,
+        #                    spec_decode_worker_metrics=so.spec_decode_worker_metrics,
+        #                )
+        #            new_output.append(so)
+        #        output = new_output
 
         # output is List[SamplerOutput]
         return output

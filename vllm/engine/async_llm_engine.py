@@ -9,7 +9,6 @@ import weakref
 from functools import partial
 from typing import (Any, AsyncGenerator, Callable, Coroutine, Dict, Iterable,
                     List, Mapping, Optional, Set, Tuple, Type, Union, overload)
-import threading
 from weakref import ReferenceType
 
 from typing_extensions import deprecated
@@ -301,7 +300,7 @@ class _AsyncLLMEngine(LLMEngine):
             if virtual_engine not in self.lock_update_req:
                 self.lock_update_req[virtual_engine] = asyncio.Lock()
                 logger.info(f"_AsyncLLMEngine.step_async has no VE{virtual_engine} in lock_update_req. Creating")
-            with self.lock_update_req[virtual_engine]:
+            async with self.lock_update_req[virtual_engine]:
                 logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: has lock")
                 await self.model_executor._wait_for_sg_locks(virtual_engine, loop_idx)
                 logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: waited for sg lock")
