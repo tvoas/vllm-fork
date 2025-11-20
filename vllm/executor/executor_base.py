@@ -410,12 +410,12 @@ class DistributedExecutorBase(ExecutorBase):
         The API is idempotent (guarantee only 1 loop run at any moment)."""
         raise NotImplementedError
     
-    async def _wait_for_sg_locks(self, virtual_engine: int):
-        logger.info(f"DistributedExecutorBase._wait_for_sg_locks start for VE{virtual_engine}")
+    async def _wait_for_sg_locks(self, virtual_engine: int, loop_idx: int):
+        logger.info(f"DistributedExecutorBase._wait_for_sg_locks start for VE{virtual_engine} and loop {loop_idx}")
         wait_ms = 10
         log_spins = 1
         if virtual_engine not in self.seq_id_state_machines:
-            logger.info(f"DistributedExecutorBase._wait_for_sg_locks has no VE{virtual_engine} in seq_id_state_machines. Creating")
+            logger.info(f"DistributedExecutorBase._wait_for_sg_locks has no VE{virtual_engine} and loop {loop_idx} in seq_id_state_machines. Creating")
             self.seq_id_state_machines[virtual_engine] = {}
         spins = 0
         start_t = time.perf_counter()
@@ -425,12 +425,12 @@ class DistributedExecutorBase(ExecutorBase):
             spins += 1
             if spins % log_spins == 0:
                 elapsed = (time.perf_counter() - start_t) * 1000.0
-                logger.info("VE%s still locked after %d spins (%.1f ms)", virtual_engine, spins, elapsed)
+                logger.info(f"VE{virtual_engine} and loop {loop_idx} still locked after {spins} spins ({elapsed} ms)")
             await asyncio.sleep(wait_ms / 1000.0)
         elapsed = (time.perf_counter() - start_t) * 1000.0
-        logger.info("VE%s free after %d spins (%.1f ms)", virtual_engine, spins, elapsed)
+        logger.info(f"VE{virtual_engine} and loop {loop_idx} free after {spins} spins ({elapsed} ms)")
         if virtual_engine not in self.extended_critical:
-            logger.info(f"DistributedExecutorBase._wait_for_sg_locks has no VE{virtual_engine} in extended_critical. Creating")
+            logger.info(f"DistributedExecutorBase._wait_for_sg_locks has no VE{virtual_engine} and loop {loop_idx} in extended_critical. Creating")
         self.extended_critical[virtual_engine] = True
 
     def _set_current_loop_idx(self, virtual_engine: int, loop_idx: int) -> None:
