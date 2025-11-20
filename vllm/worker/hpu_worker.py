@@ -348,7 +348,7 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
             intermediate_tensors = None
             if not get_pp_group().is_first_rank:
-                defer = False
+                defer = True
                 intermediate_tensors = get_pp_group().recv_tensor_dict(
                     all_gather_group=get_tp_group(), deferred=defer)
                 if not defer:
@@ -376,29 +376,6 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 model_input=model_input,
                 num_steps=num_steps,
             )
-
-        #if get_pp_group().is_last_rank and get_tp_group().is_first_rank:
-        #    # Move sampler outputs to CPU to avoid HPU storage pickling errors when
-        #    # sending through multiprocessing queues (share_fd only supports CPU).
-        #    if output:
-        #        new_output: List[SamplerOutput] = []
-        #        for so in output:
-        #            if isinstance(so, SamplerOutput):
-        #                st_ids = so.sampled_token_ids
-        #                st_probs = so.sampled_token_probs
-        #                if st_ids is not None and hasattr(st_ids, "device") and st_ids.device.type != "cpu":
-        #                    st_ids = st_ids.cpu()
-        #                if st_probs is not None and hasattr(st_probs, "device") and st_probs.device.type != "cpu":
-        #                    st_probs = st_probs.cpu()
-        #                # Reconstruct SamplerOutput (likely a dataclass / NamedTuple)
-        #                so = SamplerOutput(
-        #                    outputs=so.outputs,
-        #                    sampled_token_probs=st_probs,
-        #                    sampled_token_ids=st_ids,
-        #                    spec_decode_worker_metrics=so.spec_decode_worker_metrics,
-        #                )
-        #            new_output.append(so)
-        #        output = new_output
 
         # output is List[SamplerOutput]
         return output

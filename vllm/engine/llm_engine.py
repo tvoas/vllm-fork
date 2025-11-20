@@ -1107,8 +1107,6 @@ class LLMEngine:
                     # Updates happen only if the sequence is prefill
                     self._update_num_computed_tokens_for_multi_step_prefill(
                         seq_group, seq_group_meta, is_first_step_output)
-                elif self.scheduler_config.chunked_prefill_enabled and seq_group_meta.is_prompt:
-                    pass
                 else:
                     seq_group.update_num_computed_tokens(
                         seq_group_meta.token_chunk_size or 0)
