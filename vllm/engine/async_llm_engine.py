@@ -299,7 +299,7 @@ class _AsyncLLMEngine(LLMEngine):
         decode_id_filter = None
         if self.scheduler_config.chunked_prefill_enabled:
             if virtual_engine not in self.lock_update_req:
-                self.lock_update_req[virtual_engine] = threading.Lock()
+                self.lock_update_req[virtual_engine] = asyncio.Lock()
                 logger.info(f"_AsyncLLMEngine.step_async has no VE{virtual_engine} in lock_update_req. Creating")
             with self.lock_update_req[virtual_engine]:
                 logger.info(f"_AsyncLLMEngine.step_async VE{virtual_engine} loop_idx={loop_idx}: has lock")
