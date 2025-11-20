@@ -413,7 +413,7 @@ class DistributedExecutorBase(ExecutorBase):
     async def _wait_for_sg_locks(self, virtual_engine: int):
         logger.info(f"DistributedExecutorBase._wait_for_sg_locks start for VE{virtual_engine}")
         wait_ms = 10
-        log_spins = 200
+        log_spins = 1
         if virtual_engine not in self.seq_id_state_machines:
             logger.info(f"DistributedExecutorBase._wait_for_sg_locks has no VE{virtual_engine} in seq_id_state_machines. Creating")
             self.seq_id_state_machines[virtual_engine] = {}
