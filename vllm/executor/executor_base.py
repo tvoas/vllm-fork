@@ -434,7 +434,7 @@ class DistributedExecutorBase(ExecutorBase):
         self.extended_critical[virtual_engine] = True
 
     def _set_current_loop_idx(self, virtual_engine: int, loop_idx: int) -> None:
-        assert self.extended_critical[virtual_engine], f"VE{virtual_engine} must be in extended critical to set loop idx."
+        assert self.extended_critical[virtual_engine], f"VE{virtual_engine} must be in extended critical to set loop idx ({loop_idx})."
         self._current_loop_idx[virtual_engine] = loop_idx
 
     def _unset_current_loop_idx(self, virtual_engine: int, loop_idx: int) -> None:
