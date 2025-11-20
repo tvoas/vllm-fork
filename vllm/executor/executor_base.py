@@ -294,6 +294,7 @@ class DistributedExecutorBase(ExecutorBase):
         self._current_loop_idx: Dict[int, int] = {}
         # Decode gating: loop idx allowed to run decode per virtual engine.
         self._decode_valid_loop_idx: Dict[int, Dict[int, List[int]]] = {}
+        self._decode_skip_next_zero_loop: Dict[int, List[int]] = {}
         super().__init__(*args, **kwargs)
 
     def execute_model(
@@ -450,7 +451,15 @@ class DistributedExecutorBase(ExecutorBase):
         if self._current_loop_idx[virtual_engine] not in self._decode_valid_loop_idx[virtual_engine]:
             logger.info(f"DistributedExecutorBase._get_valid_decode_id has no VE{virtual_engine}.loop_idx{self._current_loop_idx[virtual_engine]} in _decode_valid_loop_idx. Creating")
             self._decode_valid_loop_idx[virtual_engine][self._current_loop_idx[virtual_engine]] = []
-        return self._decode_valid_loop_idx[virtual_engine][self._current_loop_idx[virtual_engine]]
+        if self._current_loop_idx[virtual_engine] != 0:
+            assert len(self._decode_valid_loop_idx[virtual_engine][self._current_loop_idx[virtual_engine]]) == 0, f"Decode step assigned to non-zero loop idx {self._current_loop_idx[virtual_engine]} for VE{virtual_engine}"
+            return []
+        if virtual_engine not in self._decode_skip_next_zero_loop:
+            self._decode_skip_next_zero_loop[virtual_engine] = []
+        skip_set = self._decode_skip_next_zero_loop[virtual_engine]
+        decode_valid_idx = [seq_id for seq_id in self._decode_valid_loop_idx[virtual_engine][self._current_loop_idx[virtual_engine]] if seq_id not in skip_set]
+        self._decode_skip_next_zero_loop[virtual_engine] = []
+        return decode_valid_idx
     
     def compute_remaining_prefill_steps(self, execute_model_req):
         r = {}
@@ -490,8 +499,16 @@ class DistributedExecutorBase(ExecutorBase):
                 if self.prefill_steps_remaining[seq_id] == 0:
                     loop_idx = self._current_loop_idx[ve]
                     # Gate decode on this loop idx from now on.
-                    self._decode_valid_loop_idx[ve][loop_idx].append(seq_id)
-                    logger.info(f"Set decode valid for seq_id={seq_id} to loop idx {loop_idx} of VE{ve}")
+                    if loop_idx != 0:
+                        if ve not in self._decode_skip_next_zero_loop:
+                            self._decode_skip_next_zero_loop[ve] = []
+                        self._decode_skip_next_zero_loop[ve] += [seq_id]
+                        self._decode_valid_loop_idx[ve][0].append(seq_id)
+                        logger.info(f"Set decode valid for seq_id={seq_id} to loop idx {0} of VE{ve} with skip")
+                    else:
+                        self._decode_valid_loop_idx[ve][loop_idx].append(seq_id)
+                        logger.info(f"Set decode valid for seq_id={seq_id} to loop idx {0} of VE{ve}")
+                    
         return self.prefill_steps_remaining
     
     def lock_seq_id_state_machines(self, execute_model_req):
@@ -536,7 +553,7 @@ class DistributedExecutorBase(ExecutorBase):
                 else:
                     sg.token_chunk_size = min(chunk_size, sg.token_chunk_size)
                 # Reflect progress into sequence data object
-                seq_data._num_computed_tokens = progress
+                seq_data._num_computed_tokens = progress 
                 new_chunks[seq_id] = sg.token_chunk_size
                 new_computed[seq_id] = seq_data._num_computed_tokens
                 self._prefill_progress[seq_id] = (sg.token_chunk_size, seq_data._num_computed_tokens)
@@ -557,7 +574,7 @@ class DistributedExecutorBase(ExecutorBase):
                 full_prompt = len(getattr(seq_data, "prompt_token_ids", ()))
                 chunk_size, prev = self._prefill_progress.get(seq_id, (0, 0))
                 new_progress = min(full_prompt, prev + chunk_size)
-                self._prefill_progress[seq_id] = (0, new_progress)
+                self._prefill_progress[seq_id] = (0, new_progress) 
 
                 # If full prompt consumed and prefill tracker says no steps remain, switch to decode
                 remaining_steps = self.prefill_steps_remaining.get(seq_id)
