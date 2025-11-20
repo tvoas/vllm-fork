@@ -398,11 +398,14 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
             intermediate_tensors = None
             if not get_pp_group().is_first_rank:
-                defer = True
+                defer = False
+                logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{execute_model_req.virtual_engine} recv start")
                 intermediate_tensors = get_pp_group().recv_tensor_dict(
                     all_gather_group=get_tp_group(), deferred=defer)
                 if not defer:
                     intermediate_tensors = IntermediateTensors(intermediate_tensors)
+                logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{execute_model_req.virtual_engine} recv done") 
+                
             output = self.model_runner.execute_model(
                 model_input=model_input,
                 kv_caches=self.kv_cache[worker_input.virtual_engine]
@@ -415,9 +418,18 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             if not get_pp_group().is_last_rank:
                 # output is IntermediateTensors
                 assert isinstance(output, IntermediateTensors)
+                logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{execute_model_req.virtual_engine} send start")
                 get_pp_group().send_tensor_dict(
                     output.tensors, all_gather_group=get_tp_group())
+                logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{execute_model_req.virtual_engine} send done")
                 return [None]
+
+        if get_pp_group().is_last_rank and get_pp_group().world_size > 1:
+            output = self.model_runner.execute_sample(
+                hidden_states=output,
+                model_input=model_input,
+                num_steps=num_steps,
+            )
 
         if get_pp_group().is_last_rank and get_tp_group().is_first_rank:
             # Move sampler outputs to CPU to avoid HPU storage pickling errors when
