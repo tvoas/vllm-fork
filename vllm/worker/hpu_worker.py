@@ -245,6 +245,9 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL - will log graph compilations per engine step, always, even if there were none # noqa:E501
         # VLLM_HPU_LOG_STEP_CPU_FALLBACKS         - will log cpu fallbacks per engine step, only when there was any # noqa:E501
         # VLLM_HPU_LOG_STEP_CPU_FALLBACKS_ALL     - will log cpu fallbacks per engine step, always, even if there were none # noqa:E501
+        VE = None
+        if execute_model_req is not None:
+            VE = execute_model_req.virtual_engine
         log_graph_compilation_all = os.environ.get(
             'VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL', '0') != '0'
         log_graph_compilation = os.environ.get(
@@ -305,6 +308,31 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 logger.warning(msg)
         else:
             output = self._execute_model(execute_model_req)
+        if execute_model_req is not None and get_tp_group().is_first_rank:
+            def get_chunk_context_and_len(seq, chunk_size: int) -> tuple[int, int]:
+                total_prompt_len = len(seq._prompt_token_ids)
+                cached_len = seq._num_cached_tokens        # already cached
+                context_len = seq._num_computed_tokens            # already run
+                remaining = total_prompt_len - context_len - cached_len        # not yet computed
+                current_chunk_len = max(0, min(chunk_size, remaining))
+                return cached_len, context_len, current_chunk_len
+            ids = [list(seq.seq_data.keys()) for seq in execute_model_req.seq_group_metadata_list]
+            prompts = [seq.is_prompt for seq in execute_model_req.seq_group_metadata_list]
+            cached = []
+            contexts = []
+            sequences = []
+            chunks = []
+            for seq_group in execute_model_req.seq_group_metadata_list:
+                cached += [[]]
+                contexts += [[]]
+                sequences += [[]]
+                chunks += [seq_group.token_chunk_size]
+                for seq in seq_group.seq_data.values():
+                    cache, context, sequence = get_chunk_context_and_len(seq, seq_group.token_chunk_size)
+                    cached[-1].append(cache)
+                    contexts[-1].append(context)
+                    sequences[-1].append(sequence)
+            logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model end for VE{VE} with IDs={ids} and prompts={prompts}, cached={cached}, contexts={contexts}, sequences={sequences}, chunk_size={chunks}") 
         return output
 
     def _execute_model(
@@ -313,7 +341,35 @@ class HPUWorker(LocalOrDistributedWorkerBase):
     ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
+        VE = None
+        if execute_model_req is not None:
+            VE = execute_model_req.virtual_engine
         with self.lock:
+            if execute_model_req is not None and get_tp_group().is_first_rank:
+                def get_chunk_context_and_len(seq, chunk_size: int) -> tuple[int, int]:
+                    total_prompt_len = len(seq._prompt_token_ids)
+                    cached_len = seq._num_cached_tokens        # already cached
+                    context_len = seq._num_computed_tokens            # already run
+                    remaining = total_prompt_len - context_len - cached_len        # not yet computed
+                    current_chunk_len = max(0, min(chunk_size, remaining))
+                    return cached_len, context_len, current_chunk_len
+                ids = [list(seq.seq_data.keys()) for seq in execute_model_req.seq_group_metadata_list]
+                prompts = [seq.is_prompt for seq in execute_model_req.seq_group_metadata_list]
+                cached = []
+                contexts = []
+                sequences = []
+                chunks = []
+                for seq_group in execute_model_req.seq_group_metadata_list:
+                    cached += [[]]
+                    contexts += [[]]
+                    sequences += [[]]
+                    chunks += [seq_group.token_chunk_size]
+                    for seq in seq_group.seq_data.values():
+                        cache, context, sequence = get_chunk_context_and_len(seq, seq_group.token_chunk_size)
+                        cached[-1].append(cache)
+                        contexts[-1].append(context)
+                        sequences[-1].append(sequence)
+                logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{VE} with IDs={ids} and prompts={prompts}, cached={cached}, contexts={contexts}, sequences={sequences}, chunk_size={chunks}") 
             inputs = self.prepare_input(execute_model_req)
 
             # Need to keep worker running when executing dummy batch under DP
@@ -349,10 +405,14 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             intermediate_tensors = None
             if not get_pp_group().is_first_rank:
                 defer = True
+                if execute_model_req is not None:
+                    logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{VE} recv start")
                 intermediate_tensors = get_pp_group().recv_tensor_dict(
                     all_gather_group=get_tp_group(), deferred=defer)
                 if not defer:
                     intermediate_tensors = IntermediateTensors(intermediate_tensors)
+                if execute_model_req is not None:
+                    logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{VE} recv done") 
                 
             output = self.model_runner.execute_model(
                 model_input=model_input,
@@ -366,8 +426,12 @@ class HPUWorker(LocalOrDistributedWorkerBase):
             if not get_pp_group().is_last_rank:
                 # output is IntermediateTensors
                 assert isinstance(output, IntermediateTensors)
+                if execute_model_req is not None:
+                    logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{VE} send start")
                 get_pp_group().send_tensor_dict(
                     output.tensors, all_gather_group=get_tp_group())
+                if execute_model_req is not None:
+                    logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{VE} send done")
                 return [None]
 
         if get_pp_group().is_last_rank and get_pp_group().world_size > 1:

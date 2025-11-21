@@ -411,8 +411,9 @@ class DistributedExecutorBase(ExecutorBase):
         raise NotImplementedError
     
     async def _wait_for_sg_locks(self, virtual_engine: int, loop_idx: int):
+        logger.info(f"DistributedExecutorBase._wait_for_sg_locks start for VE{virtual_engine} and loop {loop_idx}")
         wait_ms = 10
-        log_spins = 2000
+        log_spins = 100
         if virtual_engine not in self.seq_id_state_machines:
             self.seq_id_state_machines[virtual_engine] = {}
         spins = 0
@@ -426,6 +427,7 @@ class DistributedExecutorBase(ExecutorBase):
                 logger.info(f"VE{virtual_engine} and loop {loop_idx} still locked after {spins} spins ({elapsed} ms)")
             await asyncio.sleep(wait_ms / 1000.0)
         elapsed = (time.perf_counter() - start_t) * 1000.0
+        logger.info(f"VE{virtual_engine} and loop {loop_idx} free after {spins} spins ({elapsed} ms)")
         self.extended_critical[virtual_engine] = True
 
     def _set_current_loop_idx(self, virtual_engine: int, loop_idx: int) -> None:
@@ -496,8 +498,10 @@ class DistributedExecutorBase(ExecutorBase):
                             self._decode_skip_next_zero_loop[ve] = []
                         self._decode_skip_next_zero_loop[ve] += [seq_id]
                         self._decode_valid_loop_idx[ve][0].append(seq_id)
+                        logger.info(f"Set decode valid for seq_id={seq_id} to loop idx {0} of VE{ve} with skip")
                     else:
                         self._decode_valid_loop_idx[ve][loop_idx].append(seq_id)
+                        logger.info(f"Set decode valid for seq_id={seq_id} to loop idx {0} of VE{ve}")
                     
         return self.prefill_steps_remaining
     
@@ -546,6 +550,7 @@ class DistributedExecutorBase(ExecutorBase):
             for seq_id, seq_data in sg.seq_data.items():
                 if seq_data._num_computed_tokens + sg.token_chunk_size >= len(seq_data.prompt_token_ids):
                     sg.do_sample = True
+        logger.info(f"FixupExecuteModelReqPrefill: VE{execute_model_req.virtual_engine} orig_chunks={orig_chunks}, new_chunks={new_chunks}, orig_computed={orig_computed}, new_computed={new_computed}")
 
     def _advance_prefill_progress(self, execute_model_req: Any) -> None:
         """
@@ -588,5 +593,6 @@ class DistributedExecutorBase(ExecutorBase):
                     self._fixup_execute_model_req_prefill(execute_model_req)
                     self.update_prefill_steps(execute_model_req)
                     self.lock_seq_id_state_machines(execute_model_req)
+            logger.info(f"Preparing execute_model_req patch for VE{virtual_engine} with remaining prefills {self.prefill_steps_remaining} and states {self.seq_id_state_machines[virtual_engine]}")
 
         return execute_model_req, loop_idx
