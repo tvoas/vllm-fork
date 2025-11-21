@@ -215,6 +215,8 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
         if not self.tp_driver_workers:
             return await self.driver_exec_model(execute_model_req)
 
+        VE = None if execute_model_req is None else execute_model_req.virtual_engine
+
         from vllm.platforms import current_platform
         if self.pp_locks is None:
             # This locks each pipeline parallel stage so multiple virtual
@@ -265,11 +267,14 @@ class MultiprocessingDistributedExecutor(DistributedExecutorBase):
                     i = running_tasks.index(task)
                     i = running_indexes[i]
                     results[i] = task.result()
+                    if original_execute_model_req is not None:
+                        logger.info(f"mp_executor._driver_execute_model_async finished worker {i} for VE{original_execute_model_req.virtual_engine}")
                     if i == 0 and in_progress[i] and original_execute_model_req is not None:  # First PP rank
                         self._advance_prefill_progress(original_execute_model_req)
                         for sg in original_execute_model_req.seq_group_metadata_list:
                             for seq_id, seq in getattr(sg, "seq_data", {}).items():
                                 self.seq_id_state_machines[original_execute_model_req.virtual_engine][seq_id] = 0  # Unlock
+                                logger.info(f"mp_executor._driver_execute_model_async free state for VE{original_execute_model_req.virtual_engine}.SID{seq_id}")
                         self.extended_critical[original_execute_model_req.virtual_engine] = False
                     in_progress[i] = False
         else:
