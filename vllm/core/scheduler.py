@@ -13,6 +13,7 @@ from typing import Set, Tuple, Union
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
+import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.platforms import current_platform
@@ -31,6 +32,8 @@ ENABLE_ARTIFICIAL_PREEMPT = bool(
     os.getenv("VLLM_TEST_ENABLE_ARTIFICIAL_PREEMPT", False))  # noqa
 ARTIFICIAL_PREEMPTION_PROB = 0.5
 ARTIFICIAL_PREEMPTION_MAX_CNT = 500
+
+_SHARED_BLOCK_MANAGERS: Dict[Tuple, BlockSpaceManager] = {}
 
 
 class PreemptionMode(enum.Enum):
@@ -527,21 +530,45 @@ class Scheduler:
             version)
 
         num_gpu_blocks = cache_config.num_gpu_blocks
-        if num_gpu_blocks:
-            num_gpu_blocks //= pipeline_parallel_size
-
         num_cpu_blocks = cache_config.num_cpu_blocks
-        if num_cpu_blocks:
-            num_cpu_blocks //= pipeline_parallel_size
+        if not envs.VLLM_USE_SHARED_BLOCK_MANGERS:
+            if num_gpu_blocks:
+                num_gpu_blocks //= pipeline_parallel_size
+            if num_cpu_blocks:
+                num_cpu_blocks //= pipeline_parallel_size
+            # Create the block space manager.
+            self.block_manager = BlockSpaceManagerImpl(
+                block_size=cache_config.block_size,
+                num_gpu_blocks=num_gpu_blocks,
+                num_cpu_blocks=num_cpu_blocks,
+                sliding_window=cache_config.sliding_window,
+                enable_caching=cache_config.enable_prefix_caching,
+            )
+        else:
+            # Build a key that uniquely identifies a compatible cache config.
+            shared_key = (
+                version,
+                cache_config.block_size,
+                num_gpu_blocks,
+                num_cpu_blocks,
+                cache_config.sliding_window,
+                cache_config.enable_prefix_caching,
+            )
 
-        # Create the block space manager.
-        self.block_manager = BlockSpaceManagerImpl(
-            block_size=self.cache_config.block_size,
-            num_gpu_blocks=num_gpu_blocks,
-            num_cpu_blocks=num_cpu_blocks,
-            sliding_window=self.cache_config.sliding_window,
-            enable_caching=self.cache_config.enable_prefix_caching,
-        )
+            global _SHARED_BLOCK_MANAGERS
+            if shared_key in _SHARED_BLOCK_MANAGERS:
+                # Reuse the block space manager.
+                self.block_manager = _SHARED_BLOCK_MANAGERS[shared_key]
+            else:
+                # Create the block space manager.
+                self.block_manager = BlockSpaceManagerImpl(
+                    block_size=cache_config.block_size,
+                    num_gpu_blocks=num_gpu_blocks,
+                    num_cpu_blocks=num_cpu_blocks,
+                    sliding_window=cache_config.sliding_window,
+                    enable_caching=cache_config.enable_prefix_caching,
+                )
+                _SHARED_BLOCK_MANAGERS[shared_key] = self.block_manager
 
         # Sequence groups in the WAITING state.
         # Contain new prefill or preempted requests.
