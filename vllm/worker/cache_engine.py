@@ -43,11 +43,12 @@ class CacheEngine:
 
         self.block_size = cache_config.block_size
         self.num_gpu_blocks = cache_config.num_gpu_blocks
+        num_block_splits = 1 if envs.VLLM_USE_SHARED_BLOCK_MANGERS else parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE
         if self.num_gpu_blocks:
-            self.num_gpu_blocks //= (parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+            self.num_gpu_blocks //= num_block_splits
         self.num_cpu_blocks = cache_config.num_cpu_blocks
         if self.num_cpu_blocks:
-            self.num_cpu_blocks //= (parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+            self.num_cpu_blocks //= num_block_splits
 
         if cache_config.cache_dtype == "auto":
             self.dtype = model_config.dtype

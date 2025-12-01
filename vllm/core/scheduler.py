@@ -5,7 +5,9 @@ import enum
 import os
 import random
 import time
+import threading
 from collections import deque
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Callable, Deque, Dict, Iterable, List, Optional
 from typing import Sequence as GenericSequence
@@ -13,6 +15,7 @@ from typing import Set, Tuple, Union
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
+import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.platforms import current_platform
@@ -31,6 +34,9 @@ ENABLE_ARTIFICIAL_PREEMPT = bool(
     os.getenv("VLLM_TEST_ENABLE_ARTIFICIAL_PREEMPT", False))  # noqa
 ARTIFICIAL_PREEMPTION_PROB = 0.5
 ARTIFICIAL_PREEMPTION_MAX_CNT = 500
+
+_SHARED_BLOCK_MANAGERS: Dict[Tuple, BlockSpaceManager] = {}
+_SHARED_BLOCK_MANAGERS_LOCKS: Dict[Tuple, threading.Lock] = {}
 
 
 class PreemptionMode(enum.Enum):
@@ -527,21 +533,51 @@ class Scheduler:
             version)
 
         num_gpu_blocks = cache_config.num_gpu_blocks
-        if num_gpu_blocks:
-            num_gpu_blocks //= pipeline_parallel_size
-
         num_cpu_blocks = cache_config.num_cpu_blocks
-        if num_cpu_blocks:
-            num_cpu_blocks //= pipeline_parallel_size
+        if not envs.VLLM_USE_SHARED_BLOCK_MANGERS:
+            if num_gpu_blocks:
+                num_gpu_blocks //= pipeline_parallel_size
+            if num_cpu_blocks:
+                num_cpu_blocks //= pipeline_parallel_size
+            # Create the block space manager.
+            self.block_manager = BlockSpaceManagerImpl(
+                block_size=cache_config.block_size,
+                num_gpu_blocks=num_gpu_blocks,
+                num_cpu_blocks=num_cpu_blocks,
+                sliding_window=cache_config.sliding_window,
+                enable_caching=cache_config.enable_prefix_caching,
+            )
+            self.block_manager_lock = nullcontext()
+        else:
+            # Build a key that uniquely identifies a compatible cache config.
+            shared_key = (
+                version,
+                cache_config.block_size,
+                num_gpu_blocks,
+                num_cpu_blocks,
+                cache_config.sliding_window,
+                cache_config.enable_prefix_caching,
+            )
 
-        # Create the block space manager.
-        self.block_manager = BlockSpaceManagerImpl(
-            block_size=self.cache_config.block_size,
-            num_gpu_blocks=num_gpu_blocks,
-            num_cpu_blocks=num_cpu_blocks,
-            sliding_window=self.cache_config.sliding_window,
-            enable_caching=self.cache_config.enable_prefix_caching,
-        )
+            global _SHARED_BLOCK_MANAGERS
+            global _SHARED_BLOCK_MANAGERS_LOCKS
+            if shared_key in _SHARED_BLOCK_MANAGERS:
+                # Reuse the block space manager.
+                self.block_manager = _SHARED_BLOCK_MANAGERS[shared_key]
+                self.block_manager_lock = _SHARED_BLOCK_MANAGERS_LOCKS[shared_key]
+            else:
+                # Create the block space manager.
+                self.block_manager = BlockSpaceManagerImpl(
+                    block_size=cache_config.block_size,
+                    num_gpu_blocks=num_gpu_blocks,
+                    num_cpu_blocks=num_cpu_blocks,
+                    sliding_window=cache_config.sliding_window,
+                    enable_caching=cache_config.enable_prefix_caching,
+                )
+                self.block_manager_lock = nullcontext()
+                #self.block_manager_lock = threading.Lock()
+                _SHARED_BLOCK_MANAGERS[shared_key] = self.block_manager
+                _SHARED_BLOCK_MANAGERS_LOCKS[shared_key] = self.block_manager_lock
 
         # Sequence groups in the WAITING state.
         # Contain new prefill or preempted requests.
@@ -704,17 +740,20 @@ class Scheduler:
         Has no effect on decoder-only models.
         """
         if seq_group.is_encoder_decoder():
-            self.block_manager.free_cross(seq_group)
+            with self.block_manager_lock:
+                self.block_manager.free_cross(seq_group)
 
     def has_unfinished_seqs(self) -> bool:
         return (len(self.waiting) != 0 or len(self.running) != 0
                 or len(self.swapped) != 0)
 
     def get_prefix_cache_hit_rate(self, device: Device) -> float:
-        return self.block_manager.get_prefix_cache_hit_rate(device)
+        with self.block_manager_lock:
+            return self.block_manager.get_prefix_cache_hit_rate(device)
 
     def reset_prefix_cache(self, device: Optional[Device] = None) -> bool:
-        return self.block_manager.reset_prefix_cache(device)
+        with self.block_manager_lock:
+            return self.block_manager.reset_prefix_cache(device)
 
     def get_num_unfinished_seq_groups(self) -> int:
         return len(self.waiting) + len(self.running) + len(self.swapped)
@@ -937,9 +976,10 @@ class Scheduler:
 
             # If the sequence group cannot be swapped in, stop.
             is_prefill = seq_group.is_prefill()
-            alloc_status = self.block_manager.can_swap_in(
-                seq_group,
-                self._get_num_lookahead_slots(is_prefill, enable_chunking))
+            with self.block_manager_lock:
+                alloc_status = self.block_manager.can_swap_in(
+                    seq_group,
+                    self._get_num_lookahead_slots(is_prefill, enable_chunking))
             if alloc_status == AllocStatus.LATER:
                 break
             elif alloc_status == AllocStatus.NEVER:
@@ -1075,7 +1115,8 @@ class Scheduler:
             while running_queue and self._get_priority(
                     running_queue[-1]) > self._get_priority(seq_group):
                 # Only preempt if waiting sequence cannot be allocated
-                can_allocate = self.block_manager.can_allocate(seq_group)
+                with self.block_manager_lock:
+                    can_allocate = self.block_manager.can_allocate(seq_group)
                 if (num_new_tokens_uncached > 0
                         and can_allocate == AllocStatus.OK
                         and budget.can_schedule(
@@ -1201,8 +1242,9 @@ class Scheduler:
                     True, enable_chunking)
 
             # If the sequence group cannot be allocated, stop.
-            can_allocate = self.block_manager.can_allocate(
-                seq_group, num_lookahead_slots=num_lookahead_slots)
+            with self.block_manager_lock:
+                can_allocate = self.block_manager.can_allocate(
+                    seq_group, num_lookahead_slots=num_lookahead_slots)
             if can_allocate == AllocStatus.LATER:
                 break
             elif can_allocate == AllocStatus.NEVER:
@@ -1621,8 +1663,9 @@ class Scheduler:
             # chunked-prefill are enabled together.
             assert self.scheduler_config.is_multi_step and enable_chunking
 
-        return self.block_manager.can_append_slots(
-            seq_group=seq_group, num_lookahead_slots=num_lookahead_slots)
+        with self.block_manager_lock:
+            return self.block_manager.can_append_slots(
+                seq_group=seq_group, num_lookahead_slots=num_lookahead_slots)
 
     def _allow_async_output_proc(self, seq_group: SequenceGroup) -> bool:
         # async_output_proc is allowed only when we have a single sequence
@@ -1672,8 +1715,9 @@ class Scheduler:
                 encoder_seq_data = encoder_seq.data
                 # Block table for cross-attention
                 # Also managed at SequenceGroup level
-                cross_block_table = self.block_manager.get_cross_block_table(
-                    seq_group)
+                with self.block_manager_lock:
+                    cross_block_table = self.block_manager.get_cross_block_table(
+                        seq_group)
             else:
                 encoder_seq_data = None
                 cross_block_table = None
@@ -1681,13 +1725,15 @@ class Scheduler:
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 seq_id = seq.seq_id
                 seq_data[seq_id] = seq.data
-                block_tables[seq_id] = self.block_manager.get_block_table(seq)
-                self.block_manager.access_all_blocks_in_seq(seq, now)
+                with self.block_manager_lock:
+                    block_tables[seq_id] = self.block_manager.get_block_table(seq)
+                    self.block_manager.access_all_blocks_in_seq(seq, now)
 
             if self.cache_config.enable_prefix_caching:
-                common_computed_block_nums = (
-                    self.block_manager.get_common_computed_block_ids(
-                        seq_group.get_seqs(status=SequenceStatus.RUNNING)))
+                with self.block_manager_lock:
+                    common_computed_block_nums = (
+                        self.block_manager.get_common_computed_block_ids(
+                            seq_group.get_seqs(status=SequenceStatus.RUNNING)))
 
             do_sample = True
             is_prompt = seq_group.is_prefill()
@@ -1765,9 +1811,10 @@ class Scheduler:
         # This is because the engine assumes that a failure in model execution
         # will crash the vLLM instance / will not retry.
         for scheduled_seq_group in scheduler_outputs.scheduled_seq_groups:
-            self.block_manager.mark_blocks_as_computed(
-                scheduled_seq_group.seq_group,
-                scheduled_seq_group.token_chunk_size)
+            with self.block_manager_lock:
+                self.block_manager.mark_blocks_as_computed(
+                    scheduled_seq_group.seq_group,
+                    scheduled_seq_group.token_chunk_size)
 
         self._seq_group_metadata_cache[self.next_cache_id].reset()
 
@@ -1790,11 +1837,13 @@ class Scheduler:
                 allow_async_output_proc)
 
     def fork_seq(self, parent_seq: Sequence, child_seq: Sequence) -> None:
-        self.block_manager.fork(parent_seq, child_seq)
+        with self.block_manager_lock:
+            self.block_manager.fork(parent_seq, child_seq)
 
     def free_seq(self, seq: Sequence) -> None:
         """Free a sequence from a block table."""
-        self.block_manager.free(seq)
+        with self.block_manager_lock:
+            self.block_manager.free(seq)
 
     def _free_finished_seqs(self, seq_group: SequenceGroup) -> None:
         """Free finished seqs in a sequence group."""
@@ -1837,7 +1886,8 @@ class Scheduler:
             self._async_stopped.clear()
 
     def _allocate_and_set_running(self, seq_group: SequenceGroup) -> None:
-        self.block_manager.allocate(seq_group)
+        with self.block_manager_lock:
+            self.block_manager.allocate(seq_group)
         for seq in seq_group.get_seqs(status=SequenceStatus.WAITING):
             seq.status = SequenceStatus.RUNNING
 
@@ -1877,7 +1927,8 @@ class Scheduler:
             seq_status = None
 
         for seq in seq_group.get_seqs(status=seq_status):
-            cows = self.block_manager.append_slots(seq, num_lookahead_slots)
+            with self.block_manager_lock:
+                cows = self.block_manager.append_slots(seq, num_lookahead_slots)
             if len(cows) > 0:
                 blocks_to_copy.extend(cows)
 
@@ -1950,7 +2001,8 @@ class Scheduler:
         seq_group: SequenceGroup,
         blocks_to_swap_in: List[Tuple[int, int]],
     ) -> None:
-        mapping = self.block_manager.swap_in(seq_group)
+        with self.block_manager_lock:
+            mapping = self.block_manager.swap_in(seq_group)
         blocks_to_swap_in.extend(mapping)
         for seq in seq_group.get_seqs(status=SequenceStatus.SWAPPED):
             seq.status = SequenceStatus.RUNNING
@@ -1960,13 +2012,14 @@ class Scheduler:
         seq_group: SequenceGroup,
         blocks_to_swap_out: List[Tuple[int, int]],
     ) -> None:
-        if not self.block_manager.can_swap_out(seq_group):
-            # FIXME(woosuk): Abort the sequence group instead of aborting the
-            # entire engine.
-            raise RuntimeError(
-                "Aborted due to the lack of CPU swap space. Please increase "
-                "the swap space to avoid this error.")
-        mapping = self.block_manager.swap_out(seq_group)
+        with self.block_manager_lock:
+            if not self.block_manager.can_swap_out(seq_group):
+                # FIXME(woosuk): Abort the sequence group instead of aborting the
+                # entire engine.
+                raise RuntimeError(
+                    "Aborted due to the lack of CPU swap space. Please increase "
+                    "the swap space to avoid this error.")
+            mapping = self.block_manager.swap_out(seq_group)
         blocks_to_swap_out.extend(mapping)
         for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
             seq.status = SequenceStatus.SWAPPED
@@ -2078,8 +2131,9 @@ class Scheduler:
             # evictor meaning that it's not yet allocated. However, we don't
             # exclude such tokens in the cache count because it will be
             # guaranteed to be allocated later if the sequence can be allocated.
-            num_cached_tokens_seq = self.block_manager.get_num_cached_tokens(
-                seq)
+            with self.block_manager_lock:
+                num_cached_tokens_seq = self.block_manager.get_num_cached_tokens(
+                    seq)
 
             # Sanity check.
             if num_cached_tokens_seq < num_computed_tokens_seq:

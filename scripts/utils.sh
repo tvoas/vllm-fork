@@ -361,11 +361,6 @@ set_config(){
     set_dtype
     set_bucketing
     set_perf_tuning
-    export PT_HPU_SDPA_QKV_SLICE_MODE_FWD=1
-    export PT_HPU_QKV_SLICE_SEQ_LEN_THLD=4096
-    export PT_HPU_SDPA_BR_FACTOR=4096       # slice size on the query
-    export PT_HPU_SDPA_BC_FACTOR=4096       # siice size on the kv
-    export VLLM_FUSEDSDPA_QKV_SLICE_CHUNK_SIZE=4096
 
     new_env=( $(env) )
     # report out the changed env

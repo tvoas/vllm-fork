@@ -129,6 +129,9 @@ if TYPE_CHECKING:
     VLLM_SLEEP_WHEN_IDLE: bool = False
     VLLM_WORKERS_NUMA_TOPO: Optional[str] = None
     VLLM_SCHED_DELAYED_PREFIX_CACHING_CALCULATION: bool = False
+    VLLM_PP_USE_CPU_COMS: bool = False
+    VLLM_PP_BONUS_VE: int = 0
+    VLLM_USE_SHARED_BLOCK_MANGERS: bool = True
 
 
 def get_default_cache_root():
@@ -897,6 +900,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_SCHED_DELAYED_PREFIX_CACHING_CALCULATION":
     lambda: os.environ.get("VLLM_SCHED_DELAYED_PREFIX_CACHING_CALCULATION",
                            "false").lower() in ("1", "true"),
+    
+    # Use shared block managers to maximize prefix cache sharing across multiple engines.
+    "VLLM_USE_SHARED_BLOCK_MANGERS":
+    lambda: bool(int(os.getenv("VLLM_USE_SHARED_BLOCK_MANGERS", "1"))),
 }
 
 # --8<-- [end:env-vars-definition]
