@@ -37,9 +37,10 @@ from vllm.attention import AttentionMetadata, get_attn_backend
 from vllm.attention.backends.abstract import AttentionType
 from vllm.attention.backends.hpu_attn import HPUAttentionImpl
 from vllm.config import DeviceConfig, VllmConfig
-from vllm.distributed import broadcast_tensor_dict, get_pp_group
+from vllm.distributed import broadcast_tensor_dict
 from vllm.distributed.kv_transfer import get_kv_transfer_group
-from vllm.distributed.parallel_state import (get_dp_group, get_tp_group,
+from vllm.distributed.parallel_state import (get_dp_group,
+                                             get_pp_group, get_tp_group,
                                              get_world_group)
 from vllm.forward_context import set_forward_context
 from vllm.inputs import INPUT_REGISTRY, InputRegistry
@@ -270,7 +271,7 @@ def custom_tuple_replace(obj: object, typename: str, **to_override):
 def align_dp_groups(value, op):
     group = get_dp_group().cpu_group
     value_t = torch.tensor(value, device="cpu", dtype=torch.int32)
-    torch.distributed.all_reduce(value_t, op=op, group=group)
+    get_dp_group().all_reduce(value_t, op=op, group=group)
     return value_t.item()
 
 
@@ -280,7 +281,7 @@ def align_tp_groups(value, op):
     if world_size <= 1:
         return value
     value_t = torch.tensor(value, device='cpu')
-    torch.distributed.all_reduce(value_t, op=op, group=group)
+    get_tp_group().all_reduce(value_t, op=op, group=group)
     return value_t.item()
 
 

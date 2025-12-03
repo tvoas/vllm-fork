@@ -21,7 +21,7 @@ from vllm_hpu_extension.profiler import HabanaMemoryProfiler, format_bytes
 
 import vllm.envs as envs
 from vllm.config import VllmConfig
-from vllm.distributed import (ensure_model_parallel_initialized, get_pp_group,
+from vllm.distributed import (ensure_model_parallel_initialized, get_pp_group, get_tp_group, get_world_group,
                               init_distributed_environment)
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
 from vllm.logger import init_logger
@@ -299,11 +299,37 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                 msg = ("VLLM_HPU_STEP_CPU_FALLBACK: "
                        f"{cpu_fallback_local_metric.stats()}, {input_stats}")
                 logger.warning(msg)
-
-            return output
-
-        output = LocalOrDistributedWorkerBase.execute_model(
-            self, execute_model_req)
+        else:
+            output = LocalOrDistributedWorkerBase.execute_model(
+                self, execute_model_req)
+        #VE = None
+        #if execute_model_req is not None:
+        #    VE = execute_model_req.virtual_engine
+        #if execute_model_req is not None and get_tp_group().is_first_rank:
+        #    def get_chunk_context_and_len(seq, chunk_size: int) -> tuple[int, int]:
+        #        total_prompt_len = len(seq._prompt_token_ids)
+        #        cached_len = seq._num_cached_tokens        # already cached
+        #        context_len = seq._num_computed_tokens            # already run
+        #        remaining = total_prompt_len - context_len - cached_len        # not yet computed
+        #        current_chunk_len = max(0, min(chunk_size, remaining))
+        #        return cached_len, context_len, current_chunk_len
+        #    ids = [list(seq.seq_data.keys()) for seq in execute_model_req.seq_group_metadata_list]
+        #    prompts = [seq.is_prompt for seq in execute_model_req.seq_group_metadata_list]
+        #    cached = []
+        #    contexts = []
+        #    sequences = []
+        #    chunks = []
+        #    for seq_group in execute_model_req.seq_group_metadata_list:
+        #        cached += [[]]
+        #        contexts += [[]]
+        #        sequences += [[]]
+        #        chunks += [seq_group.token_chunk_size]
+        #        for seq in seq_group.seq_data.values():
+        #            cache, context, sequence = get_chunk_context_and_len(seq, seq_group.token_chunk_size)
+        #            cached[-1].append(cache)
+        #            contexts[-1].append(context)
+        #            sequences[-1].append(sequence)
+        #    logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model end for VE{VE} with IDs={ids} and prompts={prompts}, cached={cached}, contexts={contexts}, sequences={sequences}, chunk_size={chunks}")
         return output
 
     @torch.inference_mode()
