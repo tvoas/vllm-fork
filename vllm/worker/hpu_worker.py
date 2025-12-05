@@ -603,16 +603,17 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
         This also warms up the model, which may record CUDA graphs.
         """
+        num_block_splits = 1 if envs.VLLM_USE_SHARED_BLOCK_MANGERS else self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE
         raise_if_cache_size_invalid(
             num_gpu_blocks, self.cache_config.block_size,
             self.model_config.max_model_len,
             self.parallel_config.pipeline_parallel_size)
         target_gpu_blocks = int(
-            num_gpu_blocks // (self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE))
+            num_gpu_blocks // num_block_splits)
         target_cpu_blocks = int(
-            num_cpu_blocks // (self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE))
-        self.cache_config.num_gpu_blocks = target_gpu_blocks * (self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
-        self.cache_config.num_cpu_blocks = target_cpu_blocks * (self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+            num_cpu_blocks // num_block_splits)
+        self.cache_config.num_gpu_blocks = target_gpu_blocks * num_block_splits
+        self.cache_config.num_cpu_blocks = target_cpu_blocks * num_block_splits
 
         self.model_runner.bucketing_manager.num_hpu_blocks = target_gpu_blocks
         self.model_runner.bucketing_manager.generate_prompt_buckets()
@@ -629,11 +630,21 @@ class HPUWorker(LocalOrDistributedWorkerBase):
 
     def _init_cache_engine(self):
         assert self.cache_config.num_gpu_blocks is not None
-        self.cache_engine = [
-            HPUCacheEngine(self.cache_config, self.model_config,
-                           self.parallel_config, self.device_config)
-            for _ in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
-        ]
+        if envs.VLLM_USE_SHARED_BLOCK_MANGERS:
+            singleton_cache = HPUCacheEngine(
+                self.cache_config, self.model_config,
+                self.parallel_config, self.device_config)
+            self.cache_engine = [
+                singleton_cache
+                for _ in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+            ]
+        else:
+            self.cache_engine = [
+                HPUCacheEngine(
+                    self.cache_config, self.model_config,
+                    self.parallel_config, self.device_config)
+                for _ in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+            ]
         self.hpu_cache = [
             self.cache_engine[ve].gpu_cache
             for ve in range(self.parallel_config.pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
