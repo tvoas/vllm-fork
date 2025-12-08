@@ -128,6 +128,7 @@ if TYPE_CHECKING:
     VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS: int = 1
     VLLM_SLEEP_WHEN_IDLE: bool = False
     VLLM_WORKERS_NUMA_TOPO: Optional[str] = None
+    VLLM_SCHED_DELAYED_PREFIX_CACHING_CALCULATION: bool = False
 
 
 def get_default_cache_root():
@@ -888,6 +889,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # VLLM_PP_BONUS_VE can be used to force PP to execute with additional virtual engines.
     "VLLM_PP_BONUS_VE":
     lambda: int(os.getenv("VLLM_PP_BONUS_VE", "0")),
+
+    # When enabled (True) with APC and padding-aware scheduling active,
+    # forces immediate exit from the prefill scheduling loop upon
+    # reaching `max_num_prefill_seqs`. This optimization enables
+    # identification of the longest contiguous sequence prefix available.
+    "VLLM_SCHED_DELAYED_PREFIX_CACHING_CALCULATION":
+    lambda: os.environ.get("VLLM_SCHED_DELAYED_PREFIX_CACHING_CALCULATION",
+                           "false").lower() in ("1", "true"),
 }
 
 # --8<-- [end:env-vars-definition]
