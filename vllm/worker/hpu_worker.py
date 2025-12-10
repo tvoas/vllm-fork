@@ -369,6 +369,9 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL - will log graph compilations per engine step, always, even if there were none # noqa:E501
         # VLLM_HPU_LOG_STEP_CPU_FALLBACKS         - will log cpu fallbacks per engine step, only when there was any # noqa:E501
         # VLLM_HPU_LOG_STEP_CPU_FALLBACKS_ALL     - will log cpu fallbacks per engine step, always, even if there were none # noqa:E501
+        VE = None
+        if execute_model_req is not None:
+            VE = execute_model_req.virtual_engine
         log_graph_compilation_all = os.environ.get(
             'VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL', '0') != '0'
         log_graph_compilation = os.environ.get(
@@ -435,6 +438,37 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         if execute_model_req is not None:
             self.cached_execute_model_req[
                 execute_model_req.virtual_engine] = execute_model_req
+        if execute_model_req is not None and get_tp_group().is_first_rank:
+            def get_chunk_context_and_len(seq, chunk_size: int) -> tuple[int, int]:
+                total_prompt_len = len(seq._prompt_token_ids)
+                cached_len = seq._num_cached_tokens        # already cached
+                context_len = seq._num_computed_tokens            # already run
+                remaining = total_prompt_len - context_len - cached_len        # not yet computed
+                current_chunk_len = max(0, min(chunk_size, remaining))
+                return cached_len, context_len, current_chunk_len
+            ids = [list(seq.seq_data.keys()) for seq in execute_model_req.seq_group_metadata_list]
+            prompts = [seq.is_prompt for seq in execute_model_req.seq_group_metadata_list]
+            blocks = [seq.block_tables for seq in execute_model_req.seq_group_metadata_list]
+            cached = []
+            contexts = []
+            sequences = []
+            chunks = []
+            kv_cache = self.cache_engine[VE]
+            cpu_cache = kv_cache.cpu_cache
+            cpu_cache = [(list(kv_layer[0].shape), list(kv_layer[1].shape)) for kv_layer in cpu_cache]
+            gpu_cache = kv_cache.gpu_cache
+            gpu_cache = [(list(kv_layer[0].shape), list(kv_layer[1].shape)) for kv_layer in gpu_cache]
+            for seq_group in execute_model_req.seq_group_metadata_list:
+                cached += [[]]
+                contexts += [[]]
+                sequences += [[]]
+                chunks += [seq_group.token_chunk_size]
+                for seq_id, seq in enumerate(seq_group.seq_data.values()):
+                    cache, context, sequence = get_chunk_context_and_len(seq, seq_group.token_chunk_size)
+                    cached[-1].append(cache)
+                    contexts[-1].append(context)
+                    sequences[-1].append(sequence)
+            logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model end for VE{VE} with IDs={ids} and prompts={prompts}, cached={cached}, contexts={contexts}, sequences={sequences}, chunk_size={chunks}, blocks={blocks}, cpu_cache={cpu_cache}, gpu_cache={gpu_cache}") 
         return output
 
     def _execute_model(
@@ -443,7 +477,41 @@ class HPUWorker(LocalOrDistributedWorkerBase):
     ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
+        VE = None
+        if execute_model_req is not None:
+            VE = execute_model_req.virtual_engine
         with self.lock:
+            if execute_model_req is not None and get_tp_group().is_first_rank:
+                def get_chunk_context_and_len(seq, chunk_size: int) -> tuple[int, int]:
+                    total_prompt_len = len(seq._prompt_token_ids)
+                    cached_len = seq._num_cached_tokens        # already cached
+                    context_len = seq._num_computed_tokens            # already run
+                    remaining = total_prompt_len - context_len - cached_len        # not yet computed
+                    current_chunk_len = max(0, min(chunk_size, remaining))
+                    return cached_len, context_len, current_chunk_len
+                ids = [list(seq.seq_data.keys()) for seq in execute_model_req.seq_group_metadata_list]
+                prompts = [seq.is_prompt for seq in execute_model_req.seq_group_metadata_list]
+                blocks = [seq.block_tables for seq in execute_model_req.seq_group_metadata_list]
+                cached = []
+                contexts = []
+                sequences = []
+                chunks = []
+                kv_cache = self.cache_engine[VE]
+                cpu_cache = kv_cache.cpu_cache
+                cpu_cache = [(list(kv_layer[0].shape), list(kv_layer[1].shape)) for kv_layer in cpu_cache]
+                gpu_cache = kv_cache.gpu_cache
+                gpu_cache = [(list(kv_layer[0].shape), list(kv_layer[1].shape)) for kv_layer in gpu_cache]
+                for seq_group in execute_model_req.seq_group_metadata_list:
+                    cached += [[]]
+                    contexts += [[]]
+                    sequences += [[]]
+                    chunks += [seq_group.token_chunk_size]
+                    for seq_id, seq in enumerate(seq_group.seq_data.values()):
+                        cache, context, sequence = get_chunk_context_and_len(seq, seq_group.token_chunk_size)
+                        cached[-1].append(cache)
+                        contexts[-1].append(context)
+                        sequences[-1].append(sequence)
+                logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_model start for VE{VE} with IDs={ids} and prompts={prompts}, cached={cached}, contexts={contexts}, sequences={sequences}, chunk_size={chunks}, blocks={blocks}, cpu_cache={cpu_cache}, gpu_cache={gpu_cache}") 
             inputs = self.prepare_input(execute_model_req)
             if inputs is None:
                 return None
@@ -704,8 +772,11 @@ class HPUWorker(LocalOrDistributedWorkerBase):
     def execute_worker(self, worker_input: WorkerInput) -> None:
         virtual_engine = worker_input.virtual_engine
         # Issue cache operations.
+        if get_tp_group().is_first_rank:
+            logger.info(f"hpu_worker[{get_world_group().rank_in_group}].execute_worker for VE{virtual_engine} swap_in={worker_input.blocks_to_swap_in}, swap_out={worker_input.blocks_to_swap_out}, copy={worker_input.blocks_to_copy}") 
         if (worker_input.blocks_to_swap_in is not None
                 and worker_input.blocks_to_swap_in.numel() > 0):
+            
             self.cache_engine[virtual_engine].swap_in(
                 worker_input.blocks_to_swap_in)
         if (worker_input.blocks_to_swap_out is not None
