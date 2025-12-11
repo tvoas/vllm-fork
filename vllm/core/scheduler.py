@@ -574,7 +574,8 @@ class Scheduler:
                     sliding_window=cache_config.sliding_window,
                     enable_caching=cache_config.enable_prefix_caching,
                 )
-                self.block_manager_lock = threading.Lock()
+                self.block_manager_lock = nullcontext()
+                #self.block_manager_lock = threading.Lock()
                 _SHARED_BLOCK_MANAGERS[shared_key] = self.block_manager
                 _SHARED_BLOCK_MANAGERS_LOCKS[shared_key] = self.block_manager_lock
 
