@@ -3477,7 +3477,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                 # use a list of context block indices [0, 1, ..., ctx-1].
                 if ctx:
                     seq_block_nums = math.ceil(seq_len / self.block_size)
-                    block_tables = {group_id: [i + 1 for i in seq_block_nums]}
+                    block_tables = {group_id: [i + 1 for i in range(seq_block_nums)]}
                     computed_block_nums = list(1, range(ctx) + 1)
         else:
             input_len = seq_len - 1
