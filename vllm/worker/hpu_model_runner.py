@@ -3478,7 +3478,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                 if ctx:
                     seq_block_nums = math.ceil(seq_len / self.block_size)
                     block_tables = {group_id: [i + 1 for i in range(seq_block_nums)]}
-                    computed_block_nums = list(1, range(ctx) + 1)
+                    computed_block_nums = list(range(1, ctx + 1))
         else:
             input_len = seq_len - 1
             output_len = 1
