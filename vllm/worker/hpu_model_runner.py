@@ -3067,6 +3067,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             attn_metadata = prefill_attn_metadata if \
                 prefill_attn_metadata is not None else decode_attn_metadata
 
+        if attn_metadata is not None and input_positions is not None:
+            attn_metadata.input_positions = input_positions
+
         return self._model_input_cls(input_tokens=input_tokens,
                                      seq_lens=seq_lens,
                                      query_lens=query_lens,
