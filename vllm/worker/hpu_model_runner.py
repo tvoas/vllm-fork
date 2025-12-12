@@ -100,6 +100,8 @@ shutdown_inc_called = False
 class PhaseType(Enum):
     PREFILL = 'prefill'
     PREFIX_PREFILL = 'prefix_prefill'
+    MIXED = 'mixed'
+    PREFIX_MIXED = 'prefix_mixed'
     DECODE = 'decode'
 
 
@@ -1780,7 +1782,14 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
 
     def _check_config(self, batch_size, seq_len, ctx, attn_metadata,
                       warmup_mode):
-        phase = 'prompt' if attn_metadata.is_prompt else 'decode'
+        if attn_metadata.is_prompt:
+            num_decode_tokens = getattr(attn_metadata, "num_decode_tokens", 0)
+            if num_decode_tokens > 0:
+                phase = 'mixed'
+            else:
+                phase = 'prompt'
+        else:
+            phase = 'decode'
         num_blocks = ctx if warmup_mode else self._num_blocks(attn_metadata)
         cfg: Optional[tuple] = (batch_size, seq_len, num_blocks, phase)
         seen = cfg in self.seen_configs
@@ -4414,14 +4423,21 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             return 0
         return attn_metadata.block_list.numel()
 
-    def _phase(self, attn_metadata):
+    def _phase(self, attn_metadata, is_chunked_prefill: bool=False):
         phase_type: PhaseType
         is_prompt = attn_metadata.is_prompt
         is_prefix_prefill = is_prompt and attn_metadata.block_list is not None
-        if is_prompt and is_prefix_prefill:
-            phase_type = PhaseType.PREFIX_PREFILL
-        elif is_prompt and not is_prefix_prefill:
-            phase_type = PhaseType.PREFILL
+        if is_prompt:
+            if is_chunked_prefill:
+                num_decode_tokens = getattr(attn_metadata, "num_decode_tokens", 0)
+                if num_decode_tokens > 0:
+                    phase_type = PhaseType.MIXED
+                else:
+                    phase_type = PhaseType.PREFILL
+            elif is_prefix_prefill:
+                phase_type = PhaseType.PREFIX_PREFILL
+            else:
+                phase_type = PhaseType.PREFILL
         elif not is_prompt:
             phase_type = PhaseType.DECODE
         else:
@@ -4436,7 +4452,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         cfg: Optional[tuple] = None
         assert cfg is None, "Configs changed between 2D and 3D"
         if is_prefix_caching or is_chunked_prefill:
-            phase = self._phase(attn_metadata)
+            phase = self._phase(attn_metadata, is_chunked_prefill=is_chunked_prefill)
             num_blocks = self._num_blocks(attn_metadata)
             cfg = (batch_size, seq_len, num_blocks, phase)
         else:
