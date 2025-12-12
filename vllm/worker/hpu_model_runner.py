@@ -3473,10 +3473,10 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                 input_len = seq_len
                 output_len = 0
                 block_tables = None
+                # For prompt warmup, mimic real scheduler behavior:
+                # use a list of context block indices [0, 1, ..., ctx-1].
                 if ctx:
-                    seq_block_nums = math.ceil(seq_len / self.block_size)
-                    block_tables = {group_id: [_PAD_BLOCK_ID] * seq_block_nums}
-                    computed_block_nums = ([1] * ctx)
+                    computed_block_nums = list(range(ctx))
         else:
             input_len = seq_len - 1
             output_len = 1
