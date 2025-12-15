@@ -1788,16 +1788,19 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             if phase in (PhaseType.PREFILL, PhaseType.PREFIX_PREFILL):
                 bs, seq, ctx = shape
                 ctx_len = ctx * self.block_size
+                logger.info(f'use graphs msltc prefix: {bs * (seq + ctx_len) <= self.max_seq_len_to_capture}')
                 return bs * (seq + ctx_len) <= self.max_seq_len_to_capture
             elif phase is PhaseType.DECODE:
                 bs, seq, ctx = shape
                 # For decode, seq is typically 1, so bs*seq is reasonable
+                logger.info(f'use graphs msltc decode: {bs * seq <= self.max_seq_len_to_capture}')
                 return bs * seq <= self.max_seq_len_to_capture
             else:  # MIXED / PREFIX_MIXED
                 (p_bs, p_seq, p_ctx,
                  d_bs, d_seq, d_ctx) = shape
                 p_ctx_len = p_ctx * self.block_size
                 total_tokens = p_bs * (p_seq + p_ctx_len) + d_bs * d_seq
+                logger.info(f'use graphs msltc mixed: {total_tokens <= self.max_seq_len_to_capture}')
                 return total_tokens <= self.max_seq_len_to_capture
 
         # When skip_warmup == True we only allow shapes that are in our
@@ -1805,7 +1808,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         if phase in (PhaseType.PREFILL, PhaseType.PREFIX_PREFILL):
             bs, seq, ctx = shape
             bucket = (bs, seq, ctx)
-            logger.info(f'prefix bucket: {bucket}')
+            logger.info(f'use graphs prefix bucket: {bucket}')
             if seq > 1:
                 return bucket in self.bucketing_manager.prompt_buckets
             else:
@@ -1816,14 +1819,14 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         if phase is PhaseType.DECODE:
             bs, seq, ctx = shape
             bucket = (bs, seq, ctx)
-            logger.info(f'decode bucket: {bucket}')
+            logger.info(f'use graphs decode bucket: {bucket}')
             return bucket in self.bucketing_manager.decode_buckets
 
         # MIXED / PREFIX_MIXED: require full 6‑tuple membership
         (p_bs, p_seq, p_ctx,
          d_bs, d_seq, d_ctx) = shape
         mixed_bucket = (p_bs, p_seq, p_ctx, d_bs, d_seq, d_ctx)
-        logger.info(f'mixed bucket: {mixed_bucket}')
+        logger.info(f'use graphs mixed bucket: {mixed_bucket}')
         return mixed_bucket in self.bucketing_manager.mixed_buckets
 
     def _is_valid_bucket(self, bucket):
