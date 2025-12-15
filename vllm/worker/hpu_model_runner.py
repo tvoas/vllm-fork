@@ -4046,9 +4046,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                 self.log_warmup('mixed',
                                 i,
                                 num_candidates,
-                                p_bs,
-                                p_seq,
-                                p_ctx)
+                                (p_bs, d_bs),
+                                (p_seq, d_seq),
+                                (p_ctx, d_ctx))
 
                 # The mixed scenario itself uses both prompt+decode config.
                 with HabanaMemoryProfiler() as mem_prof:
