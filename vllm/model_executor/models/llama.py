@@ -260,7 +260,7 @@ class LlamaAttention(nn.Module):
             qkv, _ = self.qkv_proj(hidden_states)
             q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size],
                                 dim=-1)
-        logger.info(f"WR={get_world_group().rank_in_group}, positions={positions.shape}, q={q.shape}, k={k.shape}")
+        #logger.info(f"WR={get_world_group().rank_in_group}, positions={positions.shape}, q={q.shape}, k={k.shape}")
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
 
