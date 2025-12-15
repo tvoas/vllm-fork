@@ -4880,7 +4880,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             torch.hpu.synchronize()
                             import torch.distributed as dist
                             if dist.is_initialized():
-                                get_tp_group().barrier()
+                                #get_tp_group().barrier()
+                                get_world_group().barrier()
                 else:
                     logger.debug("Bypassing model execution")
 
