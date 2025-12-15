@@ -1781,6 +1781,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                  decode_bs, decode_seq, decode_ctx_blocks)
         """
         if self.enforce_eager:
+            logger.info(f'use graphs enforce eager')
             return False
 
         # Global hard cap: don't capture graphs for very large token counts.
@@ -1788,19 +1789,19 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             if phase in (PhaseType.PREFILL, PhaseType.PREFIX_PREFILL):
                 bs, seq, ctx = shape
                 ctx_len = ctx * self.block_size
-                logger.info(f'use graphs msltc prefix: {bs * (seq + ctx_len) <= self.max_seq_len_to_capture}')
+                logger.info(f'use graphs msltc prefix: {bs * (seq + ctx_len) <= self.max_seq_len_to_capture} <- {shape}')
                 return bs * (seq + ctx_len) <= self.max_seq_len_to_capture
             elif phase is PhaseType.DECODE:
                 bs, seq, ctx = shape
                 # For decode, seq is typically 1, so bs*seq is reasonable
-                logger.info(f'use graphs msltc decode: {bs * seq <= self.max_seq_len_to_capture}')
+                logger.info(f'use graphs msltc decode: {bs * seq <= self.max_seq_len_to_capture} <- {shape}')
                 return bs * seq <= self.max_seq_len_to_capture
             else:  # MIXED / PREFIX_MIXED
                 (p_bs, p_seq, p_ctx,
                  d_bs, d_seq, d_ctx) = shape
                 p_ctx_len = p_ctx * self.block_size
                 total_tokens = p_bs * (p_seq + p_ctx_len) + d_bs * d_seq
-                logger.info(f'use graphs msltc mixed: {total_tokens <= self.max_seq_len_to_capture}')
+                logger.info(f'use graphs msltc mixed: {total_tokens <= self.max_seq_len_to_capture} <- {shape}')
                 return total_tokens <= self.max_seq_len_to_capture
 
         # When skip_warmup == True we only allow shapes that are in our
