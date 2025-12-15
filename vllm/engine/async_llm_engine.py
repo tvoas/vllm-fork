@@ -3,6 +3,8 @@
 
 import asyncio
 import copy
+from collections import deque
+import os
 import time
 import weakref
 from functools import partial
@@ -137,6 +139,19 @@ class RequestTracker:
                                                 dict]] = asyncio.Queue()
         self.new_requests_event = asyncio.Event()
 
+        # --- Adaptive polling config (env‑driven) ---
+        self._min_poll     = float(os.getenv("VLLM_ENGINE_MIN_POLL_INTERVAL_S"    , "0.01"))
+        self._max_poll     = float(os.getenv("VLLM_ENGINE_MAX_POLL_INTERVAL_S"    , "0.03"))
+        self._default_poll = float(os.getenv("VLLM_ENGINE_DEFAULT_POLL_INTERVAL_S", "0.02"))
+        self._burst_window = float(os.getenv("VLLM_ENGINE_BURST_WINDOW_S"         , "0.003"))
+        self._history_len  = int(os.getenv(  "VLLM_ENGINE_POLL_HISTORY_LEN"       , "100"))
+        self._smooth_alpha = float(os.getenv("VLLM_ENGINE_POLL_SMOOTH_ALPHA"      , "0.3"))
+
+        # --- Adaptive polling state ---
+        self._last_burst_time: Optional[float] = None
+        self._intervals: deque[float] = deque(maxlen=self._history_len)
+        self._current_poll: float = self._default_poll
+
     def __contains__(self, item):
         return item in self._request_streams
 
@@ -206,6 +221,9 @@ class RequestTracker:
             **engine_add_request_kwargs
         }))
 
+        # Record this arrival for adaptive polling.
+        self._record_arrival_and_update_poll()
+
         self.new_requests_event.set()
 
         if verbose:
@@ -262,7 +280,67 @@ class RequestTracker:
     
     def get_num_tracked_requests(self) -> int:
         return len(self._request_streams)
+    
+    def _record_arrival_and_update_poll(self) -> None:
+        """Record a request arrival, grouping close arrivals into bursts,
+        and update the adaptive poll interval."""
+        now = time.monotonic()
 
+        if self._last_burst_time is None:
+            self._last_burst_time = now
+            return
+
+        delta = now - self._last_burst_time
+
+        if delta < self._burst_window:
+            # Same burst: don't record a new interval or move the burst time.
+            return
+
+        # New burst: record inter‑burst interval based on the gap
+        self._intervals.append(delta)
+        self._last_burst_time = now
+
+        # Recompute target poll from history.
+        target_poll = self._compute_target_poll_interval()
+
+        # EWMA smoothing.
+        alpha = self._smooth_alpha
+        self._current_poll = (
+            (1.0 - alpha) * self._current_poll + alpha * target_poll
+        )
+
+    def _compute_target_poll_interval(self) -> float:
+        """Compute a target poll interval based on inter‑burst history."""
+        if not self._intervals:
+            # No history yet; fall back to default.
+            return self._default_poll
+
+        vals = list(self._intervals)
+        vals.sort()
+        n = len(vals)
+
+        # Median.
+        mid = n // 2
+        if n % 2 == 0:
+            median_i = 0.5 * (vals[mid - 1] + vals[mid])
+        else:
+            median_i = vals[mid]
+
+        # Filtered min to avoid chasing extremely small / noisy intervals.
+        min_i = vals[0]
+        filtered_min = max(min_i, self._min_poll / 2.0)
+
+        # Blend toward the median to avoid being too aggressive.
+        # Weighting: 0.3*min + 0.7*median.
+        target_raw = 0.3 * filtered_min + 0.7 * median_i
+
+        # Clamp to global bounds.
+        return max(self._min_poll, min(self._max_poll, target_raw))
+
+    def get_current_poll_interval(self) -> float:
+        """Return the current adaptive poll interval."""
+        # Clamp defensively in case envs were changed mid‑run.
+        return max(self._min_poll, min(self._max_poll, self._current_poll))
 
 class _AsyncLLMEngine(LLMEngine):
     """Extension of LLMEngine to add async methods."""
@@ -846,6 +924,7 @@ class AsyncLLMEngine(EngineClient):
         max_ve = pipeline_parallel_size + envs.VLLM_PP_BONUS_VE
         has_requests_in_progress = [False] * max_ve
 
+        # Initial poll interval; will be overridden by RequestTracker.
         POLL_TIME_S = 0.02
 
         while True:
@@ -902,6 +981,9 @@ class AsyncLLMEngine(EngineClient):
             # Abort if iteration takes too long due to unrecoverable errors
             # (eg. NCCL timeouts).
             try:
+                # Use adaptive poll interval from RequestTracker.
+                POLL_TIME_S = request_tracker.get_current_poll_interval()
+
                 async with asyncio_timeout(ENGINE_ITERATION_TIMEOUT_S):
                     done, _ = await asyncio.wait(
                         requests_in_progress,
