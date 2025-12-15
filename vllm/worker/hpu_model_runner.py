@@ -4063,7 +4063,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                         kv_caches=kv_caches,
                         is_pt_profiler_run=False,
                         is_lora_profile_run=True,
-                        temperature=1.0 if bs not in warmed_random_sampler_bs else 0,
+                        temperature=1.0 if p_bs + d_bs not in warmed_random_sampler_bs else 0,
                         img_args=UNSET_IMG_ARGS if self.is_mm_run() else None,
                         num_iters=3,
                         align_worker=False,
