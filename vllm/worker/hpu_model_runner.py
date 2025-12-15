@@ -3671,6 +3671,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                         align_worker=False,
                         is_dummy_run=False) -> None:
         phase = 'prompt' if is_prompt else 'decode'
+        logger.info('warmup_scenario.1')
         use_graphs = is_dummy_run or self._use_graphs(PhaseType.PREFILL if is_prompt else PhaseType.DECODE, batch_size, seq_len, ctx)
 
         scenario_name = ("warmup_"
@@ -3834,6 +3835,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
 
         decode_bs, decode_seq, decode_ctx = decode_config
 
+        logger.info('warmup_scenario_mix.1')
         use_graphs = is_dummy_run or self._use_graphs(PhaseType.MIXED, prompt_bs, prompt_seq,
                                                       prompt_ctx, decode_bs, decode_seq, decode_ctx)
 
@@ -4013,6 +4015,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             # buckets: List[Tuple[bs, seq, ctx]]
             num_candidates = len(buckets)
             for i, (bs, seq_len, ctx) in enumerate(buckets):
+                logger.info('warmup_graphs.1')
                 if not self._use_graphs(PhaseType.PREFILL if is_prompt else PhaseType.DECODE, bs, seq_len, ctx):
                     continue
 
@@ -4059,6 +4062,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             for i, (p_bs, p_seq, p_ctx,
                     d_bs, d_seq, d_ctx) in enumerate(buckets):
                 # Use graphs decision based on prompt side (as everywhere else)
+                logger.info('warmup_graphs.2')
                 if not self._use_graphs(PhaseType.MIXED, p_bs, p_seq, p_ctx, d_bs, d_seq, d_ctx):
                     continue
 
@@ -4807,6 +4811,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 if phase_type in (PhaseType.PREFILL, PhaseType.PREFIX_PREFILL,
                                 PhaseType.DECODE):
                     # Non-mixed: standard 3-tuple (bs, seq, ctx_blocks)
+                    logger.info('execute_model.1')
                     use_graphs = self._use_graphs(
                         phase_type,
                         batch_size,
@@ -4834,6 +4839,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
 
                     # If we have no mixed portion, fall back to pure prefill/decode logic.
                     if p_bs == 0 or d_bs == 0:
+                        logger.info('execute_model.2')
                         use_graphs = self._use_graphs(
                             PhaseType.PREFILL if is_prompt else PhaseType.DECODE,
                             batch_size,
@@ -4851,7 +4857,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
 
                         p_ctx_blocks = ctx_blocks
                         d_ctx_blocks = ctx_blocks
-
+                        logger.info('execute_model.3')
                         use_graphs = self._use_graphs(
                             PhaseType.MIXED,
                             p_bs,
