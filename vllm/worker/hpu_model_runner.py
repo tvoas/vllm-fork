@@ -1337,7 +1337,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         # Generate prompt buckets for pooler runner
         if self.vllm_config.model_config.runner_type == "pooling":
             self.bucketing_manager.generate_prompt_buckets()
-            self.bucketing_manager.generate_mixed_buckets()
 
         self.graphed_buckets: Set[Any] = set()
         self.multimodal_buckets: List[int] = [
@@ -1764,71 +1763,19 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
     def _is_fla_model(self):
         return hasattr(self.model_config.hf_config, "linear_conv_kernel_dim")
 
-    def _use_graphs(self, phase: PhaseType, *shape: int) -> bool:
-        """
-        Decide whether to use/capture graphs for a given configuration.
-
-        phase:
-          - PhaseType.PREFILL / PREFIX_PREFILL: pure prefill (prompt)
-          - PhaseType.DECODE: pure decode
-          - PhaseType.MIXED / PREFIX_MIXED: mixed prefill+decode
-
-        shape:
-          - PREFILL / PREFIX_PREFILL: (bs, seq, ctx_blocks)
-          - DECODE: (bs, seq, ctx_blocks) where seq == 1
-          - MIXED / PREFIX_MIXED:
-                (prompt_bs, prompt_seq, prompt_ctx_blocks,
-                 decode_bs, decode_seq, decode_ctx_blocks)
-        """
+    def _use_graphs(self, batch_size, seq_len, ctx_blocks=0):
         if self.enforce_eager:
-            logger.info(f'use graphs enforce eager')
             return False
-
-        # Global hard cap: don't capture graphs for very large token counts.
         if not self.skip_warmup:
-            if phase in (PhaseType.PREFILL, PhaseType.PREFIX_PREFILL):
-                bs, seq, ctx = shape
-                ctx_len = ctx * self.block_size
-                logger.info(f'use graphs msltc prefix: {bs * (seq + ctx_len) <= self.max_seq_len_to_capture} <- {shape}')
-                return bs * (seq + ctx_len) <= self.max_seq_len_to_capture
-            elif phase is PhaseType.DECODE:
-                bs, seq, ctx = shape
-                # For decode, seq is typically 1, so bs*seq is reasonable
-                logger.info(f'use graphs msltc decode: {bs * seq <= self.max_seq_len_to_capture} <- {shape}')
-                return bs * seq <= self.max_seq_len_to_capture
-            else:  # MIXED / PREFIX_MIXED
-                (p_bs, p_seq, p_ctx,
-                 d_bs, d_seq, d_ctx) = shape
-                p_ctx_len = p_ctx * self.block_size
-                total_tokens = p_bs * (p_seq + p_ctx_len) + d_bs * d_seq
-                logger.info(f'use graphs msltc mixed: {total_tokens <= self.max_seq_len_to_capture} <- {shape}')
-                return total_tokens <= self.max_seq_len_to_capture
-
-        # When skip_warmup == True we only allow shapes that are in our
-        # precomputed bucket sets.
-        if phase in (PhaseType.PREFILL, PhaseType.PREFIX_PREFILL):
-            bs, seq, ctx = shape
-            bucket = (bs, seq, ctx)
-            logger.info(f'use graphs prefix bucket: {bucket}')
-            if seq > 1:
-                return bucket in self.bucketing_manager.prompt_buckets
-            else:
-                # degenerate prefill behaving like decode
-                return bucket in self.bucketing_manager.decode_buckets or \
-                       bucket in self.bucketing_manager.prompt_buckets
-
-        if phase is PhaseType.DECODE:
-            bs, seq, ctx = shape
-            bucket = (bs, seq, ctx)
-            logger.info(f'use graphs decode bucket: {bucket}')
+            return batch_size * seq_len <= self.max_seq_len_to_capture
+        bucket = (batch_size, seq_len, ctx_blocks)
+        if seq_len > 1:
+            ctx_len = ctx_blocks * self.block_size
+            batched_tokens = batch_size * (seq_len + ctx_len)
+            return batched_tokens <= self.max_seq_len_to_capture and \
+                bucket in self.bucketing_manager.prompt_buckets
+        else:
             return bucket in self.bucketing_manager.decode_buckets
-
-        # MIXED / PREFIX_MIXED: require full 6‑tuple membership
-        (p_bs, p_seq, p_ctx,
-         d_bs, d_seq, d_ctx) = shape
-        mixed_bucket = (p_bs, p_seq, p_ctx, d_bs, d_seq, d_ctx)
-        logger.info(f'use graphs mixed bucket: {mixed_bucket}')
-        return mixed_bucket in self.bucketing_manager.mixed_buckets
 
     def _is_valid_bucket(self, bucket):
         return bucket[0] * bucket[1] <= self.max_num_batched_tokens
@@ -3531,12 +3478,10 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                 input_len = seq_len
                 output_len = 0
                 block_tables = None
-                # For prompt warmup, mimic real scheduler behavior:
-                # use a list of context block indices [0, 1, ..., ctx-1].
                 if ctx:
                     seq_block_nums = math.ceil(seq_len / self.block_size)
-                    block_tables = {group_id: [i + 1 for i in range(seq_block_nums)]}
-                    computed_block_nums = list(range(1, ctx + 1))
+                    block_tables = {group_id: [_PAD_BLOCK_ID] * seq_block_nums}
+                    computed_block_nums = ([1] * ctx)
         else:
             input_len = seq_len - 1
             output_len = 1
@@ -3671,8 +3616,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                         align_worker=False,
                         is_dummy_run=False) -> None:
         phase = 'prompt' if is_prompt else 'decode'
-        logger.info('warmup_scenario.1')
-        use_graphs = is_dummy_run or self._use_graphs(PhaseType.PREFILL if is_prompt else PhaseType.DECODE, batch_size, seq_len, ctx)
+        use_graphs = is_dummy_run or self._use_graphs(batch_size, seq_len, ctx)
 
         scenario_name = ("warmup_"
                          f"{phase}_"
@@ -3806,133 +3750,141 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                         img_args=None,
                         num_iters=3,
                         align_worker=False,
-                        is_dummy_run=False,
-                        decode_config=None,
-        ) -> None:
+                        is_dummy_run=False) -> None:
         """
-        Warm up mixed prefill-decode execution graphs using the explicit
-        mixed buckets from HPUBucketingManager.
-
-        Each mixed bucket is of the form:
-          (prompt_bs, prompt_seq, prompt_ctx,
-           decode_bs, decode_seq, decode_ctx)
-
-        We construct a synthetic mixed batch (prefill + decode) using the
-        passed-in prompt (batch_size, seq_len, ctx) and the decode_config
-        (decode_bs, decode_seq, decode_ctx), then run it through the normal
-        prepare + execute path so that HPU can record and cache execution
-        graphs for this mixed workload.
+        Warm up mixed prefill-decode execution graphs. The combined
+        seq-groups (prefill + decode) are executed together so that HPU
+        can record and cache execution graphs for mixed workloads. Used
+        when chunked prefill is enabled. Parameters follow the same
+        meaning as `warmup_scenario`, but the warmup is performed once
+        per decode-bucket to ensure coverage across all mixed
+        prefill-decode configurations.
         """
-        phase = 'mixed'
-        prompt_bs = batch_size
-        prompt_seq = seq_len
-        prompt_ctx = ctx
+        phase = 'mix'
+        use_graphs = is_dummy_run or self._use_graphs(batch_size, seq_len)
+        buckets = self.bucketing_manager.decode_buckets
+        num_candidates =  len(buckets)
+        for idx, (decode_bs, _, decode_ctx) in enumerate(reversed(buckets)):
+            scenario_name = ("warmup_"
+                         f"{phase}_"
+                         f"prefill_bs{batch_size}_"
+                         f"prefill_seq{seq_len}_"
+                         f"prefill_ctx{ctx}_"
+                         f"decode_bs{decode_bs}_"
+                         f"decode_ctx{decode_ctx}_"
+                         f"graphs{'T' if use_graphs else 'F'}")
 
-        # decode_config must be a 3-tuple (decode_bs, decode_seq, decode_ctx).
-        # prompt side comes from (batch_size, seq_len, ctx) args.
-        if decode_config is None:
-            return
+            self.log_warmup(f"Graph/{'mix'}/{'decode'}", idx, num_candidates, decode_bs, 1,
+                                decode_ctx)
+            dummy_lora_requests: List[LoRARequest] = []
+            dummy_lora_requests_per_seq: List[LoRARequest] = []
+            if self.lora_config and is_lora_profile_run:
+                assert self.lora_manager is not None
+                with self.lora_manager.dummy_lora_cache():
+                    for idx in range(self.lora_config.max_loras):
+                        lora_id = idx + 1
+                        dummy_lora_request = LoRARequest(
+                            lora_name=f"warmup_{lora_id}",
+                            lora_int_id=lora_id,
+                            lora_local_path="/not/a/real/path",
+                        )
+                        self.lora_manager.add_dummy_lora(dummy_lora_request,
+                                                        rank=LORA_WARMUP_RANK)
+                        dummy_lora_requests.append(dummy_lora_request)
+                    dummy_lora_requests_per_seq = [
+                        dummy_lora_requests[idx % len(dummy_lora_requests)]
+                        for idx in range(batch_size)
+                    ]
+            self.profiler.start('internal', scenario_name)
+            times = num_iters if use_graphs or is_pt_profiler_run else 1
+            seqs=[]
+            seqs_prefill = self.create_dummy_seq_group_metadata(
+                                0,
+                                seq_len + ctx * self.block_size,
+                                True,
+                                lora_request=dummy_lora_requests_per_seq[i]
+                                if dummy_lora_requests_per_seq else None,
+                                img_args=img_args,
+                                temperature=temperature,
+                                ctx=ctx)
 
-        decode_bs, decode_seq, decode_ctx = decode_config
-
-        logger.info('warmup_scenario_mix.1')
-        use_graphs = is_dummy_run or self._use_graphs(PhaseType.MIXED, prompt_bs, prompt_seq,
-                                                      prompt_ctx, decode_bs, decode_seq, decode_ctx)
-
-        # Mixed bucket (full explicit configuration).
-        mixed_bucket = (
-            prompt_bs,
-            prompt_seq,
-            prompt_ctx,
-            decode_bs,
-            decode_seq,
-            decode_ctx,
-        )
-
-        # If bucketing manager has mixed buckets defined, ensure this config
-        # is actually one of them. This keeps warmup aligned with the buckets.
-        if self.bucketing_manager.mixed_buckets:
-            if mixed_bucket not in self.bucketing_manager.mixed_buckets:
-                return
-
-        # If we are not using graphs and not doing profiler runs, do nothing.
-        if not (use_graphs or is_pt_profiler_run):
-            return
-
-        # Build synthetic seq groups for prompt and decode sides.
-        # NOTE: ctx is passed via ctx/prompt_ctx/decode_ctx and num blocks
-        # are derived inside create_dummy_seq_group_metadata.
-        prefill_seq_groups: List[SequenceGroupMetadata] = []
-        decode_seq_groups: List[SequenceGroupMetadata] = []
-
-        # Prompt side
-        for gid in range(prompt_bs):
-            prefill_seq_groups.append(
-                self.create_dummy_seq_group_metadata(
-                    group_id=gid,
-                    seq_len=prompt_seq,
-                    is_prompt=True,
-                    lora_request=None,
-                    img_args=UNSET_IMG_ARGS if self.is_mm_run() else None,
+            seqs.append(seqs_prefill)
+            blocks: list[int] = [decode_ctx // decode_bs for _ in range(decode_bs)]
+            blocks[0] += decode_ctx % decode_bs
+            for i, b in enumerate(blocks):
+                seqs_decode = self.create_dummy_seq_group_metadata(
+                    i,  # type: ignore[has-type]
+                    b * self.block_size - 1,
+                    False,
+                    lora_request=dummy_lora_requests_per_seq[i]
+                    if dummy_lora_requests_per_seq else None,
                     temperature=temperature,
-                    ctx=prompt_ctx,
-                ))
+                    ctx=decode_ctx)
+                seqs.append(seqs_decode)
 
-        # Decode side – continue group_ids after prompt
-        base_gid = prompt_bs
-        for gid in range(base_gid, base_gid + decode_bs):
-            decode_seq_groups.append(
-                self.create_dummy_seq_group_metadata(
-                    group_id=gid,
-                    seq_len=decode_seq,
-                    is_prompt=False,
-                    lora_request=None,
-                    img_args=UNSET_IMG_ARGS if self.is_mm_run() else None,
-                    temperature=temperature,
-                    ctx=decode_ctx,
-                ))
+            if not is_dummy_run:
+                torch.hpu.synchronize()
+            profiler = None
+            if is_pt_profiler_run and self.is_driver_worker:
+                profiler = setup_profiler()
+                profiler.start()
+            for time_index in range(times):
+                inputs = self.prepare_model_input_align_worker(
+                    seqs, align_worker=align_worker)
+                # Chendi: Necessary fix for warmup with TP>1
+                if time_index == 0:
+                    if self.is_driver_worker:
+                        broadcast_tensor_dict(
+                            {"input_tokens": inputs.input_tokens}, src=0)
+                    else:
+                        broadcast_tensor_dict(src=0)
+                if self._is_fla_model():
+                    self.add_fla_dummy_data(inputs)
+                if is_prompt or self.is_single_step:
+                    intermediate_tensors = None
+                    if not get_pp_group().is_first_rank:
+                        intermediate_tensors = \
+                            self.model.make_empty_intermediate_tensors(
+                                batch_size=batch_size,
+                                context_size=seq_len if is_prompt else 1,
+                                dtype=self.model_config.dtype,
+                                device=self.device)
+                    self.execute_model(inputs,
+                                    kv_caches,
+                                    intermediate_tensors=intermediate_tensors,
+                                    warmup_mode=True,
+                                    ctx_blocks=ctx,
+                                    is_dummy_run=is_dummy_run,
+                                    is_pt_profiler_run=is_pt_profiler_run)
+                else:  # decode with multi-step
+                    inputs = dataclasses.replace(inputs,
+                                                is_first_multi_step=True,
+                                                is_last_step=False)
+                    self.execute_model(inputs,
+                                    kv_caches,
+                                    warmup_mode=True,
+                                    num_steps=2,
+                                    seqs=seqs,
+                                    ctx_blocks=ctx)
+                    inputs = dataclasses.replace(inputs,
+                                                is_first_multi_step=False,
+                                                is_last_step=True)
+                    self.execute_model(inputs,
+                                    kv_caches,
+                                    warmup_mode=True,
+                                    num_steps=2,
+                                    seqs=seqs,
+                                    ctx_blocks=ctx)
+                if not is_dummy_run:
+                    torch.hpu.synchronize()
+                if profiler:
+                    profiler.step()
+            if profiler:
+                profiler.stop()
+            self.profiler.end()
+            if not is_dummy_run:
+                gc.collect()
 
-        # Combine into a single mixed batch.
-        seq_group_metadata_list = prefill_seq_groups + decode_seq_groups
-
-        scenario_name = (
-            "warmup_mixed_"
-            f"pbs{prompt_bs}_pseq{prompt_seq}_pctx{prompt_ctx}_"
-            f"dbs{decode_bs}_dseq{decode_seq}_dctx{decode_ctx}_"
-            f"multimodal{img_args if img_args else 'F'}_"
-            f"graphs{'T' if use_graphs else 'F'}"
-        )
-
-        self.profiler.start('internal', scenario_name)
-        times = num_iters if use_graphs or is_pt_profiler_run else 1
-        for time_index in range(times):
-            inputs = self.prepare_model_input_align_worker(
-                seq_group_metadata_list, align_worker=align_worker)
-            # Chendi: Necessary fix for warmup with TP>1
-            if time_index == 0:
-                if self.is_driver_worker:
-                    broadcast_tensor_dict(
-                        {"input_tokens": inputs.input_tokens}, src=0)
-                else:
-                    broadcast_tensor_dict(src=0)
-
-            intermediate_tensors = None
-            if not get_pp_group().is_first_rank:
-                intermediate_tensors = \
-                    self.model.make_empty_intermediate_tensors(
-                        batch_size=batch_size,
-                        context_size=seq_len if is_prompt else 1,
-                        dtype=self.model_config.dtype,
-                        device=self.device)
-            self.execute_model(inputs,
-                               kv_caches,
-                               intermediate_tensors=intermediate_tensors,
-                               warmup_mode=True,
-                               ctx_blocks=prompt_ctx + decode_ctx,
-                               is_dummy_run=is_dummy_run,
-                               is_pt_profiler_run=is_pt_profiler_run)
-        self.profiler.end()
-        return
 
     def remove_all_loras(self):
         if not self.lora_manager:
@@ -3992,118 +3944,84 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                       is_prompt,
                       kv_caches,
                       starting_mem=0,
-                      total_batch_seq=0.001,
-                      is_mixed: bool=False):
-        """
-        Warm up graphs for either pure prompt, pure decode, or mixed
-        (prompt + decode) scenarios.
-
-        - When is_prompt is True  and chunked prefill is disabled -> prompt.
-        - When is_prompt is False and chunked prefill is disabled -> decode.
-        - When chunked prefill is enabled, we also warm up mixed cases using
-          HPUBucketingManager.mixed_buckets after prompt and decode.
-        """
-        if not buckets:
-            cur_mem = HabanaMemoryProfiler.current_device_memory_usage()
-            return cur_mem, total_batch_seq, True
-
+                      total_batch_seq=0.001):
         total_mem = starting_mem
+        idx = 0
+        num_candidates = len(buckets)
         captured_all = True
         warmed_random_sampler_bs: Set[int] = set()
+        for idx, (batch_size, query_len, ctx) in enumerate(reversed(buckets)):
+            # Graph memory usage is proportional to seq dimension in a batch
+            phase = f"Graph/{'prompt' if is_prompt else 'decode'}"
+            if is_prompt:
+                seq_len = query_len + ctx * self.block_size
+                batch_seq = batch_size * seq_len
+            else:
+                batch_seq = batch_size
+            graphed_bucket = (batch_size, query_len, ctx, is_prompt)
+            if graphed_bucket in self.graphed_buckets:
+                continue
+            self.graphed_buckets.add(graphed_bucket)
+            self.log_warmup(phase, idx, num_candidates, batch_size, query_len,
+                            ctx)
+            with HabanaMemoryProfiler() as mem_prof:
+                self.warmup_scenario(
+                    batch_size,
+                    query_len,
+                    ctx,
+                    is_prompt,
+                    kv_caches,
+                    temperature=1.0
+                    if batch_size not in warmed_random_sampler_bs else 0,
+                )
+            warmed_random_sampler_bs.add(batch_size)
+            used_mem = align_workers(mem_prof.consumed_device_memory,
+                                     torch.distributed.ReduceOp.MAX)
+            total_mem += used_mem
+            total_batch_seq += batch_seq
 
-        if not is_mixed:
-            # buckets: List[Tuple[bs, seq, ctx]]
-            num_candidates = len(buckets)
-            for i, (bs, seq_len, ctx) in enumerate(buckets):
-                logger.info('warmup_graphs.1')
-                if not self._use_graphs(PhaseType.PREFILL if is_prompt else PhaseType.DECODE, bs, seq_len, ctx):
-                    continue
-
-                self.log_warmup('prompt' if is_prompt else 'decode',
-                                i,
-                                num_candidates,
-                                bs,
-                                seq_len,
+        if self.scheduler_config.chunked_prefill_enabled and is_prompt:
+            for idx, (batch_size, query_len, ctx) in enumerate(reversed(buckets)):
+                # Graph memory usage is proportional to seq dimension in a batch
+                phase = f"Graph/{'mix'}/{'prompt'}"
+                seq_len = query_len + ctx * self.block_size
+                batch_seq = batch_size * seq_len
+                self.log_warmup(phase, idx, num_candidates, batch_size, query_len,
                                 ctx)
-
-                with HabanaMemoryProfiler() as mem_prof:
-                    self.warmup_scenario(
-                        batch_size=bs,
-                        seq_len=seq_len,
-                        ctx=ctx,
-                        is_prompt=is_prompt,
-                        kv_caches=kv_caches,
-                        is_pt_profiler_run=False,
-                        is_lora_profile_run=True,
-                        temperature=1.0 if bs not in warmed_random_sampler_bs else 0,
-                        img_args=UNSET_IMG_ARGS if self.is_mm_run() else None,
-                        num_iters=3,
-                        align_worker=False,
-                        is_dummy_run=False,
-                    )
-
-                # Track that this bucket was graphed.
-                cfg = (PhaseType.PREFILL if is_prompt else PhaseType.DECODE, bs, seq_len, ctx)
-                self.graphed_buckets.add(cfg)
-                warmed_random_sampler_bs.add(bs)
-                used_mem = align_workers(mem_prof.consumed_device_memory,
-                        torch.distributed.ReduceOp.MAX)
-                total_mem += used_mem
-                total_batch_seq += bs * seq_len
-
-            self.log_graph_warmup_summary(buckets,
-                                          is_prompt=is_prompt,
-                                          total_mem=total_mem,
-                                          is_mixed=False)
-        else:
-            # Mixed buckets:
-            # List[Tuple[p_bs, p_seq, p_ctx, d_bs, d_seq, d_ctx]]
-            num_candidates = len(buckets)
-            for i, (p_bs, p_seq, p_ctx,
-                    d_bs, d_seq, d_ctx) in enumerate(buckets):
-                # Use graphs decision based on prompt side (as everywhere else)
-                logger.info('warmup_graphs.2')
-                if not self._use_graphs(PhaseType.MIXED, p_bs, p_seq, p_ctx, d_bs, d_seq, d_ctx):
-                    continue
-
-                self.log_warmup('mixed',
-                                i,
-                                num_candidates,
-                                (p_bs, d_bs),
-                                (p_seq, d_seq),
-                                (p_ctx, d_ctx))
-
-                # The mixed scenario itself uses both prompt+decode config.
                 with HabanaMemoryProfiler() as mem_prof:
                     self.warmup_scenario_mix(
-                        batch_size=p_bs,
-                        seq_len=p_seq,
-                        ctx=p_ctx,
-                        is_prompt=True,
-                        kv_caches=kv_caches,
-                        is_pt_profiler_run=False,
-                        is_lora_profile_run=True,
-                        temperature=1.0 if p_bs + d_bs not in warmed_random_sampler_bs else 0,
-                        img_args=UNSET_IMG_ARGS if self.is_mm_run() else None,
-                        num_iters=3,
-                        align_worker=False,
-                        is_dummy_run=False,
-                        decode_config=(d_bs, d_seq, d_ctx),
+                        batch_size,
+                        query_len,
+                        ctx,
+                        is_prompt,
+                        kv_caches,
+                        temperature=1.0
+                        if batch_size not in warmed_random_sampler_bs else 0,
                     )
-
-                # Track prompt-side bucket as graphed for mixed.
-                cfg = (PhaseType.MIXED, p_bs, p_seq, p_ctx, d_bs, d_seq, d_ctx)
-                self.graphed_buckets.add(cfg)
-                warmed_random_sampler_bs.add(p_bs + d_bs)
+                warmed_random_sampler_bs.add(batch_size)
                 used_mem = align_workers(mem_prof.consumed_device_memory,
-                        torch.distributed.ReduceOp.MAX)
+                                        torch.distributed.ReduceOp.MAX)
                 total_mem += used_mem
-                total_batch_seq += p_bs * p_seq + d_bs * d_seq
+                total_batch_seq += batch_seq
 
-            self.log_graph_warmup_summary(buckets,
-                                          is_prompt=True,
-                                          total_mem=total_mem,
-                                          is_mixed=True)
+        if is_prompt and self.is_mm_run():
+            #For multimodal total_batch_seq and total_mem, we store it in the
+            #attribute for now.
+            mm_outputs = self._warmup_multimodal_graph(
+                kv_caches=kv_caches,
+                starting_mem=0
+                if not hasattr(self, "mm_total_mem") \
+                    else self.mm_total_mem, # type: ignore
+                total_batch_seq=0.001
+                if not hasattr(self, "mm_total_batch_seq") else
+                self.mm_total_batch_seq) # type: ignore
+
+            if mm_outputs is not None:
+                mm_total_mem, total_mm_batch_seq, mm_captured_all = mm_outputs
+                total_mem = total_mem + mm_total_mem
+                captured_all = captured_all and mm_captured_all
+                self.mm_total_mem = mm_total_mem
+                self.mm_total_batch_seq = total_mm_batch_seq
 
         return total_mem, total_batch_seq, captured_all
 
@@ -4145,12 +4063,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
 
         return total_mem, total_batch_seq, captured_all
 
-    def log_graph_warmup_summary(self, buckets, is_prompt, total_mem, is_mixed: bool=False):
+    def log_graph_warmup_summary(self, buckets, is_prompt, total_mem):
         num_candidates = len(buckets)
-        if is_mixed:
-            phase = 'mixed'
-        else:
-            phase = 'Prompt' if is_prompt else 'Decode'
+        phase = 'Prompt' if is_prompt else 'Decode'
         graphed = buckets
         if num_candidates == 0:
             num_candidates = 1
@@ -4250,17 +4165,12 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                     mem_post_prompt, prompt_batch_seq, prompt_captured_all = \
                         self.warmup_graphs(
                         self.bucketing_manager.prompt_buckets,
-                        True, kv_caches, is_mixed=False)
+                        True, kv_caches)
 
                     mem_post_decode, decode_batch_seq, decode_captured_all = \
                         self.warmup_graphs(
                         self.bucketing_manager.decode_buckets,
-                        False, kv_caches, is_mixed=False)
-                    if self.scheduler_config.enable_chunked_prefill:
-                        mem_post_mixed, mixed_batch_seq, mixed_captured_all = \
-                            self.warmup_graphs(
-                            self.bucketing_manager.mixed_buckets,
-                            True, kv_caches, is_mixed=True)
+                        False, kv_caches)
                 else:
                     msg = (f"Using {format_bytes(graph_free_mem)}"
                            f"/{format_bytes(free_mem)} "
@@ -4285,11 +4195,6 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                     self.log_graph_warmup_summary(
                         self.bucketing_manager.decode_buckets, False,
                         mem_post_decode)
-                    if self.scheduler_config.enable_chunked_prefill:
-                        self.log_graph_warmup_summary(
-                            self.bucketing_manager.mixed_buckets, True,
-                            mem_post_mixed, is_mixed=True)
-
 
         end_time = time.perf_counter()
         end_mem = HabanaMemoryProfiler.current_device_memory_usage()
@@ -4774,99 +4679,19 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             is_prompt = attn_metadata.is_prompt
             assert is_prompt is not None
             seq_len = self._seq_len(attn_metadata)
-
-            # Derive phase type (prefill / decode / mixed) from metadata.
-            # This reuses the same logic as HPUModelRunner._phase().
-            if self.scheduler_config.enable_chunked_prefill and \
-               hasattr(self, "_phase"):
-                phase_type = self._phase(
-                    attn_metadata,
-                    is_chunked_prefill=self.scheduler_config.enable_chunked_prefill,
-                )
-            else:
-                phase_type = (PhaseType.PREFILL if is_prompt
-                              else PhaseType.DECODE)
-
-            # Default context blocks for non-warmup; for warmup we pass ctx explicitly.
-            ctx_blocks = 0
-            # phase string used for logging/profiling names
-            phase_str = 'prompt' if is_prompt else 'decode'
-
-            # For non-mixed prompt/decode, handle ctx as before.
-            if phase_type in (PhaseType.PREFILL, PhaseType.PREFIX_PREFILL):
-                if attn_metadata.block_list is not None and not warmup_mode:
-                    ctx_blocks = attn_metadata.block_list.shape[-1]
-            elif phase_type is PhaseType.DECODE:
+            phase = 'prompt' if is_prompt else 'decode'
+            if phase == 'decode':
                 if not warmup_mode:
-                    # For decode, seq_len currently encodes total context length.
                     ctx_blocks = seq_len
                 seq_len = 1
+            elif attn_metadata.block_list is not None:
+                if not warmup_mode:
+                    ctx_blocks = attn_metadata.block_list.shape[-1]
 
-            # Decide whether to use graphs.
             if self._is_fla_model():
-                # Flat Linear Attention models keep existing rule: graphs only for decode.
                 use_graphs = not is_prompt
             else:
-                if phase_type in (PhaseType.PREFILL, PhaseType.PREFIX_PREFILL,
-                                PhaseType.DECODE):
-                    # Non-mixed: standard 3-tuple (bs, seq, ctx_blocks)
-                    logger.info('execute_model.1')
-                    use_graphs = self._use_graphs(
-                        phase_type,
-                        batch_size_padded,
-                        seq_len,
-                        ctx_blocks,
-                    )
-                else:
-                    # MIXED / PREFIX_MIXED:
-                    # Extract prompt+decode shapes from attn_metadata.
-                    #
-                    # We use:
-                    #   - prompt_bs = num_prefills
-                    #   - prompt_seq = num_prefill_tokens // num_prefills (if >0)
-                    #   - prompt_ctx_blocks = ctx_blocks derived from block_list
-                    #   - decode_bs = num_decode_tokens  (since decode seq_len==1)
-                    #   - decode_seq = 1
-                    #   - decode_ctx_blocks = same ctx_blocks (shared KV cache)
-                    num_prefills = int(attn_metadata.num_prefills)
-                    num_prefill_tokens = int(attn_metadata.num_prefill_tokens)
-                    num_decode_tokens = int(attn_metadata.num_decode_tokens)
-
-                    p_bs = max(num_prefills, 0)
-                    d_bs = max(num_decode_tokens, 0)
-                    d_seq = 1
-
-                    # If we have no mixed portion, fall back to pure prefill/decode logic.
-                    if p_bs == 0 or d_bs == 0:
-                        logger.info('execute_model.2')
-                        use_graphs = self._use_graphs(
-                            PhaseType.PREFILL if is_prompt else PhaseType.DECODE,
-                            batch_size_padded,
-                            seq_len,
-                            ctx_blocks,
-                        )
-                        phase_str = 'prompt' if is_prompt else 'decode'
-                    else:
-                        # Derive per-sequence prompt length if evenly partitioned;
-                        # otherwise fall back to current seq_len as an approximation.
-                        if num_prefills > 0 and num_prefill_tokens % num_prefills == 0:
-                            p_seq = num_prefill_tokens // num_prefills
-                        else:
-                            p_seq = seq_len
-
-                        p_ctx_blocks = ctx_blocks
-                        d_ctx_blocks = ctx_blocks
-                        logger.info('execute_model.3')
-                        use_graphs = self._use_graphs(
-                            PhaseType.MIXED,
-                            p_bs,
-                            p_seq,
-                            p_ctx_blocks,
-                            d_bs,
-                            d_seq,
-                            d_ctx_blocks,
-                        )
-                        phase_str = 'mixed'
+                use_graphs = self._use_graphs(batch_size_padded, seq_len, ctx_blocks)
 
             self._check_config(batch_size_padded, seq_len, ctx_blocks, attn_metadata,
                                warmup_mode)
@@ -4945,14 +4770,13 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             htorch.core.mark_step()
             if self.is_driver_worker:
                 model_event_name = ("model_"
-                                    f"{phase_str}_"
+                                    f"{phase}_"
                                     f"bs{batch_size_padded}_"
                                     f"seq{seq_len}_"
                                     f"ctx{ctx_blocks}_"
                                     f"graphs{'T' if use_graphs else 'F'}")
             else:
                 model_event_name = 'model_executable'
-            logger.info(f"executing: {model_event_name}")
             if num_steps > 1 or use_delayed_sampling:
                 # in case of multi-step scheduling
                 # we only want to pythonize in the last step
@@ -5058,8 +4882,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             torch.hpu.synchronize()
                             import torch.distributed as dist
                             if dist.is_initialized():
-                                #get_tp_group().barrier()
-                                get_world_group().barrier()
+                                get_tp_group().barrier()
                 else:
                     logger.debug("Bypassing model execution")
 
@@ -5104,7 +4927,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 # Compute the logits.
                 with self.profiler.record_event('internal',
                                                 ('compute_logits_'
-                                                 f'{phase_str}_bs'
+                                                 f'{phase}_bs'
                                                  f'{batch_size_padded}_'
                                                  f'seq{seq_len}_ctx'
                                                  f'{ctx_blocks}'),
@@ -5126,7 +4949,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
 
                 with self.profiler.record_event('internal',
                                                 ('sample_'
-                                                 f'{phase_str}_'
+                                                 f'{phase}_'
                                                  f'bs{batch_size_padded}_'
                                                  f'seq{seq_len}_'
                                                  f'ctx{ctx_blocks}'),

@@ -414,12 +414,9 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         self.cache_config.num_cpu_blocks = num_cpu_blocks
         self.model_runner.bucketing_manager.num_hpu_blocks = (
             num_gpu_blocks // self.parallel_config.pipeline_parallel_size)
-        # Generate prefill and decode buckets first, then mixed buckets.
         self.model_runner.bucketing_manager.generate_prompt_buckets()
         if not self.model_runner.is_pooler:
             self.model_runner.bucketing_manager.generate_decode_buckets()
-        # Mixed buckets depend on both prompt and decode buckets.
-        self.model_runner.bucketing_manager.generate_mixed_buckets()
 
         with HabanaMemoryProfiler() as m:
             self._init_cache_engine()

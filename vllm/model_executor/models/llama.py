@@ -62,10 +62,6 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
 
-from vllm.distributed.parallel_state import get_world_group
-from vllm.logger import init_logger
-logger = init_logger(__name__)
-
 is_hpu = current_platform.is_hpu()
 
 
@@ -260,7 +256,6 @@ class LlamaAttention(nn.Module):
             qkv, _ = self.qkv_proj(hidden_states)
             q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size],
                                 dim=-1)
-        #logger.info(f"WR={get_world_group().rank_in_group}, positions={positions.shape}, q={q.shape}, k={k.shape}")
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
 
