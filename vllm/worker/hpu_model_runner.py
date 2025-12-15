@@ -3899,20 +3899,32 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
 
         self.profiler.start('internal', scenario_name)
         times = num_iters if use_graphs or is_pt_profiler_run else 1
-        for _ in range(times):
-            model_input, sampling_metadata = self.prepare_input_tensors(
-                seq_group_metadata_list=seq_group_metadata_list,
-                finished_requests_ids=None,
-                align_worker=align_worker,
-            )
-            _ = self.execute_model(
-                model_input=model_input,
-                kv_caches=kv_caches,
-                sampling_metadata=sampling_metadata,
-                warmup_mode=True,
-                is_dummy_run=is_dummy_run,
-                is_pt_profiler_run=is_pt_profiler_run,
-            )
+        for time_index in range(times):
+            inputs = self.prepare_model_input_align_worker(
+                seq_group_metadata_list, align_worker=align_worker)
+            # Chendi: Necessary fix for warmup with TP>1
+            if time_index == 0:
+                if self.is_driver_worker:
+                    broadcast_tensor_dict(
+                        {"input_tokens": inputs.input_tokens}, src=0)
+                else:
+                    broadcast_tensor_dict(src=0)
+
+            intermediate_tensors = None
+            if not get_pp_group().is_first_rank:
+                intermediate_tensors = \
+                    self.model.make_empty_intermediate_tensors(
+                        batch_size=batch_size,
+                        context_size=seq_len if is_prompt else 1,
+                        dtype=self.model_config.dtype,
+                        device=self.device)
+            self.execute_model(inputs,
+                               kv_caches,
+                               intermediate_tensors=intermediate_tensors,
+                               warmup_mode=True,
+                               ctx_blocks=prompt_ctx + decode_ctx,
+                               is_dummy_run=is_dummy_run,
+                               is_pt_profiler_run=is_pt_profiler_run)
         self.profiler.end()
         return
 
