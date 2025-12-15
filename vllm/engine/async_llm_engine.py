@@ -259,6 +259,9 @@ class RequestTracker:
 
     def has_new_requests(self):
         return not self._new_requests.empty()
+    
+    def get_num_tracked_requests(self) -> int:
+        return len(self._request_streams)
 
 
 class _AsyncLLMEngine(LLMEngine):
@@ -840,7 +843,8 @@ class AsyncLLMEngine(EngineClient):
 
         pipeline_parallel_size = \
                 engine.engine.parallel_config.pipeline_parallel_size
-        has_requests_in_progress = [False] * (pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+        max_ve = pipeline_parallel_size + envs.VLLM_PP_BONUS_VE
+        has_requests_in_progress = [False] * max_ve
 
         POLL_TIME_S = 0.02
 
@@ -867,15 +871,33 @@ class AsyncLLMEngine(EngineClient):
                 if not engine:
                     return
                 logger.debug("Got new requests!")
+                target_active_ve = max(1, min(max_ve, request_tracker.get_num_tracked_requests()))
                 requests_in_progress = []
-                for ve in range(pipeline_parallel_size + envs.VLLM_PP_BONUS_VE):
+                for ve in range(target_active_ve):
                     requests_in_progress.append(asyncio.create_task(engine.engine_step(ve)))
-                has_requests_in_progress = [True] * (pipeline_parallel_size + envs.VLLM_PP_BONUS_VE)
+                has_requests_in_progress = [True] * target_active_ve
+                if target_active_ve < max_ve:
+                    has_requests_in_progress += [False] * (max_ve - target_active_ve)
             elif not all(has_requests_in_progress) and request_tracker.has_new_requests():
+                target_active_ve = max(1, min(max_ve, request_tracker.get_num_tracked_requests()))
+                current_active_ve = sum(1 for active in has_requests_in_progress if active)
                 for ve, active in enumerate(has_requests_in_progress):
                     if not active:
-                        requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
+                        if ve >= len(requests_in_progress):
+                            requests_in_progress.append(asyncio.create_task(engine.engine_step(ve)))
+                        else:
+                            requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
                         has_requests_in_progress[ve] = True
+                if current_active_ve < target_active_ve:
+                    for ve, active in enumerate(has_requests_in_progress):
+                        if active:
+                            continue
+                        requests_in_progress[ve] = asyncio.create_task(
+                            engine.engine_step(ve))
+                        has_requests_in_progress[ve] = True
+                        current_active_ve += 1
+                        if current_active_ve >= target_active_ve:
+                            break
 
             # Abort if iteration takes too long due to unrecoverable errors
             # (eg. NCCL timeouts).
@@ -887,7 +909,7 @@ class AsyncLLMEngine(EngineClient):
                         return_when=asyncio.FIRST_COMPLETED)
 
                     # Yield to event loop (balance across VEs / RPC tasks).
-                    for _ in range(pipeline_parallel_size + envs.VLLM_PP_BONUS_VE):
+                    for _ in range(max_ve):
                         await asyncio.sleep(0)
 
                 # Process finished tasks.
@@ -908,10 +930,20 @@ class AsyncLLMEngine(EngineClient):
 
                 # After processing completions, if new requests arrived and idle VEs exist, launch them immediately.
                 if request_tracker.has_new_requests():
-                    for ve, active in enumerate(has_requests_in_progress):
-                        if not active:
-                            requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
+                    target_active_ve = max(1, min(max_ve, request_tracker.get_num_tracked_requests()))
+                    current_active_ve = sum(1 for active in has_requests_in_progress if active)
+                    if current_active_ve < target_active_ve:
+                        for ve, active in enumerate(has_requests_in_progress):
+                            if active:
+                                continue
+                            if ve >= len(requests_in_progress):
+                                requests_in_progress.append(asyncio.create_task(engine.engine_step(ve)))
+                            else:
+                                requests_in_progress[ve] = asyncio.create_task(engine.engine_step(ve))
                             has_requests_in_progress[ve] = True
+                            current_active_ve += 1
+                            if current_active_ve >= target_active_ve:
+                                break
             except asyncio.TimeoutError as exc:
                 logger.error(
                     "Engine iteration timed out. This should never happen!")
