@@ -1805,6 +1805,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         if phase in (PhaseType.PREFILL, PhaseType.PREFIX_PREFILL):
             bs, seq, ctx = shape
             bucket = (bs, seq, ctx)
+            logger.info(f'prefix bucket: {bucket}')
             if seq > 1:
                 return bucket in self.bucketing_manager.prompt_buckets
             else:
@@ -1815,12 +1816,14 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         if phase is PhaseType.DECODE:
             bs, seq, ctx = shape
             bucket = (bs, seq, ctx)
+            logger.info(f'decode bucket: {bucket}')
             return bucket in self.bucketing_manager.decode_buckets
 
         # MIXED / PREFIX_MIXED: require full 6‑tuple membership
         (p_bs, p_seq, p_ctx,
          d_bs, d_seq, d_ctx) = shape
         mixed_bucket = (p_bs, p_seq, p_ctx, d_bs, d_seq, d_ctx)
+        logger.info(f'mixed bucket: {mixed_bucket}')
         return mixed_bucket in self.bucketing_manager.mixed_buckets
 
     def _is_valid_bucket(self, bucket):
@@ -4928,6 +4931,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                     f"graphs{'T' if use_graphs else 'F'}")
             else:
                 model_event_name = 'model_executable'
+            logger.info(f"executing: {model_event_name}")
             if num_steps > 1 or use_delayed_sampling:
                 # in case of multi-step scheduling
                 # we only want to pythonize in the last step
