@@ -4773,7 +4773,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             assert attn_metadata is not None
             is_prompt = attn_metadata.is_prompt
             assert is_prompt is not None
-            batch_size = input_tokens.size(0)
             seq_len = self._seq_len(attn_metadata)
 
             # Derive phase type (prefill / decode / mixed) from metadata.
@@ -4814,7 +4813,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     logger.info('execute_model.1')
                     use_graphs = self._use_graphs(
                         phase_type,
-                        batch_size,
+                        batch_size_padded,
                         seq_len,
                         ctx_blocks,
                     )
@@ -4842,7 +4841,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         logger.info('execute_model.2')
                         use_graphs = self._use_graphs(
                             PhaseType.PREFILL if is_prompt else PhaseType.DECODE,
-                            batch_size,
+                            batch_size_padded,
                             seq_len,
                             ctx_blocks,
                         )
@@ -4869,7 +4868,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         )
                         phase_str = 'mixed'
 
-            self._check_config(batch_size, seq_len, ctx_blocks, attn_metadata,
+            self._check_config(batch_size_padded, seq_len, ctx_blocks, attn_metadata,
                                warmup_mode)
             lora_mask: torch.Tensor = None
             lora_logits_mask: torch.Tensor = None
@@ -4926,7 +4925,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 # pad previous_hidden_states as well
                 previous_hidden_states = previous_hidden_states.unsqueeze(
                     1).expand(-1, input_tokens.shape[-1], -1)
-                batch_size_padding = batch_size - previous_hidden_states.shape[
+                batch_size_padding = batch_size_padded - previous_hidden_states.shape[
                     0]
                 if batch_size_padding > 0:
                     dummy_previous_hidden_states = torch.zeros(
@@ -4947,7 +4946,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             if self.is_driver_worker:
                 model_event_name = ("model_"
                                     f"{phase_str}_"
-                                    f"bs{batch_size}_"
+                                    f"bs{batch_size_padded}_"
                                     f"seq{seq_len}_"
                                     f"ctx{ctx_blocks}_"
                                     f"graphs{'T' if use_graphs else 'F'}")
@@ -5106,7 +5105,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 with self.profiler.record_event('internal',
                                                 ('compute_logits_'
                                                  f'{phase_str}_bs'
-                                                 f'{batch_size}_'
+                                                 f'{batch_size_padded}_'
                                                  f'seq{seq_len}_ctx'
                                                  f'{ctx_blocks}'),
                                                 args=profiler_args):
@@ -5128,7 +5127,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 with self.profiler.record_event('internal',
                                                 ('sample_'
                                                  f'{phase_str}_'
-                                                 f'bs{batch_size}_'
+                                                 f'bs{batch_size_padded}_'
                                                  f'seq{seq_len}_'
                                                  f'ctx{ctx_blocks}'),
                                                 args=profiler_args):
