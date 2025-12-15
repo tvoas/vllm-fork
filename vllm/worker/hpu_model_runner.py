@@ -1786,11 +1786,11 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         # Global hard cap: don't capture graphs for very large token counts.
         if not self.skip_warmup:
             if phase in (PhaseType.PREFILL, PhaseType.PREFIX_PREFILL):
-                bs, seq, _ctx = shape
+                bs, seq, ctx = shape
                 ctx_len = ctx * self.block_size
                 return bs * (seq + ctx_len) <= self.max_seq_len_to_capture
             elif phase is PhaseType.DECODE:
-                bs, seq, _ctx = shape
+                bs, seq, ctx = shape
                 # For decode, seq is typically 1, so bs*seq is reasonable
                 return bs * seq <= self.max_seq_len_to_capture
             else:  # MIXED / PREFIX_MIXED
