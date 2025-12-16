@@ -1233,7 +1233,8 @@ class EngineArgs:
             num_scheduler_steps=self.num_scheduler_steps,
             multi_step_stream_outputs=self.multi_step_stream_outputs,
             send_delta_data=(envs.VLLM_USE_RAY_SPMD_WORKER
-                             and parallel_config.use_ray),
+                             and parallel_config.use_ray) \
+                             or envs.VLLM_SEND_DELTA_DATA,
             policy=self.scheduling_policy,
             use_padding_aware_scheduling=self.use_padding_aware_scheduling,
             scheduler_cls=self.scheduler_cls,

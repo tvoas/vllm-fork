@@ -131,6 +131,7 @@ if TYPE_CHECKING:
     VLLM_USE_SHARED_BLOCK_MANGERS: bool = True
     VLLM_PP_USE_CPU_COMS: bool = False
     VLLM_WORKERS_NUMA_TOPO: Optional[str] = None
+    VLLM_SEND_DELTA_DATA: bool = False
 
 
 def get_default_cache_root():
@@ -900,6 +901,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # module_id_start,module_id_stop:cpu_affinity:numa_affinity".
     "VLLM_WORKERS_NUMA_TOPO":
     lambda: os.getenv("VLLM_WORKERS_NUMA_TOPO", None),
+
+    # Send sequence delta data rather than full sequence to reduce
+    # serialization/deserialization overhead.
+    "VLLM_SEND_DELTA_DATA":
+    lambda: bool(int(os.getenv("VLLM_SEND_DELTA_DATA", "0"))),
 }
 
 # --8<-- [end:env-vars-definition]

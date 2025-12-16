@@ -2141,9 +2141,8 @@ class SchedulerConfig:
 
     send_delta_data: bool = False
     """Private API. If used, scheduler sends delta data to
-    workers instead of an entire data. It should be enabled only
-    when SPMD worker architecture is enabled. I.e.,
-    VLLM_USE_RAY_SPMD_WORKER=1"""
+    workers instead of an entire data. Enabled when
+    VLLM_USE_RAY_SPMD_WORKER=1 or VLLM_SEND_DELTA_DATA=1."""
 
     policy: SchedulerPolicy = "fcfs"
     """The scheduling policy to use:\n
