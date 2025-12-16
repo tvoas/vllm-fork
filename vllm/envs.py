@@ -129,6 +129,7 @@ if TYPE_CHECKING:
     VLLM_SLEEP_WHEN_IDLE: bool = False
     VLLM_SCHED_DELAYED_PREFIX_CACHING_CALCULATION: bool = False
     VLLM_USE_SHARED_BLOCK_MANGERS: bool = True
+    VLLM_PP_USE_CPU_COMS: bool = False
 
 
 def get_default_cache_root():
@@ -886,6 +887,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Use shared block managers to maximize prefix cache sharing across multiple engines.
     "VLLM_USE_SHARED_BLOCK_MANGERS":
     lambda: bool(int(os.getenv("VLLM_USE_SHARED_BLOCK_MANGERS", "1"))),
+
+    # If PP-group comms cannot use HCCL/NCCL/etc,
+    # set VLLM_PP_USE_CPU_COMS=1 to force PP comms over
+    # Gloo on CPU and avoid hangs (send/recv/broadcast).
+    "VLLM_PP_USE_CPU_COMS":
+    lambda: bool(int(os.getenv("VLLM_PP_USE_CPU_COMS", "0"))),
 }
 
 # --8<-- [end:env-vars-definition]

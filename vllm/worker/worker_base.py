@@ -403,6 +403,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
         start_time = time.perf_counter()
+        collect_model_execute_time = self.observability_config is not None and self.observability_config.collect_model_execute_time
 
         inputs = self.prepare_input(execute_model_req)
 
@@ -437,11 +438,15 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         intermediate_tensors = None
         orig_model_execute_time = 0.0
         if not get_pp_group().is_first_rank:
-            intermediate_tensors = IntermediateTensors(
-                get_pp_group().recv_tensor_dict(
-                    all_gather_group=get_tp_group()))
-            if (self.observability_config is not None
-                    and self.observability_config.collect_model_execute_time):
+            defer = self.current_platform.is_hpu()
+            intermediate_tensors = get_pp_group().recv_tensor_dict(
+                all_gather_group=get_tp_group(), deferred=defer)
+            if not defer:
+                # If we aren't deferring intermediate tensor arrival then
+                # create IntermediateTensors object here.
+                intermediate_tensors = IntermediateTensors(intermediate_tensors)
+            assert not (defer and collect_model_execute_time), f'PP deferred receive does not support observe model execute time'
+            if collect_model_execute_time:
                 orig_model_execute_time = intermediate_tensors.tensors.get(
                     "model_execute_time", torch.tensor(0)).item()
 
@@ -458,15 +463,13 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         if not get_pp_group().is_last_rank:
             # output is IntermediateTensors
             assert isinstance(output, IntermediateTensors)
-            if (self.observability_config is not None
-                    and self.observability_config.collect_model_execute_time):
+            if collect_model_execute_time:
                 output.tensors["model_execute_time"] = torch.tensor(
                     model_execute_time + orig_model_execute_time)
             get_pp_group().send_tensor_dict(output.tensors,
                                             all_gather_group=get_tp_group())
             return [None]
-        if (self.observability_config is not None
-                and self.observability_config.collect_model_execute_time
+        if (collect_model_execute_time
                 and output is not None):
             for o in output:
                 o.model_execute_time = (orig_model_execute_time +
