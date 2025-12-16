@@ -270,7 +270,7 @@ def custom_tuple_replace(obj: object, typename: str, **to_override):
 def align_dp_groups(value, op):
     group = get_dp_group().cpu_group
     value_t = torch.tensor(value, device="cpu", dtype=torch.int32)
-    torch.distributed.all_reduce(value_t, op=op, group=group)
+    get_dp_group().all_reduce(value_t, op=op, group=group)
     return value_t.item()
 
 
@@ -280,7 +280,7 @@ def align_tp_groups(value, op):
     if world_size <= 1:
         return value
     value_t = torch.tensor(value, device='cpu')
-    torch.distributed.all_reduce(value_t, op=op, group=group)
+    get_tp_group().all_reduce(value_t, op=op, group=group)
     return value_t.item()
 
 
