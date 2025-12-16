@@ -5,7 +5,9 @@ import dataclasses
 import os
 import time
 from abc import abstractmethod
+from contextlib import nullcontext
 from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union
+import threading
 
 import cloudpickle
 import torch
@@ -55,6 +57,7 @@ class WorkerBase:
         self.compilation_config = vllm_config.compilation_config
         from vllm.platforms import current_platform
         self.current_platform = current_platform
+        self.worker_lock = threading.Lock if self.current_platform.is_hpu() else nullcontext()
 
     def init_device(self) -> None:
         """Initialize device state, such as loading the model or other on-device
@@ -402,73 +405,74 @@ class LocalOrDistributedWorkerBase(WorkerBase):
     ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
-        start_time = time.perf_counter()
-        collect_model_execute_time = self.observability_config is not None and self.observability_config.collect_model_execute_time
+        with self.worker_lock:
+            start_time = time.perf_counter()
+            collect_model_execute_time = self.observability_config is not None and self.observability_config.collect_model_execute_time
 
-        inputs = self.prepare_input(execute_model_req)
+            inputs = self.prepare_input(execute_model_req)
 
-        # Need to keep worker running when executing dummy batch under DP
-        # scenario
-        if self.is_driver_worker:
-            if self.do_metadata_broadcast:
-                is_dummy_batch = execute_model_req and\
-                    execute_model_req.is_dummy_batch
-                broadcast_tensor_dict({"is_dummy_batch": is_dummy_batch},
-                                      src=0)
-        else:
-            broadcast_data = broadcast_tensor_dict(src=0)
-            if "is_dummy_batch" in broadcast_data and broadcast_data[
-                    "is_dummy_batch"]:
-                return SamplerOutput(outputs=[], sampled_token_ids=None)
+            # Need to keep worker running when executing dummy batch under DP
+            # scenario
+            if self.is_driver_worker:
+                if self.do_metadata_broadcast:
+                    is_dummy_batch = execute_model_req and\
+                        execute_model_req.is_dummy_batch
+                    broadcast_tensor_dict({"is_dummy_batch": is_dummy_batch},
+                                        src=0)
+            else:
+                broadcast_data = broadcast_tensor_dict(src=0)
+                if "is_dummy_batch" in broadcast_data and broadcast_data[
+                        "is_dummy_batch"]:
+                    return SamplerOutput(outputs=[], sampled_token_ids=None)
 
-        if inputs is None:
-            return None
+            if inputs is None:
+                return None
 
-        model_input, worker_input, kwargs = inputs
-        num_steps = worker_input.num_steps
-        if (execute_model_req is not None and execute_model_req.spec_step_idx):
-            kwargs["spec_step_idx"] = execute_model_req.spec_step_idx
+            model_input, worker_input, kwargs = inputs
+            num_steps = worker_input.num_steps
+            if (execute_model_req is not None and execute_model_req.spec_step_idx):
+                kwargs["spec_step_idx"] = execute_model_req.spec_step_idx
 
-        self.execute_worker(worker_input)
+            self.execute_worker(worker_input)
 
-        # If there is no input, we don't need to execute the model.
-        if worker_input.num_seq_groups == 0:
-            return []
+            # If there is no input, we don't need to execute the model.
+            if worker_input.num_seq_groups == 0:
+                return []
 
-        intermediate_tensors = None
-        orig_model_execute_time = 0.0
-        if not get_pp_group().is_first_rank:
-            defer = self.current_platform.is_hpu()
-            intermediate_tensors = get_pp_group().recv_tensor_dict(
-                all_gather_group=get_tp_group(), deferred=defer)
-            if not defer:
-                # If we aren't deferring intermediate tensor arrival then
-                # create IntermediateTensors object here.
-                intermediate_tensors = IntermediateTensors(intermediate_tensors)
-            assert not (defer and collect_model_execute_time), f'PP deferred receive does not support observe model execute time'
-            if collect_model_execute_time:
-                orig_model_execute_time = intermediate_tensors.tensors.get(
-                    "model_execute_time", torch.tensor(0)).item()
+            intermediate_tensors = None
+            orig_model_execute_time = 0.0
+            if not get_pp_group().is_first_rank:
+                defer = self.current_platform.is_hpu()
+                intermediate_tensors = get_pp_group().recv_tensor_dict(
+                    all_gather_group=get_tp_group(), deferred=defer)
+                if not defer:
+                    # If we aren't deferring intermediate tensor arrival then
+                    # create IntermediateTensors object here.
+                    intermediate_tensors = IntermediateTensors(intermediate_tensors)
+                assert not (defer and collect_model_execute_time), f'PP deferred receive does not support observe model execute time'
+                if collect_model_execute_time:
+                    orig_model_execute_time = intermediate_tensors.tensors.get(
+                        "model_execute_time", torch.tensor(0)).item()
 
-        output = self.model_runner.execute_model(
-            model_input=model_input,
-            kv_caches=self.kv_cache[worker_input.virtual_engine]
-            if self.kv_cache is not None else None,
-            intermediate_tensors=intermediate_tensors,
-            num_steps=num_steps,
-            **kwargs,
-        )
+            output = self.model_runner.execute_model(
+                model_input=model_input,
+                kv_caches=self.kv_cache[worker_input.virtual_engine]
+                if self.kv_cache is not None else None,
+                intermediate_tensors=intermediate_tensors,
+                num_steps=num_steps,
+                **kwargs,
+            )
 
-        model_execute_time = time.perf_counter() - start_time
-        if not get_pp_group().is_last_rank:
-            # output is IntermediateTensors
-            assert isinstance(output, IntermediateTensors)
-            if collect_model_execute_time:
-                output.tensors["model_execute_time"] = torch.tensor(
-                    model_execute_time + orig_model_execute_time)
-            get_pp_group().send_tensor_dict(output.tensors,
-                                            all_gather_group=get_tp_group())
-            return [None]
+            model_execute_time = time.perf_counter() - start_time
+            if not get_pp_group().is_last_rank:
+                # output is IntermediateTensors
+                assert isinstance(output, IntermediateTensors)
+                if collect_model_execute_time:
+                    output.tensors["model_execute_time"] = torch.tensor(
+                        model_execute_time + orig_model_execute_time)
+                get_pp_group().send_tensor_dict(output.tensors,
+                                                all_gather_group=get_tp_group())
+                return [None]
         if (collect_model_execute_time
                 and output is not None):
             for o in output:
