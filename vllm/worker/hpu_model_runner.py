@@ -37,9 +37,10 @@ from vllm.attention import AttentionMetadata, get_attn_backend
 from vllm.attention.backends.abstract import AttentionType
 from vllm.attention.backends.hpu_attn import HPUAttentionImpl
 from vllm.config import DeviceConfig, VllmConfig
-from vllm.distributed import broadcast_tensor_dict, get_pp_group
+from vllm.distributed import broadcast_tensor_dict
 from vllm.distributed.kv_transfer import get_kv_transfer_group
-from vllm.distributed.parallel_state import (get_dp_group, get_tp_group,
+from vllm.distributed.parallel_state import (DeferredRecvPayload, get_dp_group,
+                                             get_pp_group, get_tp_group,
                                              get_world_group)
 from vllm.forward_context import set_forward_context
 from vllm.inputs import INPUT_REGISTRY, InputRegistry
@@ -4169,7 +4170,13 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         self,
         model_input: ModelInputForHPUWithSamplingMetadata,
         kv_caches: List[torch.Tensor],
-        intermediate_tensors: Optional[IntermediateTensors] = None,
+        intermediate_tensors: Optional[Union[
+            IntermediateTensors,
+            Tuple[
+                Dict[str, Union[torch.Tensor, Any]],
+                List[DeferredRecvPayload],
+            ],
+        ]] = None,
         num_steps: int = 1,
         warmup_mode=False,
         previous_hidden_states: Optional[torch.Tensor] = None,
@@ -4319,7 +4326,6 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 "positions": input_positions,
                 "kv_caches": kv_caches,
                 "attn_metadata": self.trim_attn_metadata(attn_metadata),
-                "intermediate_tensors": intermediate_tensors,
                 "lora_mask": lora_mask,
                 "virtual_engine": model_input.virtual_engine,
                 **(model_input.multi_modal_kwargs or {}),
@@ -4449,6 +4455,19 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             )
                         if warmup_mode and bypass_model_exec:
                             return []
+
+                    if isinstance(intermediate_tensors,
+                                  tuple) and len(intermediate_tensors) == 2:
+                        intermediate_tensors, deferred_payload = \
+                            intermediate_tensors
+                        get_pp_group().handle_deferred_recv_tensor_dict(
+                            intermediate_tensors, deferred_payload)
+                        execute_model_kwargs[
+                            'intermediate_tensors'] = IntermediateTensors(
+                                intermediate_tensors)
+                    else:
+                        execute_model_kwargs[
+                            'intermediate_tensors'] = intermediate_tensors
 
                     with self.profiler.record_event('internal',
                                                     model_event_name,
