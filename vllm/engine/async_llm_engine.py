@@ -265,6 +265,7 @@ class _AsyncLLMEngine(LLMEngine):
     """Extension of LLMEngine to add async methods."""
 
     def __init__(self, *args, **kwargs):
+        self.schedule_lock = asyncio.Lock()
         super().__init__(*args, **kwargs)
 
     async def step_async(
@@ -289,7 +290,8 @@ class _AsyncLLMEngine(LLMEngine):
         ctx = self.scheduler_contexts[virtual_engine]
 
         # Clear outputs for each new scheduler iteration
-        ctx.request_outputs.clear()
+        async with self.schedule_lock:
+            ctx.request_outputs.clear()
 
         # skip the scheduler if there are any remaining steps in the seq groups.
         # This ensures that the scheduler is only called again when the current
@@ -297,9 +299,10 @@ class _AsyncLLMEngine(LLMEngine):
         if not self._has_remaining_steps(seq_group_metadata_list):
 
             # Schedule iteration
-            (seq_group_metadata_list, scheduler_outputs,
-             allow_async_output_proc
-             ) = self.scheduler[virtual_engine].schedule()
+            async with self.schedule_lock:
+                (seq_group_metadata_list, scheduler_outputs,
+                allow_async_output_proc
+                ) = self.scheduler[virtual_engine].schedule()
 
             ctx.seq_group_metadata_list = seq_group_metadata_list
             ctx.scheduler_outputs = scheduler_outputs
@@ -307,12 +310,14 @@ class _AsyncLLMEngine(LLMEngine):
             if not scheduler_outputs.is_empty():
                 # this will cause mamba_cache/minimax_cache failed
                 # to release finished_requests_ids of the last steps
-                finished_requests_ids = self.scheduler[
-                    virtual_engine].get_and_reset_finished_requests_ids()
+                async with self.schedule_lock:
+                    finished_requests_ids = self.scheduler[
+                        virtual_engine].get_and_reset_finished_requests_ids()
 
             # Maybe switch from async mode to sync mode
-            if not allow_async_output_proc and len(ctx.output_queue) > 0:
-                self._process_model_outputs(ctx=ctx)
+            async with self.schedule_lock:
+                if not allow_async_output_proc and len(ctx.output_queue) > 0:
+                    self._process_model_outputs(ctx=ctx)
 
             if (self.scheduler_config.is_multi_step
                     and scheduler_outputs.num_lookahead_slots > 0):
@@ -362,8 +367,9 @@ class _AsyncLLMEngine(LLMEngine):
             if self.scheduler_config.is_multi_step:
                 self._update_cached_scheduler_output(virtual_engine, outputs)
         else:
-            if len(ctx.output_queue) > 0:
-                self._process_model_outputs(ctx=ctx)
+            async with self.schedule_lock:
+                if len(ctx.output_queue) > 0:
+                    self._process_model_outputs(ctx=ctx)
             outputs = []
 
         # Finish the current step for all the sequence groups.
@@ -383,12 +389,13 @@ class _AsyncLLMEngine(LLMEngine):
             is_first_step_output: bool = False if not seq_group_metadata_list \
                 else seq_group_metadata_list[0].state.num_steps == 1
 
-            ctx.append_output(outputs=outputs,
-                              seq_group_metadata_list=seq_group_metadata_list,
-                              scheduler_outputs=scheduler_outputs,
-                              is_async=allow_async_output_proc,
-                              is_last_step=True,
-                              is_first_step_output=is_first_step_output)
+            async with self.schedule_lock:
+                ctx.append_output(outputs=outputs,
+                                seq_group_metadata_list=seq_group_metadata_list,
+                                scheduler_outputs=scheduler_outputs,
+                                is_async=allow_async_output_proc,
+                                is_last_step=True,
+                                is_first_step_output=is_first_step_output)
 
             if outputs and allow_async_output_proc:
                 assert len(
@@ -399,7 +406,8 @@ class _AsyncLLMEngine(LLMEngine):
                     scheduler_outputs.scheduled_seq_groups)
 
             if not allow_async_output_proc:
-                self._process_model_outputs(ctx=ctx)
+                async with self.schedule_lock:
+                    self._process_model_outputs(ctx=ctx)
 
                 # Log stats.
                 self.do_log_stats(scheduler_outputs, outputs)
@@ -414,7 +422,8 @@ class _AsyncLLMEngine(LLMEngine):
         if not self.has_unfinished_requests():
             # Drain async postprocessor (if exists)
             if len(ctx.output_queue) > 0:
-                self._process_model_outputs(ctx=ctx)
+                async with self.schedule_lock:
+                    self._process_model_outputs(ctx=ctx)
             assert len(ctx.output_queue) == 0
 
         return ctx.request_outputs

@@ -1687,17 +1687,25 @@ class LLMEngine:
         num_total_gpu = self.cache_config.num_gpu_blocks
         gpu_cache_usage_sys = 0.
         if num_total_gpu:  # Guard against both None and 0
-            num_free_gpu = sum(
-                scheduler.block_manager.get_num_free_gpu_blocks()
-                for scheduler in self.scheduler)
+            if envs.VLLM_USE_SHARED_BLOCK_MANGERS:
+                # When using shared block managers, only query one scheduler
+                num_free_gpu = self.scheduler[0].block_manager.get_num_free_gpu_blocks()
+            else:
+                num_free_gpu = sum(
+                    scheduler.block_manager.get_num_free_gpu_blocks()
+                    for scheduler in self.scheduler)
             gpu_cache_usage_sys = 1.0 - (num_free_gpu / num_total_gpu)
 
         num_total_cpu = self.cache_config.num_cpu_blocks
         cpu_cache_usage_sys = 0.
         if num_total_cpu:  # Guard against both None and 0
-            num_free_cpu = sum(
-                scheduler.block_manager.get_num_free_cpu_blocks()
-                for scheduler in self.scheduler)
+            if envs.VLLM_USE_SHARED_BLOCK_MANGERS:
+                # When using shared block managers, only query one scheduler
+                num_free_cpu = self.scheduler[0].block_manager.get_num_free_cpu_blocks()
+            else:
+                num_free_cpu = sum(
+                    scheduler.block_manager.get_num_free_cpu_blocks()
+                    for scheduler in self.scheduler)
             cpu_cache_usage_sys = 1.0 - (num_free_cpu / num_total_cpu)
 
         # Prefix Cache Hit Rate. Note that we always use
