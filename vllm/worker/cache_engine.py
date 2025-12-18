@@ -5,6 +5,7 @@ from typing import List
 
 import torch
 
+import vllm.envs as envs
 from vllm.attention import get_attn_backend
 from vllm.config import CacheConfig, DeviceConfig, ModelConfig, ParallelConfig
 from vllm.logger import init_logger
@@ -42,11 +43,13 @@ class CacheEngine:
 
         self.block_size = cache_config.block_size
         self.num_gpu_blocks = cache_config.num_gpu_blocks
+        num_block_splits = 1 if envs.VLLM_USE_SHARED_BLOCK_MANGERS \
+            else parallel_config.pipeline_parallel_size
         if self.num_gpu_blocks:
-            self.num_gpu_blocks //= parallel_config.pipeline_parallel_size
+            self.num_gpu_blocks //= num_block_splits
         self.num_cpu_blocks = cache_config.num_cpu_blocks
         if self.num_cpu_blocks:
-            self.num_cpu_blocks //= parallel_config.pipeline_parallel_size
+            self.num_cpu_blocks //= num_block_splits
 
         if cache_config.cache_dtype == "auto":
             self.dtype = model_config.dtype
