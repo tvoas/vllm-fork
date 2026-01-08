@@ -16,6 +16,7 @@ from vllm_hpu_extension.runtime import get_config
 from vllm_hpu_extension.utils import (FP8Matmul, Matmul, ModuleFusedSDPA,
                                       Softmax, VLLMFP8KVCache, VLLMKVCache)
 
+import vllm.envs as envs
 from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
                                               AttentionLayer,
                                               AttentionMetadata, AttentionType)
@@ -146,6 +147,22 @@ class HPUAttentionMetadata(HPUPagedAttentionMetadata, AttentionMetadata):
     conv_state_indices: Optional[torch.Tensor] = None
     mamba_cache_decode_indices: Optional[torch.Tensor] = None
     mamba_cache_prefill_indices: Optional[torch.Tensor] = None
+    decode_slot_mapping: Optional[torch.Tensor] = None
+    decode_block_list: Optional[torch.Tensor] = None
+    decode_attn_bias: Optional[torch.Tensor] = None
+    chunk_prefill_enabled: bool = False
+
+
+class HPUAttentionData:
+    query: torch.Tensor = None
+    key: torch.Tensor = None
+    value: torch.Tensor = None
+    key_cache: torch.Tensor = None
+    value_cache: torch.Tensor = None
+    batch_size: int = 0
+    seq_len: int = 0
+    hidden_size: int = 0
+    seq_len_kv: int = 0
 
 
 @dataclass
@@ -461,6 +478,219 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
                     dtype=self.alibi_slopes.dtype,
                 )
 
+    def preprocess_forward(self, query: torch.Tensor, key: torch.Tensor,
+                           value: torch.Tensor, kv_cache: torch.Tensor,
+                           attn_metadata: HPUAttentionMetadata,
+                           is_prefill: bool) -> HPUAttentionData:
+        """
+        Preprocess attention inputs for chunked prefill.
+        This function reshapes flat Q/K/V inputs, resolves batch size
+        and inserts the computed K/V into the KV cache.
+
+        Args:
+            query: shape = [num_tokens, num_heads * head_size]
+            key: shape = [num_tokens, num_kv_heads * head_size]
+            value: shape = [num_tokens, num_kv_heads * head_size]
+            kv_cache = [2, num_blocks, block_size * num_kv_heads * head_size]
+            attn_metadata (HPUAttentionMetadata):
+                Metadata describing slot mapping, batch sizes, etc.
+            is_prefill (bool):
+                Whether the current forward is prefill stage.
+
+        Returns:
+            HPUAttentionData, Structured attention data containing:
+                - query/key/value reshaped to [batch, seq_len, hidden]
+                - updated KV cache
+                - inferred batch size
+        """
+        attn_data: HPUAttentionData = HPUAttentionData()
+        seq_len = 1
+        slot_mapping = attn_metadata.decode_slot_mapping.flatten(
+        ) if attn_metadata.decode_slot_mapping is not None else None
+        batch_size = attn_metadata.num_decode_tokens
+        if is_prefill:
+            seq_len = attn_metadata.num_prefill_tokens //\
+                attn_metadata.num_prefills
+            slot_mapping = attn_metadata.slot_mapping.flatten(
+            ) if attn_metadata.slot_mapping is not None else None
+            batch_size = attn_metadata.num_prefills
+        # Convert Flat inputs into 3D Inputs
+        hidden_size = query.shape[-1]
+        query = query.reshape(batch_size, seq_len, hidden_size)
+
+        hidden_size = key.shape[-1]
+        key = key.reshape(batch_size, seq_len, hidden_size)
+
+        hidden_size = value.shape[-1]
+        value = value.reshape(batch_size, seq_len, hidden_size)
+
+        # Insert key and value to kv cache
+        attn_data.batch_size, attn_data.seq_len, attn_data.hidden_size\
+              = query.shape
+        _, attn_data.seq_len_kv, _ = key.shape
+        query = query.view(-1, self.num_heads, self.head_size)
+        key = key.view(-1, self.num_kv_heads, self.head_size)
+        value = value.view(-1, self.num_kv_heads, self.head_size)
+
+        if kv_cache is not None:
+            key_cache, value_cache = HPUPagedAttention.split_kv_cache(
+                kv_cache, self.num_kv_heads, self.head_size)
+
+            # Reshape the input keys and values and store them in the cache.
+            # If kv_cache is not provided, the new key and value tensors are
+            # not cached. This happens during the initial memory profiling run.
+
+            attn_data.key_cache = self.k_cache(key, key_cache, slot_mapping)
+            attn_data.value_cache = self.v_cache(value, value_cache,
+                                                 slot_mapping)
+        attn_data.key = key
+        attn_data.value = value
+        attn_data.query = query
+        return attn_data
+
+    def forward_chunked_prefill(
+        self,
+        layer: AttentionLayer,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        kv_cache: torch.Tensor,
+        attn_metadata: HPUAttentionMetadata,
+        output: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Forward pass for chunked prefill.
+
+        Args:
+            query: shape = [num_tokens, num_heads * head_size]
+            key: shape = [num_tokens, num_kv_heads * head_size]
+            value: shape = [num_tokens, num_kv_heads * head_size]
+            kv_cache = [2, num_blocks, block_size * num_kv_heads * head_size]
+            attn_metadata: Metadata for attention.
+        Returns:
+            shape = [num_tokens, num_heads * head_size]
+        """
+        assert layer._k_scale_float == 1.0 and layer._v_scale_float == 1.0
+
+        if (self.attn_type != AttentionType.DECODER):
+            raise NotImplementedError("Chunked Prefill Enabled"
+                                      "only for Decoder")
+        prompt_output: torch.Tensor = None
+        decode_output: torch.Tensor = None
+        prefill_batch_size = 0
+        prefill_seq_len = 0
+        prefill_hidden_size = 0
+        decode_batch_size = 0
+        decode_seq_len = 0
+        decode_hidden_size = 0
+        if attn_metadata.num_prefills > 0:
+            attn_data = self.preprocess_forward(
+                query[:attn_metadata.num_prefill_tokens],
+                key[:attn_metadata.num_prefill_tokens],
+                value[:attn_metadata.num_prefill_tokens], kv_cache,
+                attn_metadata, True)
+            # Prompt run.
+            prefill_batch_size = attn_data.batch_size
+            prefill_seq_len = attn_data.seq_len
+            prefill_hidden_size = attn_data.hidden_size
+            query_shape = (prefill_batch_size, prefill_seq_len, self.num_heads,
+                           self.head_size)
+            kv_shape = (prefill_batch_size, attn_data.seq_len_kv,
+                        self.num_kv_heads, self.head_size)
+
+            if attn_metadata.block_list is None:
+
+                block_list = attn_metadata.block_list
+
+                common_args = self.common_attention_args(
+                    block_list, attn_data.key_cache, attn_data.value_cache,
+                    attn_metadata.block_size)
+                position_bias = None
+
+                out = ops.prompt_attention(
+                    impl=self.prefill_impl,
+                    query=attn_data.query.view(query_shape),
+                    key=attn_data.key.view(kv_shape),
+                    value=attn_data.value.view(kv_shape),
+                    is_causal=True,
+                    position_bias=position_bias,
+                    valid_seq_lengths=attn_metadata.seq_lens_tensor,
+                    **common_args)
+
+            else:
+                block_list = attn_metadata.block_list
+
+                common_args = self.common_attention_args(
+                    block_list, attn_data.key_cache, attn_data.value_cache,
+                    attn_metadata.block_size)
+                attn_bias = attn_metadata.attn_bias
+                position_bias = None
+
+                if envs.VLLM_HPU_CHUNKED_PREFILL_DYNAMIC_INPUT:
+                    assert prefill_batch_size == 1, (
+                        "Only batch size 1 is supported for chunked prefill "
+                        "with dynamic block list.")
+                    key_attn = attn_data.key.view(kv_shape)
+                    value_attn = attn_data.value.view(kv_shape)
+                    common_args['need_context'] = True
+                else:
+                    key_attn = self.k_cache.fetch_from_cache(
+                        attn_data.key_cache.unflatten(
+                            0, (-1, attn_metadata.block_size)),
+                        attn_metadata.block_list).view(kv_shape)
+                    value_attn = self.v_cache.fetch_from_cache(
+                        attn_data.value_cache.unflatten(
+                            0, (-1, attn_metadata.block_size)),
+                        attn_metadata.block_list).view(kv_shape)
+                    common_args['need_context'] = False
+
+                out = ops.prompt_attention(
+                    impl=self.prefill_impl,
+                    query=attn_data.query.view(query_shape),
+                    key=key_attn,
+                    value=value_attn,
+                    is_causal=False,
+                    attn_bias=attn_bias,
+                    position_bias=position_bias,
+                    **common_args)
+
+            prompt_output = out.reshape(prefill_batch_size, prefill_seq_len,
+                                        prefill_hidden_size)
+        if attn_metadata.num_decode_tokens > 0:
+            # Decoding run.
+            attn_data = self.preprocess_forward(
+                query[attn_metadata.num_prefill_tokens:],
+                key[attn_metadata.num_prefill_tokens:],
+                value[attn_metadata.num_prefill_tokens:], kv_cache,
+                attn_metadata, False)
+            decode_batch_size = attn_data.batch_size
+            decode_seq_len = attn_data.seq_len
+            decode_hidden_size = attn_data.hidden_size
+            decode_output = HPUPagedAttention.forward_decode(
+                query=attn_data.query.view(attn_data.batch_size,
+                                           attn_data.seq_len,
+                                           attn_data.hidden_size),
+                block_mapping=attn_metadata.block_mapping,
+                block_bias=attn_metadata.decode_attn_bias,
+                block_groups=attn_metadata.block_groups,
+                position_bias=None,
+                **self.common_attention_args(attn_metadata.decode_block_list,
+                                             attn_data.key_cache,
+                                             attn_data.value_cache,
+                                             attn_metadata.block_size))
+        # Reshape the output tensor.
+        if decode_output is None:
+            return prompt_output
+        elif prompt_output is None:
+            return decode_output.view(decode_batch_size * decode_seq_len,
+                                      decode_hidden_size)
+        else:
+            prompt_output = prompt_output.view(
+                prefill_batch_size * prefill_seq_len, prefill_hidden_size)
+            decode_output = decode_output.view(
+                decode_batch_size * decode_seq_len, decode_hidden_size)
+            output = torch.cat((prompt_output, decode_output))
+            return output
+
     def forward(
         self,
         layer: AttentionLayer,
@@ -483,6 +713,16 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
             shape = [num_tokens, num_heads * head_size]
         """
         assert layer._k_scale_float == 1.0 and layer._v_scale_float == 1.0
+        if attn_metadata.chunk_prefill_enabled:
+            return self.forward_chunked_prefill(
+                layer=layer,
+                query=query,
+                key=key,
+                value=value,
+                kv_cache=kv_cache,
+                attn_metadata=attn_metadata,
+                output=output,
+            )
         if self.attn_type == AttentionType.ENCODER_DECODER:
             return self.forward_encoder_decoder(
                 query=query,
