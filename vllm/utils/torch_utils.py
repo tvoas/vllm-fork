@@ -474,10 +474,28 @@ def make_tensor_with_pad(
     The padding is applied to the end of each inner list until it reaches
     `max_len`.
     """
-    np_dtype = TORCH_DTYPE_TO_NUMPY_DTYPE[dtype]
-    padded_x = make_ndarray_with_pad(x, pad, np_dtype, max_len=max_len)
+    if not x:
+        return torch.empty((0, 0), dtype=dtype, device=device)
 
-    tensor = torch.from_numpy(padded_x).to(device)
+    # Use pure PyTorch to avoid numpy-related dispatch errors in torch.compile
+    # on specific hardware backends (like HPU).
+    tensors = [torch.tensor(item, dtype=dtype, device="cpu") for item in x]
+    tensor = torch.nn.utils.rnn.pad_sequence(
+        tensors, batch_first=True, padding_value=pad
+    )
+
+    if max_len is not None:
+        batch_size, seq_len = tensor.shape
+        if seq_len < max_len:
+            padding_size = max_len - seq_len
+            padding = torch.full(
+                (batch_size, padding_size), pad, dtype=dtype, device="cpu"
+            )
+            tensor = torch.cat((tensor, padding), dim=1)
+        elif seq_len > max_len:
+            tensor = tensor[:, :max_len]
+
+    tensor = tensor.to(device)
     if pin_memory:
         tensor = tensor.pin_memory()
 
