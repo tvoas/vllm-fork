@@ -4626,6 +4626,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         is_dummy_run: bool = False,
         is_pt_profiler_run: bool = False,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
+        self.last_step_was_enc = False
         self.has_patched_prev_output = False
         use_delayed_sampling = self.use_delayed_sampling and not warmup_mode
         assert not (use_delayed_sampling and num_steps != 1), \
@@ -4890,11 +4891,15 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 list(self.graphed_multimodal_buckets)
                             # set is unhasable and causes friction with
                             # hpu graphs, hence turning it to a list
+
                         execute_model_kwargs = \
                             self.model.compute_input_embeddings_for_mrope_mm_optimized(
                                 warmup_mode,
                                 **execute_model_kwargs
                             )
+                        
+                        self.last_step_was_enc = True
+
                         if warmup_mode and bypass_model_exec:
                             return []
 

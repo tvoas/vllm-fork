@@ -13,6 +13,7 @@ import os
 import queue
 import time
 from typing import List, Optional, Set, Tuple, Type
+import time
 
 import habana_frameworks.torch as htorch  # noqa:F401
 import torch
@@ -236,6 +237,8 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         self,
         execute_model_req: Optional[ExecuteModelRequest] = None,
     ) -> Optional[List[SamplerOutput]]:
+        torch.hpu.synchronize()
+        start_time = time.perf_counter()
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION     - will log graph compilations per engine step, only when there was any - highly recommended to use alongside PT_HPU_METRICS_GC_DETAILS! # noqa:E501
         # VLLM_HPU_LOG_STEP_GRAPH_COMPILATION_ALL - will log graph compilations per engine step, always, even if there were none # noqa:E501
         # VLLM_HPU_LOG_STEP_CPU_FALLBACKS         - will log cpu fallbacks per engine step, only when there was any # noqa:E501
@@ -300,11 +303,62 @@ class HPUWorker(LocalOrDistributedWorkerBase):
                        f"{cpu_fallback_local_metric.stats()}, {input_stats}")
                 logger.warning(msg)
 
+            torch.hpu.synchronize()
+            step_time = time.perf_counter() - start_time
+            self._log_step_to_csv(execute_model_req, start_time, step_time, self.model_runner.last_step_was_enc)
+
             return output
 
         output = LocalOrDistributedWorkerBase.execute_model(
             self, execute_model_req)
+        torch.hpu.synchronize()
+        step_time = time.perf_counter() - start_time
+        self._log_step_to_csv(execute_model_req, start_time, step_time, self.model_runner.last_step_was_enc)
         return output
+    
+    def _log_step_to_csv(self, execute_model_req, start_time, step_time, enc_flag):
+        import os
+        if execute_model_req is None or not execute_model_req.seq_group_metadata_list:
+            return
+            
+        seq_groups = execute_model_req.seq_group_metadata_list
+        is_prefill = any(sg.is_prompt for sg in seq_groups)
+        step_type = "prefill" if is_prefill else "decode"
+        if enc_flag:
+            step_type = "enc_" + step_type
+        
+        req_ids = [sg.request_id for sg in seq_groups]
+        batch_size = len(req_ids)
+        
+        ctx_lens = []
+        computed_tokens = []
+        total_tokens = 0
+        mm_items = 0
+        
+        for sg in seq_groups:
+            # In v0 architecture, seq_data is a dict of {seq_id: SequenceData}
+            seq_data = next(iter(sg.seq_data.values()))
+            ctx_len = seq_data.get_len()
+            ctx_lens.append(str(ctx_len))
+            
+            comp_tokens = seq_data.get_num_computed_tokens()
+            computed_tokens.append(str(comp_tokens))
+            
+            if sg.is_prompt:
+                total_tokens += seq_data.get_prompt_len()
+            else:
+                total_tokens += 1
+                
+            if sg.multi_modal_data:
+                mm_items += 1
+                
+        csv_path = os.environ.get("VLLM_TIME_LOG_CSV", "/workspace/vllm_times.csv")
+        file_exists = os.path.isfile(csv_path)
+        with open(csv_path, "a") as f:
+            if not file_exists:
+                f.write("step_type,req_ids,s_time_s,d_time_s,batch_size,total_tokens,ctx_lens,computed_tokens,mm_items,0\n")
+            f.write(f"{step_type},{';'.join(req_ids)},{start_time:.6f},{step_time:.6f},{batch_size},{total_tokens},{';'.join(ctx_lens)},{';'.join(computed_tokens)},{mm_items},0\n")
+
 
     @torch.inference_mode()
     def determine_num_available_blocks(self) -> Tuple[int, int]:
