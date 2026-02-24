@@ -32,6 +32,8 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 import einops
 import numpy as np
+import os
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -1419,6 +1421,8 @@ class Qwen2_5_VLForConditionalGeneration(
         return mm_input_by_modality
 
     def embed_multimodal(self, **kwargs: object) -> MultiModalEmbeddings:
+        torch.hpu.synchronize()
+        start_time = time.perf_counter()
         mm_input_by_modality = self._parse_and_validate_multimodal_inputs(**kwargs)
         if not mm_input_by_modality:
             return []
@@ -1445,6 +1449,16 @@ class Qwen2_5_VLForConditionalGeneration(
                         video_embeddings, multimodal_input
                     )
                 multimodal_embeddings += tuple(video_embeddings)
+
+        torch.hpu.synchronize()
+        encoder_time = time.perf_counter() - start_time
+        # Log to CSV
+        csv_path = os.environ.get("VLLM_TIME_LOG_CSV", "/workspace/vllm_times.csv")
+        file_exists = os.path.isfile(csv_path)
+        with open(csv_path, "a") as f:
+            if not file_exists:
+                f.write("step_type,req_ids,s_time_s,d_time_s,batch_size,total_tokens,ctx_lens,computed_tokens,mm_items,cache_hits\n")
+            f.write(f"embed_multimodal,,{start_time:.6f},{encoder_time:.6f},,0,,,,\n")
         return multimodal_embeddings
 
     def forward(
