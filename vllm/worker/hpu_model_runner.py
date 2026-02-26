@@ -4919,15 +4919,13 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                             mm_kwargs = model_input.multi_modal_kwargs
                             if "image_grid_thw" in mm_kwargs:
                                 grid_thw = mm_kwargs["image_grid_thw"]
-                                if grid_thw.ndim == 1:
-                                    total_mm_items += 1
-                                    thw_list = grid_thw.cpu().tolist()
-                                else:
-                                    total_mm_items += grid_thw.shape[0]
-                                    thw_list = grid_thw[0].cpu().tolist()
-                                    
-                                if len(thw_list) >= 3:
-                                    t, h, w = thw_list[:3]
+                                flat_thw = grid_thw.cpu().flatten().tolist()
+                                
+                                # If format is (num_images, 3), total items is length // 3
+                                total_mm_items += max(1, len(flat_thw) // 3)
+                                
+                                if len(flat_thw) >= 3:
+                                    t, h, w = flat_thw[:3]
                                 else:
                                     t, h, w = 1, 0, 0
                                     
@@ -4938,7 +4936,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                     first_img_info = f"_img[thw:{t}x{h}x{w}_shape:{shape}_dtype:{dtype}]"
                             elif "video_grid_thw" in mm_kwargs:
                                 grid_thw = mm_kwargs["video_grid_thw"]
-                                total_mm_items += 1 if grid_thw.ndim == 1 else grid_thw.shape[0]
+                                total_mm_items += max(1, grid_thw.numel() // 3)
                                 
                         self.encoder_img_info = first_img_info
                         self.encoder_mm_items = total_mm_items
