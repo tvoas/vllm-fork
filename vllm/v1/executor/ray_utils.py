@@ -101,25 +101,15 @@ try:
                 intermediate_tensors = None
             assert self.worker.model_runner is not None
             output = self.worker.model_runner.execute_model(
-                scheduler_output, intermediate_tensors
+                scheduler_output, intermediate_tensors, grammar_output
             )
             if self._is_intermediate_tensors(output):
                 return scheduler_output, grammar_output, output
-
-            if isinstance(output, AsyncModelRunnerOutput):
-                output = output.get_output()
             if not get_pp_group().is_last_rank:
                 # Case where there are no scheduled requests
                 # but may still be finished requests.
                 assert not output or not output.req_ids
                 output = scheduler_output, grammar_output, None
-            elif output is None:
-                output = self.worker.model_runner.sample_tokens(grammar_output)
-                # Ensure outputs crossing Ray compiled DAG are serializable.
-                # AsyncModelRunnerOutput holds CUDA events and cannot be
-                # pickled.
-                if isinstance(output, AsyncModelRunnerOutput):
-                    output = output.get_output()
             return output
 
         def override_env_vars(self, vars: dict[str, str]):
