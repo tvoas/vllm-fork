@@ -4929,11 +4929,23 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 else:
                                     t, h, w = 1, 0, 0
                                     
-                                tensor_data = mm_kwargs.get("pixel_values", mm_kwargs.get("image_embeds"))
+                                tensor_name = "none"
+                                tensor_data = None
+                                if "pixel_values" in mm_kwargs:
+                                    tensor_data = mm_kwargs["pixel_values"]
+                                    tensor_name = "px"
+                                elif "image_embeds" in mm_kwargs:
+                                    tensor_data = mm_kwargs["image_embeds"]
+                                    tensor_name = "emb"
+                                    
                                 if tensor_data is not None:
-                                    dtype = str(tensor_data.dtype).split('.')[-1]
-                                    shape = "x".join(map(str, tensor_data.shape))
-                                    first_img_info = f"_img[thw:{t}x{h}x{w}_shape:{shape}_dtype:{dtype}]"
+                                    if isinstance(tensor_data, list) and len(tensor_data) > 0:
+                                        dtype = str(tensor_data[0].dtype).split('.')[-1]
+                                        shape = f"list[{len(tensor_data)}x" + "x".join(map(str, tensor_data[0].shape)) + "]"
+                                    else:
+                                        dtype = str(tensor_data.dtype).split('.')[-1]
+                                        shape = "x".join(map(str, tensor_data.shape))
+                                    first_img_info = f"_img[{tensor_name}_thw:{t}x{h}x{w}_shape:{shape}_dtype:{dtype}]"
                             elif "video_grid_thw" in mm_kwargs:
                                 grid_thw = mm_kwargs["video_grid_thw"]
                                 total_mm_items += max(1, grid_thw.numel() // 3)
