@@ -324,10 +324,9 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         seq_groups = execute_model_req.seq_group_metadata_list
         is_prefill = any(sg.is_prompt for sg in seq_groups)
         step_type = "prefill" if is_prefill else "decode"
-        if enc_flag:
-            step_type = "enc_" + step_type
         
         req_ids = [sg.request_id for sg in seq_groups]
+        req_ids_str = ";".join(req_ids) if req_ids else "ALL"
         batch_size = len(req_ids)
         
         ctx_lens = []
@@ -356,8 +355,24 @@ class HPUWorker(LocalOrDistributedWorkerBase):
         file_exists = os.path.isfile(csv_path)
         with open(csv_path, "a") as f:
             if not file_exists:
-                f.write("step_type,req_ids,s_time_s,d_time_s,batch_size,total_tokens,ctx_lens,computed_tokens,mm_items,0\n")
-            f.write(f"{step_type},{';'.join(req_ids)},{start_time:.6f},{step_time:.6f},{batch_size},{total_tokens},{';'.join(ctx_lens)},{';'.join(computed_tokens)},{mm_items},0\n")
+                f.write("step_type,req_ids,s_time_s,d_time_s,batch_size,total_tokens,ctx_lens,computed_tokens,mm_items,cache_hits\n")
+            
+            if enc_flag and hasattr(self.model_runner, 'encoder_time'):
+                enc_time = self.model_runner.encoder_time
+                enc_start = self.model_runner.encoder_start_time
+                img_info = getattr(self.model_runner, 'encoder_img_info', '')
+                enc_mm_items = getattr(self.model_runner, 'encoder_mm_items', 1)
+                
+                prefill_1_time = enc_start - start_time
+                prefill_2_time = step_time - prefill_1_time - enc_time
+                
+                f.write(f"{step_type}_1,{req_ids_str},{start_time:.6f},{prefill_1_time:.6f},{batch_size},{total_tokens},\"{ctx_lens}\",\"{computed_tokens}\",0,0\n")
+                f.write(f"embed_multimodal{img_info},{req_ids_str},{enc_start:.6f},{enc_time:.6f},{batch_size},0,\"[]\",\"[]\",{enc_mm_items},0\n")
+                f.write(f"{step_type}_2,{req_ids_str},{(enc_start + enc_time):.6f},{prefill_2_time:.6f},{batch_size},{total_tokens},\"{ctx_lens}\",\"{computed_tokens}\",0,0\n")
+            else:
+                if enc_flag:
+                    step_type = f"enc_{step_type}"
+                f.write(f"{step_type},{req_ids_str},{start_time:.6f},{step_time:.6f},{batch_size},{total_tokens},\"{ctx_lens}\",\"{computed_tokens}\",{mm_items},0\n")
 
 
     @torch.inference_mode()

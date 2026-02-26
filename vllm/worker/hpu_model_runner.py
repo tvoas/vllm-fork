@@ -4881,6 +4881,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     execute_model_kwargs['attn_metadata'] = attn_metadata
 
                 if not bypass_model_exec:
+                    self.last_step_was_enc = False  # Reset at the start of the step
+                    
                     if self.model_is_mrope or self.is_mm_optimized:
                         if 'pixel_values' in execute_model_kwargs and \
                                 self.is_mm_optimized:
@@ -4891,14 +4893,45 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                                 list(self.graphed_multimodal_buckets)
                             # set is unhasable and causes friction with
                             # hpu graphs, hence turning it to a list
+                        
+                        import time
+                        torch.hpu.synchronize()
+                        enc_start_time = time.perf_counter()
 
                         execute_model_kwargs = \
                             self.model.compute_input_embeddings_for_mrope_mm_optimized(
                                 warmup_mode,
                                 **execute_model_kwargs
                             )
+                            
+                        torch.hpu.synchronize()
+                        enc_step_time = time.perf_counter() - enc_start_time
                         
-                        self.last_step_was_enc = True
+                        self.encoder_time = enc_step_time
+                        self.encoder_start_time = enc_start_time
+                        
+                        first_img_info = ""
+                        total_mm_items = 0
+                        if not warmup_mode and model_input.multi_modal_kwargs:
+                            self.last_step_was_enc = True  # Flag that we ran the encoder
+                            
+                            mm_kwargs = model_input.multi_modal_kwargs
+                            if "image_grid_thw" in mm_kwargs:
+                                grid_thw = mm_kwargs["image_grid_thw"]
+                                total_mm_items += grid_thw.shape[0]
+                                if grid_thw.shape[0] > 0:
+                                    t, h, w = grid_thw[0].tolist()
+                                    tensor_data = mm_kwargs.get("pixel_values", mm_kwargs.get("image_embeds"))
+                                    if tensor_data is not None:
+                                        dtype = str(tensor_data.dtype).split('.')[-1]
+                                        shape = "x".join(map(str, tensor_data.shape))
+                                        first_img_info = f"_img[thw:{t}x{h}x{w}_shape:{shape}_dtype:{dtype}]"
+                            elif "video_grid_thw" in mm_kwargs:
+                                grid_thw = mm_kwargs["video_grid_thw"]
+                                total_mm_items += grid_thw.shape[0]
+                                
+                        self.encoder_img_info = first_img_info
+                        self.encoder_mm_items = total_mm_items
 
                         if warmup_mode and bypass_model_exec:
                             return []
