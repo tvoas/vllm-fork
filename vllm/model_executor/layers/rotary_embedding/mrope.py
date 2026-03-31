@@ -382,6 +382,57 @@ class MRotaryEmbedding(RotaryEmbeddingBase):
         offsets: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         return self.forward_native(positions, query, key, offsets)
+    
+    def forward_xpu(
+        self,
+        positions: torch.Tensor,
+        query: torch.Tensor,
+        key: torch.Tensor | None = None,
+        offsets: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        assert positions.ndim == 1 or positions.ndim == 2
+        
+        self._match_cos_sin_cache_dtype(query)
+        
+        # 1D Fallback for text-only tokens
+        if positions.ndim == 1:
+            from vllm import _custom_ops as ops
+            ops.rotary_embedding(
+                positions,
+                query,
+                key,
+                self.head_size,
+                self.cos_sin_cache,
+                self.is_neox_style,
+            )
+            return query, key
+        
+        assert self.mrope_section
+        
+        num_tokens = positions.shape[-1]
+        query_shape = query.shape
+        query_3d = query.view(num_tokens, -1, self.head_size)
+        key_3d = None
+        key_shape = None
+        
+        if key is not None:
+            key_shape = key.shape
+            key_3d = key.view(num_tokens, -1, self.head_size)
+        
+        # Dispatch to the new XPU C++ Kernel
+        torch.ops._xpu_C.multimodal_rotary_embedding(
+            positions,
+            query_3d,
+            key_3d,
+            self.head_size,
+            self.cos_sin_cache,
+            self.is_neox_style,
+            self.mrope_section,
+        )
+        
+        query = query_3d.reshape(query_shape)
+        key = key_3d.reshape(key_shape) if key_3d is not None else None
+        return query, key
 
     @staticmethod
     def get_next_input_positions(
