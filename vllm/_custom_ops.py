@@ -2298,6 +2298,41 @@ def moe_wna16_gemm(
         bit,
     )
 
+def moe_scatter_dynamic_quant(
+    selected_experts: torch.Tensor,
+    moe_weights: torch.Tensor,
+    token_to_scatter_offset: torch.Tensor,
+    experts_token_count: torch.Tensor,
+    experts_token_start: torch.Tensor,
+    hidden_states: torch.Tensor,
+    experts_smooth_scale: torch.Tensor,
+    scatter_tokens: torch.Tensor,
+    scatter_per_token_scale: torch.Tensor,
+    scatter_tokens_offset: torch.Tensor,
+    shared_experts_num: int
+) -> None:
+    torch.ops._moe_C.moe_scatter_dynamic_quant(
+        selected_experts, moe_weights, token_to_scatter_offset,
+        experts_token_count, experts_token_start, hidden_states,
+        experts_smooth_scale, scatter_tokens, scatter_per_token_scale,
+        scatter_tokens_offset, shared_experts_num
+    )
+
+def moe_swiglu_dynamic_quant(
+    scatter_tokens: torch.Tensor,
+    smooth_scale: torch.Tensor,
+    experts_token_count: torch.Tensor,
+    experts_token_start: torch.Tensor,
+    quant_tokens: torch.Tensor,
+    per_token_scale: torch.Tensor,
+    total_experts_num: int,
+    max_token_num: int
+) -> None:
+    torch.ops._moe_C.moe_swiglu_dynamic_quant(
+        scatter_tokens, smooth_scale, experts_token_count,
+        experts_token_start, quant_tokens, per_token_scale,
+        total_experts_num, max_token_num
+    )
 
 def router_gemm_bf16_fp32(input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     """bf16 x bf16 -> fp32 GEMM via cuBLAS. weight shape: (N, K)."""
