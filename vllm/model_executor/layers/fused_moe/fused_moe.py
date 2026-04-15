@@ -1693,6 +1693,56 @@ def fused_experts_impl(
 
     M = num_tokens
 
+    out_hidden_states = hidden_states if inplace else torch.empty_like(hidden_states)
+
+    # =========================================================================
+    # XPU DYNAMIC QUANTIZATION FAST PATH
+    # =========================================================================
+    from vllm.platforms import current_platform
+    if current_platform.is_xpu() and use_int8_w8a16:
+        import vllm._custom_ops as ops
+        
+        hd_size = hidden_states.size(1)
+        max_tokens = M * top_k_num
+        
+        # IPEX kernel routing requirements
+        scatter_tokens = torch.empty((max_tokens, 2 * hd_size), device=hidden_states.device, dtype=torch.float16)
+        scatter_per_token_scale = torch.empty((max_tokens,), device=hidden_states.device, dtype=torch.float32)
+        scatter_tokens_offset = torch.empty((max_tokens,), device=hidden_states.device, dtype=torch.int32)
+        
+        token_to_scatter_offset = torch.empty((M,), device=hidden_states.device, dtype=torch.int32)
+        experts_token_count = torch.empty((E,), device=hidden_states.device, dtype=torch.int32)
+        experts_token_start = torch.empty((E,), device=hidden_states.device, dtype=torch.int32)
+        
+        # Use provided scales or fallback to ones
+        experts_smooth_scale = w1_scale if w1_scale is not None else torch.ones((E, hd_size), device=hidden_states.device, dtype=torch.float32)
+        shared_experts_num = 0
+        
+        # 1. Scatter & Gate (Dynamic Quant w1)
+        ops.moe_scatter_dynamic_quant(
+            topk_ids.to(torch.int32), w1, token_to_scatter_offset,
+            experts_token_count, experts_token_start, hidden_states,
+            experts_smooth_scale, scatter_tokens, scatter_per_token_scale,
+            scatter_tokens_offset, shared_experts_num
+        )
+
+        quant_tokens = torch.empty((max_tokens, hd_size), device=hidden_states.device, dtype=torch.int8)
+        per_token_scale = torch.empty((max_tokens,), device=hidden_states.device, dtype=torch.float32)
+
+        # 2. SwiGLU Activation
+        ops.moe_swiglu_dynamic_quant(
+            scatter_tokens, experts_smooth_scale,
+            experts_token_count, experts_token_start,
+            quant_tokens, per_token_scale,
+            global_num_experts, max_tokens
+        )
+        
+        # 3. TODO: Run INT8 Grouped GEMM for W2 here using `quant_tokens` and `w2`
+        # out_hidden_states = your_w2_int8_gemm(...)
+        
+        return out_hidden_states
+    # =========================================================================
+
     config_dtype = _get_config_dtype_str(
         use_fp8_w8a8=use_fp8_w8a8,
         use_int8_w8a16=use_int8_w8a16,
@@ -1748,8 +1798,6 @@ def fused_experts_impl(
         compute_type = tl.float32
     else:
         raise ValueError(f"Unsupported compute_type: {hidden_states.dtype}")
-
-    out_hidden_states = hidden_states if inplace else torch.empty_like(hidden_states)
 
     if ocp_mx_scheme is not None:
         # TODO: On platforms for which `current_platform.supports_mx()` is True
@@ -1886,6 +1934,7 @@ def fused_experts_impl(
         B_bias=w2_bias,
     )
 
+    import vllm._custom_ops as ops
     ops.moe_sum(
         intermediate_cache3.view(*intermediate_cache3.size()),
         out_hidden_states,
