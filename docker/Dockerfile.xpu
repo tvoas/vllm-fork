@@ -5,24 +5,36 @@ WORKDIR /workspace/
 ARG PYTHON_VERSION=3.12
 ARG PIP_EXTRA_INDEX_URL="https://download.pytorch.org/whl/xpu"
 
-RUN apt clean && apt-get update -y && \
+RUN export http_proxy=http://proxy-dmz.intel.com:911 && export https_proxy=http://proxy-dmz.intel.com:912 && export no_proxy=localhost && \
+    wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null && \
+    echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | tee /etc/apt/sources.list.d/oneAPI.list
+
+RUN apt clean && \
+    apt-get update -y && \
+    apt-get install -y --no-install-recommends software-properties-common && \
+    add-apt-repository universe && \
+    apt-get update -y && \
     apt-get install -y --no-install-recommends --fix-missing \
     curl \
     ffmpeg \
-    git \
+    git
+RUN apt-get install -y --no-install-recommends --fix-missing \
     libsndfile1 \
     libsm6 \
     libxext6 \
     libgl1 \
     lsb-release \
-    libaio-dev \
+    libaio-dev
+RUN apt-get install -y --no-install-recommends --fix-missing \
     numactl \
     wget \
     vim \
+RUN apt-get install -y --no-install-recommends --fix-missing \
     python3.12 \
     python3.12-dev \
     python3.12-venv \
     python3-pip
+
 
 # Add oneAPI repo, pin oneAPI to 2025.3, then install pinned packages in one layer.
 RUN wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null && \
