@@ -22,24 +22,20 @@ RUN mkdir -p /tmp && chmod 1777 /tmp && \
     apt-get install -y --no-install-recommends --fix-missing \
     curl \
     ffmpeg \
-    git
-RUN apt-get install -y --no-install-recommends --fix-missing \
+    git \
     libsndfile1 \
     libsm6 \
     libxext6 \
     libgl1 \
     lsb-release \
-    libaio-dev
-RUN apt-get install -y --no-install-recommends --fix-missing \
+    libaio-dev \
     numactl \
     wget \
     vim \
-RUN apt-get install -y --no-install-recommends --fix-missing \
     python3.12 \
     python3.12-dev \
     python3.12-venv \
-    python3-pip
-
+    python3-pip \
 
 # Add oneAPI repo, pin oneAPI to 2025.3, then install pinned packages in one layer.
 RUN wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null && \
