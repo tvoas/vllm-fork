@@ -13,7 +13,8 @@ ENV http_proxy=http://proxy-dmz.intel.com:911
 ENV https_proxy=http://proxy-dmz.intel.com:912
 ENV no_proxy=localhost
 
-RUN apt clean && \
+RUN mkdir -p /tmp && chmod 1777 /tmp && \
+    apt clean && \
     apt-get update -y && \
     apt-get install -y --no-install-recommends software-properties-common && \
     add-apt-repository universe && \
